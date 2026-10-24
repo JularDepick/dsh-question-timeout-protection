@@ -18,7 +18,7 @@ A plugin for dsh: once ask_user_question times out, the content you entered will
 - Visible timeout: the question card shows the remaining wait time and counts down
 - Near-timeout warning: the last seconds (default 5) flash in red
 - Timeout fallback: no waiting question box is left behind; the typed draft is handled by the fallback scope
-- Context injection: when the fallback scope includes the context, the entered content is sent at timeout as a late reply; the model decides whether to ask again or skip the questions
+- Context injection: when the fallback scope includes the context, the entered content is submitted at timeout through the host's original submit flow; when that is unavailable it falls back to a late reply, and the model decides whether to ask again or skip the questions
 - Card adaptation: rewrites the countdown to "Timeout in Xs", renames the "Take time" control to "Wait indefinitely", and hides the card's collapse/expand toggle
 - State sync: clicking "Wait indefinitely" reports the state to the host, which keeps blocking instead of returning pending
 - Read-only history marker: a timed-out question shows "Timed out · injected into context" (or "Timed out · draft kept" in ui mode); clicking it shows the draft read-only, stored in browser local storage so it survives restarts

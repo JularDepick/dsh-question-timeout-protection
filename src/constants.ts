@@ -141,3 +141,12 @@ export const DRAFT_STORAGE_PREFIX = 'dqtp:draft:'
 
 /** 草稿查看面板的 DOM id */
 export const DRAFT_PANEL_ID = 'dqtp-draft-panel'
+
+/** 宿主卡片提交按钮文案(中文与英文) */
+export const SUBMIT_TEXTS: readonly string[] = ['提交', 'Submit']
+
+/** 宿主卡片「下一题」按钮文案(中文与英文) */
+export const NEXT_QUESTION_TEXTS: readonly string[] = ['下一题', 'Next']
+
+/** 宿主卡片「跳过」按钮文案(中文与英文) */
+export const SKIP_QUESTION_TEXTS: readonly string[] = ['跳过', 'Skip']

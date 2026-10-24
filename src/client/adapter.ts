@@ -18,7 +18,10 @@ import {
   DRAFT_INJECTION_FOOTER,
   DRAFT_INJECTION_HEADER,
   HIDDEN_CONTROL_CLASS,
+  NEXT_QUESTION_TEXTS,
   QUESTION_CARD_SELECTOR,
+  SKIP_QUESTION_TEXTS,
+  SUBMIT_TEXTS,
   SYNC_PATH,
   SYNC_PORT,
   TAKE_TIME_LABELS,
@@ -275,6 +278,36 @@ function readStoredDraft(callId: string): StoredDraft | undefined {
   }
 }
 
+/* 把草稿填进卡片输入框并走宿主原版提交流程 */
+async function submitViaCard(card: HTMLElement, message: string): Promise<boolean> {
+  const field = card.querySelector('textarea')
+  if (!(field instanceof HTMLTextAreaElement)) return false
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+  if (setter === undefined) return false
+  setter.call(field, message)
+  field.dispatchEvent(new Event('input', { bubbles: true }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const findButton = (texts: readonly string[]): HTMLButtonElement | undefined =>
+    Array.from(card.querySelectorAll('button')).find((button) => texts.includes(button.textContent?.trim() ?? ''))
+  for (let step = 0; step < 12; step += 1) {
+    const submit = findButton(SUBMIT_TEXTS)
+    if (submit !== undefined) {
+      submit.click()
+      return true
+    }
+    const next = findButton(NEXT_QUESTION_TEXTS)
+    if (next !== undefined) {
+      next.click()
+    } else {
+      const skip = findButton(SKIP_QUESTION_TEXTS)
+      if (skip === undefined) return false
+      skip.click()
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return false
+}
+
 /* 只读查看超时草稿的面板 */
 function showDraftPanel(label: string, draft: string): void {
   document.getElementById(DRAFT_PANEL_ID)?.remove()
@@ -354,7 +387,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
       closeCardPanel(card)
       return
     }
-    void submitDraft(ctx, identity, row.questions, draft).then((sent) => {
+    void submitViaCard(card, draftMessage(draft)).then(async (submitted) => {
+      if (submitted) return
+      const sent = await submitDraft(ctx, identity, row.questions, draft)
       if (!sent) handled.delete(row.callId)
     })
   }
