@@ -8,6 +8,8 @@
  */
 
 import {
+  ASK_PENDING_TEXTS,
+  ASK_REOPEN_TEXTS,
   CLOSE_PANEL_LABELS,
   COLLAPSE_CONTROL_LABELS,
   COUNTDOWN_PATTERNS,
@@ -26,6 +28,7 @@ import {
   SYNC_PORT,
   TAKE_TIME_LABELS,
   TIMED_OUT_INJECTED_MARKER,
+  TIMED_OUT_MARKER,
   TIMED_OUT_UI_MARKER,
   WAIT_STATUS_SELECTOR,
   injectsContext,
@@ -184,22 +187,6 @@ function renameTakeTimeControl(card: HTMLElement): void {
   }
 }
 
-/* 把宿主倒计时文案改写为「x秒后超时」 */
-function rewriteCountdownText(card: HTMLElement): void {
-  for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
-    if (!(element instanceof HTMLElement)) continue
-    const text = element.textContent ?? ''
-    if (/\d+\s*秒后超时|Timeout in \d+s/.test(text)) continue
-    const zh = /(\d+)\s*秒后继续工作/.exec(text)
-    if (zh !== null) {
-      element.textContent = `${zh[1]}秒后超时`
-      continue
-    }
-    const en = /Continuing in (\d+)s/.exec(text)
-    if (en !== null) element.textContent = `Timeout in ${en[1]}s`
-  }
-}
-
 /* 收起问答面板: 面板隐藏后草稿仍留在该提问的浏览器草稿里 */
 function closeCardPanel(card: HTMLElement): void {
   for (const element of Array.from(card.querySelectorAll('button'))) {
@@ -308,6 +295,19 @@ async function submitViaCard(card: HTMLElement, message: string): Promise<boolea
   return false
 }
 
+/* 从元素所在行里找已保存的草稿 */
+function findDraftNear(element: Element): StoredDraft | undefined {
+  let node: Element | null = element
+  for (let depth = 0; depth < 10 && node !== null; depth += 1) {
+    for (const attribute of Array.from(node.attributes)) {
+      const stored = readStoredDraft(attribute.value)
+      if (stored !== undefined) return stored
+    }
+    node = node.parentElement
+  }
+  return undefined
+}
+
 /* 只读查看超时草稿的面板 */
 function showDraftPanel(label: string, draft: string): void {
   document.getElementById(DRAFT_PANEL_ID)?.remove()
@@ -350,12 +350,17 @@ function reportInfiniteWait(identity: CardIdentity): void {
 }
 
 /* 监听「无限等待」按钮, 点击时上报状态 */
-function watchInfiniteControl(card: HTMLElement, identity: CardIdentity, bound: WeakSet<HTMLButtonElement>): void {
+function watchInfiniteControl(
+  card: HTMLElement,
+  identity: CardIdentity,
+  bound: WeakSet<HTMLButtonElement>,
+  onInfinite: () => void,
+): void {
   for (const element of Array.from(card.querySelectorAll('button'))) {
     if (!(element instanceof HTMLButtonElement) || bound.has(element)) continue
     if (!TAKE_TIME_TEXTS.includes(element.textContent?.trim() ?? '')) continue
     bound.add(element)
-    element.addEventListener('click', () => reportInfiniteWait(identity))
+    element.addEventListener('click', onInfinite)
   }
 }
 
@@ -370,6 +375,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
   ensureStyle()
 
   const handled = new Set<string>()
+  const timedOut = new Set<string>()
   const subscriptions = new Map<string, () => void>()
 
   /*
@@ -401,6 +407,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     if (!Array.isArray(active)) return
     for (const row of active as ProjectionRow[]) {
       if (row.state !== 'continued' || typeof row.callId !== 'string') continue
+      timedOut.add(row.callId)
       if (!Array.isArray(row.questions)) continue
       evaluateRow({ sessionId, callId: row.callId }, row)
     }
@@ -417,6 +424,31 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     const off = face.subscribe?.(evaluate) ?? (() => {})
     subscriptions.set(sessionId, off)
     evaluate()
+  }
+
+  /* 每张卡片的首个截止时间; 输入或聚焦都不影响它 */
+  const deadlines = new WeakMap<HTMLElement, number>()
+  const infiniteCards = new Set<string>()
+
+  /* 用插件自己的截止时间渲染倒计时, 宿主隐藏或暂停时也继续走 */
+  const applyCountdown = (card: HTMLElement, identity: CardIdentity | undefined): void => {
+    for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
+      if (!(element instanceof HTMLElement)) continue
+      const text = element.textContent?.trim() ?? ''
+      const held = /会一直等你回答|Waiting until you answer/.test(text)
+      const match =
+        /(\d+)\s*秒后(?:继续工作|超时|继续)/.exec(text) ??
+        /(?:Continuing in|Timeout in) (\d+)s/.exec(text) ??
+        /Paused · (\d+)s remaining/.exec(text)
+      if (match !== null && !deadlines.has(card)) deadlines.set(card, Date.now() + Number(match[1]) * 1000)
+      if (held && identity !== undefined && infiniteCards.has(identity.callId)) continue
+      if (!held && match === null) continue
+      const deadline = deadlines.get(card)
+      if (deadline === undefined) continue
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      const next = /秒/.test(text) ? `${remaining}秒后超时` : `Timeout in ${remaining}s`
+      if (text !== next) element.textContent = next
+    }
   }
 
   /* 已绑定点击上报的按钮 */
@@ -452,21 +484,77 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     }
   }
 
+  /* 已绑定的工具行「回答」按钮 */
+  const boundReopen = new WeakSet<HTMLButtonElement>()
+
+  /* 超时后禁止继续在卡片里回答 */
+  const lockedCards = new WeakSet<HTMLElement>()
+  const lockCard = (card: HTMLElement): void => {
+    if (lockedCards.has(card)) return
+    lockedCards.add(card)
+    for (const field of Array.from(card.querySelectorAll('textarea, input'))) {
+      if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) field.disabled = true
+    }
+    for (const button of Array.from(card.querySelectorAll('button'))) {
+      const text = button.textContent?.trim() ?? ''
+      if (SUBMIT_TEXTS.includes(text) || NEXT_QUESTION_TEXTS.includes(text) || SKIP_QUESTION_TEXTS.includes(text)) {
+        button.disabled = true
+      }
+    }
+  }
+
+  /* 把工具调用行里「回答」按钮改成只读标记, 点击只查看草稿 */
+  const decorateAskReopenButtons = (): void => {
+    for (const button of Array.from(document.querySelectorAll('button'))) {
+      if (!(button instanceof HTMLButtonElement)) continue
+      if (!ASK_REOPEN_TEXTS.includes(button.textContent?.trim() ?? '')) continue
+      let node: Element | null = button
+      let pending = false
+      for (let depth = 0; depth < 6 && node !== null; depth += 1) {
+        if (ASK_PENDING_TEXTS.some((text) => node?.textContent?.includes(text) === true)) {
+          pending = true
+          break
+        }
+        node = node.parentElement
+      }
+      if (!pending) continue
+      const stored = findDraftNear(button)
+      const marker = stored === undefined ? TIMED_OUT_MARKER : stored.injected ? TIMED_OUT_INJECTED_MARKER : TIMED_OUT_UI_MARKER
+      if (button.textContent !== marker) button.textContent = marker
+      if (boundReopen.has(button)) continue
+      boundReopen.add(button)
+      button.addEventListener(
+        'click',
+        (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (stored !== undefined) showDraftPanel(marker, stored.draft)
+        },
+        true,
+      )
+    }
+  }
+
   /* 扫描所有受管卡片: 切换警示样式,并确保所属会话已订阅 */
   const scan = (): void => {
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
       if (!(element instanceof HTMLElement)) continue
-      rewriteCountdownText(element)
+      const identity = parseCardKey(element.getAttribute('data-question-key'))
+      applyCountdown(element, identity)
       applyWarning(element, options.warningSeconds)
       renameTakeTimeControl(element)
       hideHostControls(element)
-      const identity = parseCardKey(element.getAttribute('data-question-key'))
       if (identity !== undefined) {
-        watchInfiniteControl(element, identity, boundButtons)
+        if (timedOut.has(identity.callId)) lockCard(element)
+        watchInfiniteControl(element, identity, boundButtons, () => {
+          infiniteCards.add(identity.callId)
+          reportInfiniteWait(identity)
+        })
         ensureSubscription(identity.sessionId)
       }
     }
     decorateReplyBubbles()
+    decorateAskReopenButtons()
   }
 
   const observer = new MutationObserver(scan)

@@ -150,3 +150,12 @@ export const NEXT_QUESTION_TEXTS: readonly string[] = ['下一题', 'Next']
 
 /** 宿主卡片「跳过」按钮文案(中文与英文) */
 export const SKIP_QUESTION_TEXTS: readonly string[] = ['跳过', 'Skip']
+
+/** 工具调用行「回答」按钮的文案(中文与英文) */
+export const ASK_REOPEN_TEXTS: readonly string[] = ['回答', 'Answer']
+
+/** 工具调用行里超时问题仍可回答的状态文案(中文与英文) */
+export const ASK_PENDING_TEXTS: readonly string[] = ['已继续工作，仍可回答', 'continued; answer still available']
+
+/** 超时且没有草稿时的只读标记 */
+export const TIMED_OUT_MARKER = '回答超时'
