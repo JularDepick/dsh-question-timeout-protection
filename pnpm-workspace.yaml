@@ -1,0 +1,14 @@
+# pnpm workspace 声明,隔离用户家目录的全局 workspace 文件
+packages:
+  - .
+
+# 内容寻址 store 固定在工作区内(沙箱环境避免写工作区外被拒,相对本文件解析)
+storeDir: .pnpm-store
+
+# 公开提升全部依赖到根 node_modules
+#
+# Node 26 的 JS 版 realpathSync 不再解析 Windows junction,而 pnpm 隔离布局
+# 在 Windows 上用 junction 链接顶层包,嵌套依赖解析会落到 junction 路径上并报
+# ERR_MODULE_NOT_FOUND。本项仅影响本地开发环境的 node_modules 布局,不随包发布。
+publicHoistPattern:
+  - '*'

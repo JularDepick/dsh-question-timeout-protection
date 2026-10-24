@@ -1,0 +1,4 @@
+# dsh-question-timeout-protection 的配置层,由 dsh.bundle manifest 引用
+- insert:
+    - id: question-timeout-protection
+      name: dsh-question-timeout-protection
