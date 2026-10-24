@@ -51,11 +51,11 @@ export const DEFAULT_INFINITE_WAIT = true
 /** 默认启用超时草稿兜底 */
 export const DEFAULT_DRAFT_FALLBACK = true
 
-/** 插件配置页的插槽名 */
-export const SETTINGS_SLOT = 'plugins.row.config'
+/** 配置区块的插槽名: 插件级(插件详情页顶部), 不落在「包含的组件」的行里 */
+export const SETTINGS_SLOT = 'plugins.bundle.config'
 
-/** 插件配置页的条目 id */
-export const SETTINGS_ENTRY_ID = 'dsh-question-timeout-protection#question-timeout-protection'
+/** 插件配置的设置命名空间, 等于 cordis.patch.yml 里的行 id, 两处必须保持一致 */
+export const SETTINGS_NAMESPACE = 'question-timeout-protection'
 
 /** 插件配置页的文案命名空间 */
 export const SETTINGS_LOCALE = 'questionTimeoutProtection'

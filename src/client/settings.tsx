@@ -1,27 +1,26 @@
 /*
  * 插件配置页
  *
- * 注册到插件详情页的行配置插槽(plugins.row.config), 页面本身不读取任何客户端配置服务,
- * 只渲染宿主经插槽下发的该行配置表单(props.form)。
+ * 注册在插件级配置插槽(plugins.bundle.config), 显示在插件详情页顶部, 不在「包含的组件」的行里。
+ * 唯一可配置项是「注入到上下文」; 其余能力随插件启用状态固定生效, 只做展示。
  * 作者: JularDepick
  */
 
 import { useEffect, useState } from 'react'
-import { SETTINGS_ENTRY_ID, SETTINGS_LOCALE, SETTINGS_SLOT } from '../constants'
+import { DEFAULT_FALLBACK_MODE, PLUGIN_NAME, SETTINGS_LOCALE, SETTINGS_NAMESPACE, SETTINGS_SLOT } from '../constants'
 import { clientText, SETTINGS_DICTIONARY } from './i18n'
+import type { ClientTextKey } from './i18n'
 
 /* 表单里的普通值(服务端已解析 volatile) */
 interface SettingsValues {
   fallback: 'ui' | 'context' | 'both'
-  warningSeconds: number
-  timeoutSeconds: number
   cardEnhancements: boolean
   infiniteWait: boolean
   draftFallback: boolean
 }
 
 /* 宿主配置表单的快照 */
-interface PageFormSnapshot {
+interface ConfigSnapshot {
   status: 'loading' | 'ready' | 'unavailable'
   value?: Partial<SettingsValues>
   revision?: number
@@ -29,27 +28,32 @@ interface PageFormSnapshot {
 }
 
 /* 宿主的原子写操作 */
-interface PageOperation {
+interface ConfigOperation {
   op: 'set' | 'unset'
   path: string[]
   value?: unknown
 }
 
-/* 宿主经插槽下发的行配置表单 */
-interface PageForm {
-  readonly state: PageFormSnapshot
-  mutate(operations: PageOperation[], expectedRevision?: number): Promise<boolean>
+/* 宿主某设置命名空间的配置表单 */
+interface ConfigFormLike {
+  getSnapshot(): ConfigSnapshot
+  subscribe(listener: () => void): () => void
+  mutate(operations: ConfigOperation[], expectedRevision?: number): Promise<boolean>
 }
 
-/* 行配置插槽的组件属性 */
-interface PageProps {
-  view?: string
-  form?: PageForm
+/* 配置表单服务 */
+interface FormsLike {
+  get(id: string): ConfigFormLike
 }
 
 /* 文案服务的注册接口 */
 interface LocaleLike {
   register(id: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void
+}
+
+/* 配置插槽的组件属性 */
+interface PageProps {
+  view?: string
 }
 
 /** 配置页的客户端上下文 */
@@ -58,65 +62,126 @@ export interface SettingsContext {
     inject(name: string, register: () => (() => void) | Iterable<() => void>): (() => void) | undefined
     register(options: { name: string; key?: string; locale?: string }, component: (props: PageProps) => unknown): () => void
   }
+  configForms?: FormsLike
   locale?: LocaleLike
 }
 
-/* 兜底范围下拉项 */
-const FALLBACK_OPTIONS: ReadonlyArray<{ value: SettingsValues['fallback']; label: string }> = [
-  { value: 'ui', label: clientText('fallbackUi') },
-  { value: 'context', label: clientText('fallbackContext') },
-  { value: 'both', label: clientText('fallbackBoth') },
+/* 快照未就绪时的占位 */
+const PENDING: ConfigSnapshot = { status: 'loading', writable: false }
+
+/* 样式只注入一次, 类名前缀固定为 dqtp- */
+const STYLE_FLAG = 'dqtpSettings'
+const SETTINGS_STYLE = `
+.dqtp-form{display:flex;flex-direction:column;gap:14px;max-width:560px;font-size:13px;line-height:1.55;color:var(--dsw-alias-label-primary,#1f2328)}
+.dqtp-card{border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.28));border-radius:12px;padding:2px 14px 6px}
+.dqtp-card-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;padding:11px 0 7px}
+.dqtp-card-title{font-size:13px;font-weight:600}
+.dqtp-card-note{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280)}
+.dqtp-option{display:flex;align-items:flex-start;gap:10px;padding:9px 0;cursor:pointer}
+.dqtp-option input{flex:none;width:15px;height:15px;margin:2px 0 0;accent-color:var(--dsw-alias-brand-primary,#3b6cf0);cursor:pointer}
+.dqtp-option-body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dqtp-option-label{font-weight:500}
+.dqtp-option-desc{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280)}
+.dqtp-fixed{display:flex;align-items:flex-start;gap:10px;padding:9px 0}
+.dqtp-fixed + .dqtp-fixed,.dqtp-option + .dqtp-fixed,.dqtp-fixed + .dqtp-option{border-top:1px solid var(--dsw-alias-border-tertiary,rgba(127,127,127,.16))}
+.dqtp-fixed-mark{flex:none;width:15px;font-size:12px;line-height:20px;text-align:center;color:var(--dsw-alias-label-secondary,#6b7280)}
+.dqtp-fixed-label{font-weight:500;color:var(--dsw-alias-label-secondary,#4b5563)}
+.dqtp-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.dqtp-button{font:inherit;padding:5px 15px;border-radius:8px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.34));background:transparent;color:inherit;cursor:pointer}
+.dqtp-button:hover:not(:disabled){border-color:var(--dsw-alias-label-secondary,#9aa0a6)}
+.dqtp-button:disabled{opacity:.45;cursor:not-allowed}
+.dqtp-button.is-primary{border-color:transparent;background:var(--dsw-alias-brand-primary,#3b6cf0);color:#fff}
+.dqtp-notice{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280)}
+.dqtp-problem{font-size:12px;color:var(--dsw-alias-label-danger,#c0392b)}
+`
+
+let styleInstalled = false
+
+/* 首帧插入一次样式表 */
+function ensureStyle(): void {
+  if (styleInstalled || typeof document === 'undefined') return
+  styleInstalled = true
+  const style = document.createElement('style')
+  style.dataset[STYLE_FLAG] = 'true'
+  style.textContent = SETTINGS_STYLE
+  document.head.append(style)
+}
+
+/* 固定特性的展示数据: 随插件启用状态生效, 页面不提供开关 */
+const FIXED_ROWS: ReadonlyArray<{ label: ClientTextKey; desc: ClientTextKey }> = [
+  { label: 'fixedKeepLabel', desc: 'fixedKeepDesc' },
+  { label: 'cardEnhancementsLabel', desc: 'cardEnhancementsDesc' },
+  { label: 'infiniteWaitLabel', desc: 'infiniteWaitDesc' },
+  { label: 'draftFallbackLabel', desc: 'draftFallbackDesc' },
 ]
 
-const FIELD_STYLE = { display: 'flex', flexDirection: 'column', gap: 4 } as const
-const SWITCH_STYLE = { display: 'flex', alignItems: 'center', gap: 8 } as const
+/* 是否注入到上下文; 界面保留草稿恒定开启, 因此只映射 ui / both */
+function readInject(value: Partial<SettingsValues> | undefined): boolean {
+  const mode = value?.fallback ?? DEFAULT_FALLBACK_MODE
+  return mode === 'context' || mode === 'both'
+}
 
-/* 配置表单页面 */
-function SettingsPage({ form }: PageProps): JSX.Element {
-  const [draft, setDraft] = useState<Partial<SettingsValues>>(() => form?.state.value ?? {})
-  const [revision, setRevision] = useState<number | undefined>(form?.state.revision)
+/* 配置页内容 */
+function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
+  const forms = readService<FormsLike>(host, 'configForms')
+  const [form, setForm] = useState<ConfigFormLike | undefined>(() => forms?.get(SETTINGS_NAMESPACE))
+  const [snapshot, setSnapshot] = useState<ConfigSnapshot>(() => form?.getSnapshot() ?? PENDING)
+  const [injectContext, setInjectContext] = useState<boolean>(() => readInject(snapshot.value))
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
-  /* 宿主刷新快照时同步草稿, 正在编辑(dirty)时不覆盖用户输入 */
+  useEffect(() => ensureStyle(), [])
+
+  /* 配置服务可能晚于插件就绪, 拿到服务后再取控制器(每个命名空间只取一次) */
+  useEffect(() => {
+    if (form !== undefined || forms === undefined) return
+    setForm(forms.get(SETTINGS_NAMESPACE))
+  }, [form, forms])
+
+  /* 跟随宿主快照 */
+  useEffect(() => {
+    if (form === undefined) return
+    setSnapshot(form.getSnapshot())
+    return form.subscribe(() => setSnapshot(form.getSnapshot()))
+  }, [form])
+
+  /* 宿主刷新快照时同步勾选, 正在编辑(dirty)时不覆盖用户输入 */
   useEffect(() => {
     if (dirty) return
-    setDraft(form?.state.value ?? {})
-    setRevision(form?.state.revision)
-  }, [form?.state.value, form?.state.revision, dirty])
+    setInjectContext(readInject(snapshot.value))
+  }, [snapshot.revision, snapshot.status, dirty])
 
-  const status = form?.state.status
-  const ready = form !== undefined && status === 'ready' && form.state.writable !== false
+  const ready = form !== undefined && snapshot.status === 'ready' && snapshot.writable !== false
   const disabled = !ready || busy
 
-  const edit = (patch: Partial<SettingsValues>): void => {
-    setDraft((current) => ({ ...current, ...patch }))
+  const edit = (next: boolean): void => {
+    setInjectContext(next)
     setDirty(true)
     setNotice('')
   }
 
   const reset = (): void => {
-    setDraft(form?.state.value ?? {})
-    setRevision(form?.state.revision)
+    setInjectContext(readInject(form?.getSnapshot().value ?? snapshot.value))
     setDirty(false)
     setNotice('')
   }
 
   const save = async (): Promise<void> => {
-    if (form === undefined || !ready || busy || revision === undefined) return
+    if (form === undefined || !ready || busy) return
     setBusy(true)
     setNotice('')
     try {
-      const operations: PageOperation[] = [
-        { op: 'set', path: ['fallback'], value: draft.fallback ?? 'ui' },
-        { op: 'set', path: ['warningSeconds'], value: Number(draft.warningSeconds ?? 5) },
-        { op: 'set', path: ['timeoutSeconds'], value: Number(draft.timeoutSeconds ?? 120) },
-        { op: 'set', path: ['cardEnhancements'], value: draft.cardEnhancements ?? true },
-        { op: 'set', path: ['infiniteWait'], value: draft.infiniteWait ?? true },
-        { op: 'set', path: ['draftFallback'], value: draft.draftFallback ?? true },
-      ]
-      const accepted = await form.mutate(operations, revision)
+      /* 界面保留草稿与三项固定特性恒定开启, 一并归一为开启 */
+      const accepted = await form.mutate(
+        [
+          { op: 'set', path: ['fallback'], value: injectContext ? 'both' : 'ui' },
+          { op: 'set', path: ['cardEnhancements'], value: true },
+          { op: 'set', path: ['infiniteWait'], value: true },
+          { op: 'set', path: ['draftFallback'], value: true },
+        ],
+        snapshot.revision,
+      )
       setNotice(clientText(accepted ? 'saved' : 'rejected'))
       if (accepted) setDirty(false)
     } catch {
@@ -128,92 +193,65 @@ function SettingsPage({ form }: PageProps): JSX.Element {
 
   return (
     <form
-      style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 520 }}
+      className="dqtp-form"
       onSubmit={(event) => {
         event.preventDefault()
         void save()
       }}
     >
-      <label style={FIELD_STYLE}>
-        <span>{clientText('fallbackLabel')}</span>
-        <select
-          disabled={disabled}
-          value={String(draft.fallback ?? 'ui')}
-          onChange={(event) => edit({ fallback: event.target.value as SettingsValues['fallback'] })}
-        >
-          {FALLBACK_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label style={FIELD_STYLE}>
-        <span>{clientText('warningLabel')}</span>
-        <input
-          type="number"
-          min={1}
-          max={60}
-          disabled={disabled}
-          value={Number(draft.warningSeconds ?? 5)}
-          onChange={(event) => edit({ warningSeconds: Number(event.target.value) })}
-        />
-      </label>
-      <label style={FIELD_STYLE}>
-        <span>{clientText('timeoutLabel')}</span>
-        <input
-          type="number"
-          min={1}
-          max={2147483}
-          disabled={disabled}
-          value={Number(draft.timeoutSeconds ?? 120)}
-          onChange={(event) => edit({ timeoutSeconds: Number(event.target.value) })}
-        />
-      </label>
-      <label style={SWITCH_STYLE}>
-        <input
-          type="checkbox"
-          disabled={disabled}
-          checked={draft.cardEnhancements ?? true}
-          onChange={(event) => edit({ cardEnhancements: event.target.checked })}
-        />
-        <span>{clientText('cardEnhancementsLabel')}</span>
-      </label>
-      <label style={SWITCH_STYLE}>
-        <input
-          type="checkbox"
-          disabled={disabled}
-          checked={draft.infiniteWait ?? true}
-          onChange={(event) => edit({ infiniteWait: event.target.checked })}
-        />
-        <span>{clientText('infiniteWaitLabel')}</span>
-      </label>
-      <label style={SWITCH_STYLE}>
-        <input
-          type="checkbox"
-          disabled={disabled}
-          checked={draft.draftFallback ?? true}
-          onChange={(event) => edit({ draftFallback: event.target.checked })}
-        />
-        <span>{clientText('draftFallbackLabel')}</span>
-      </label>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <button type="submit" disabled={disabled || !dirty}>
+      <section className="dqtp-card">
+        <header className="dqtp-card-head">
+          <span className="dqtp-card-title">{clientText('fallbackSection')}</span>
+          <span className="dqtp-card-note">{clientText('fallbackNote')}</span>
+        </header>
+        <label className="dqtp-option">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={injectContext}
+            onChange={(event) => edit(event.target.checked)}
+          />
+          <span className="dqtp-option-body">
+            <span className="dqtp-option-label">{clientText('injectLabel')}</span>
+            <span className="dqtp-option-desc">{clientText('injectDesc')}</span>
+          </span>
+        </label>
+      </section>
+      <section className="dqtp-card">
+        <header className="dqtp-card-head">
+          <span className="dqtp-card-title">{clientText('fixedSection')}</span>
+          <span className="dqtp-card-note">{clientText('fixedNote')}</span>
+        </header>
+        {FIXED_ROWS.map((row) => (
+          <div key={row.label} className="dqtp-fixed">
+            <span className="dqtp-fixed-mark">{'\u2713'}</span>
+            <span className="dqtp-option-body">
+              <span className="dqtp-fixed-label">{clientText(row.label)}</span>
+              <span className="dqtp-option-desc">{clientText(row.desc)}</span>
+            </span>
+          </div>
+        ))}
+      </section>
+      <div className="dqtp-actions">
+        <button type="submit" className="dqtp-button is-primary" disabled={disabled || !dirty}>
           {clientText(busy ? 'saving' : 'save')}
         </button>
-        <button type="button" disabled={disabled || !dirty} onClick={reset}>
+        <button type="button" className="dqtp-button" disabled={disabled || !dirty} onClick={reset}>
           {clientText('reset')}
         </button>
-        {notice === '' ? null : <span role="status">{notice}</span>}
+        {notice === '' ? null : (
+          <span className="dqtp-notice" role="status">
+            {notice}
+          </span>
+        )}
       </div>
-      {ready || busy ? null : <span style={{ color: '#b42318' }}>{clientText(status === 'loading' ? 'loading' : 'unavailable')}</span>}
+      {ready || busy ? null : (
+        <p className="dqtp-problem" role="status">
+          {clientText(snapshot.status === 'loading' ? 'loading' : 'unavailable')}
+        </p>
+      )}
     </form>
   )
-}
-
-/* 行配置插槽的组件: 摘要只输出标题, 页面渲染表单 */
-function renderRowConfig(props: PageProps): unknown {
-  return props.view === 'summary' ? clientText('settingsSummary') : <SettingsPage form={props.form} />
 }
 
 /* 安全读取宿主服务: 未注入时属性访问可能抛错 */
@@ -236,7 +274,7 @@ function readService<T>(ctx: unknown, name: string): T | undefined {
   return undefined
 }
 
-/** 注册插件详情页里的配置页 */
+/** 注册插件详情页顶部的配置区块 */
 export function registerSettingsPage(ctx: SettingsContext): () => void {
   const slots = readService<NonNullable<SettingsContext['slots']>>(ctx, 'slots')
   if (slots === undefined || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
@@ -254,10 +292,12 @@ export function registerSettingsPage(ctx: SettingsContext): () => void {
     /* 文案注册失败不影响页面 */
   }
   try {
-    /* 与 dsh-ops 同一范式: 插槽声明后注册一条 key 为 包名#行 id 的条目 */
+    /* 插件级配置插槽按包名作为 key, 与 dsh-ops 的注册范式一致 */
     const off = slots.inject(SETTINGS_SLOT, function* register() {
-      yield slots.register({ name: SETTINGS_SLOT, key: SETTINGS_ENTRY_ID, locale: SETTINGS_LOCALE }, renderRowConfig)
-      console.info('[question-timeout-protection] 行配置已注册', SETTINGS_ENTRY_ID)
+      yield slots.register({ name: SETTINGS_SLOT, key: PLUGIN_NAME, locale: SETTINGS_LOCALE }, (props) =>
+        props.view === 'summary' ? clientText('settingsSummary') : <SettingsPage host={ctx} />,
+      )
+      console.info('[question-timeout-protection] 插件配置已注册', SETTINGS_SLOT, PLUGIN_NAME)
     })
     if (typeof off === 'function') disposers.push(off)
   } catch (error) {

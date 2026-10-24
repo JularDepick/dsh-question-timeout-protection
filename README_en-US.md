@@ -49,16 +49,18 @@ dsh plugin --profile <profile> add release/dsh-question-timeout-protection-<vers
 
 ## Configuration
 
-| Option | Values | Default | Description |
-|:---:|:---:|:---:|:---|
-| `fallback` | `ui` / `context` / `both` | `ui` | How the timeout draft is handled: `ui` uses the host timeout and keeps the draft locally for later viewing; `context` and `both` submit the draft through the original flow |
-| `cardEnhancements` | boolean | `true` | Card enhancements: countdown wording, hidden collapse toggle, timeout locking and read-only history markers |
-| `infiniteWait` | boolean | `true` | The "Wait indefinitely" control and the blocking it triggers |
-| `draftFallback` | boolean | `true` | Keep the draft at timeout and handle it by the fallback scope |
-| `warningSeconds` | number | 5 | Seconds remaining when the red warning starts |
-| `timeoutSeconds` | number | 120 | Question wait time in seconds; a tool call may override it with `timeout` |
+The config page sits in the plugin-level config block at the **top of the plugin detail view**, not inside "Included components". Only "Inject into the context" can be changed; every other capability follows the plugin's enabled state and is listed for reference only.
 
-> With `fallback: ui` the draft stays in that question's browser draft and never enters the model context. With `context` or `both`, the content entered before the timeout is sent to the model as one message, and the model decides whether to ask again or skip these questions.
+| Option | Values | Default | UI | Description |
+|:---:|:---:|:---:|:---:|:---|
+| `fallback` | `ui` / `context` / `both` | `ui` | One switch | Timeout fallback; the page only offers "Inject into the context", writing `both` when checked and `ui` when not. Keeping the draft in the UI is always on, so `context` never appears |
+| `cardEnhancements` | boolean | `true` | Fixed | Card enhancements: countdown wording, hidden collapse toggle, timeout locking and read-only history markers |
+| `infiniteWait` | boolean | `true` | Fixed | The "Wait indefinitely" control and the blocking it triggers |
+| `draftFallback` | boolean | `true` | Fixed | Keep the draft at timeout and handle it by the fallback scope |
+| `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts |
+| `timeoutSeconds` | number | 120 | Not exposed | Question wait time in seconds, decided by the `timeout` argument of each tool call; this value is only the default when the argument is omitted |
+
+> Keeping the draft in the UI is mandatory: at timeout the draft always stays in that question's local draft and can be opened from the tool row. Once "Inject into the context" is checked, the content entered before the timeout is sent to the model as one message, and the model decides whether to ask again or skip these questions.
 
 ## Development
 
