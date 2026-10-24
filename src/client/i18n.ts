@@ -6,12 +6,6 @@
  */
 
 const ZH = {
-  markerInjected: '回答超时·已注入上下文',
-  markerUi: '回答超时·草稿已保留',
-  markerTimedOut: '回答超时',
-  draftPanelTitle: '超时前的草稿',
-  close: '关闭',
-  noDraft: '没有找到这个提问的草稿',
   settingsSummary: '提问超时保护',
   fallbackSection: '超时兜底',
   fallbackNote: '回答超时后如何处理已经输入的内容',
@@ -37,12 +31,6 @@ const ZH = {
 } as const
 
 const EN: Record<keyof typeof ZH, string> = {
-  markerInjected: 'Timed out · injected into context',
-  markerUi: 'Timed out · draft kept',
-  markerTimedOut: 'Timed out',
-  draftPanelTitle: 'Draft at timeout',
-  close: 'Close',
-  noDraft: 'No draft was found for this question',
   settingsSummary: 'Question timeout protection',
   fallbackSection: 'Timeout fallback',
   fallbackNote: 'What happens to what the user already typed once the wait expires',

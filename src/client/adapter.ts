@@ -1,20 +1,17 @@
 /*
  * 客户端提问超时适配器
  *
- * 复用宿主提问卡片: 读取倒计时文本,在剩余秒数进入警示区间时附加闪烁样式;
- * 超时后问题进入 continued 态时,若兜底范围包含上下文,则把卡片里已输入的
- * 草稿经宿主既有的晚回复通道(userQuestions.answer)送回模型,由模型自行决定是否重新提问或跳过。
+ * 只增强宿主已有的提问卡片: 自己维护截止时间渲染倒计时、最后数秒红字闪烁、
+ * 隐藏收起开关、把「慢慢回答」更名为「无限等待」、超时后锁定卡片。
+ * 超时兜底走宿主官方通道 userQuestions.answer(把回复 steer 成一条用户消息),
+ * 不自己渲染任何历史 UI —— 上下文展示交给原版工具返回值。
  * 作者: JularDepick
  */
 
 import {
-  ASK_PENDING_TEXTS,
-  ASK_REOPEN_TEXTS,
   CLOSE_PANEL_LABELS,
   COLLAPSE_CONTROL_LABELS,
   COUNTDOWN_PATTERNS,
-  DRAFT_PANEL_ID,
-  DRAFT_STORAGE_PREFIX,
   COUNTDOWN_STYLE_ID,
   COUNTDOWN_WARNING_CLASS,
   DRAFT_INJECTION_FOOTER,
@@ -27,14 +24,10 @@ import {
   SYNC_PATH,
   SYNC_PORT,
   TAKE_TIME_LABELS,
-  TIMED_OUT_INJECTED_MARKER,
-  TIMED_OUT_MARKER,
-  TIMED_OUT_UI_MARKER,
   WAIT_STATUS_SELECTOR,
   injectsContext,
 } from '../constants'
 import type { FallbackMode } from '../constants'
-import { clientText } from './i18n'
 
 /** 适配器需要的插件配置 */
 export interface AdapterOptions {
@@ -101,7 +94,15 @@ interface CardIdentity {
   callId: string
 }
 
-/* 闪烁样式: 仅在非动画偏好下启用动画 */
+/** 卡片里已填写的答案 */
+interface CardAnswer {
+  /** 已选中的选项文案, 按出现顺序 */
+  selected: string[]
+  /** 自由输入框里的文本 */
+  custom: string
+}
+
+/* 闪烁样式与选中标号的配色; 仅非动画偏好下启用动画 */
 const WARNING_STYLE = `
 @keyframes dqtp-countdown-blink {
   0%, 100% { color: #e5484d; opacity: 1; }
@@ -115,10 +116,20 @@ const WARNING_STYLE = `
 .${HIDDEN_CONTROL_CLASS} {
   display: none !important;
 }
+/* 单选题选中后, 标号方块复用多选题复选框的实心底色 */
+${QUESTION_CARD_SELECTOR} button[role="radio"][aria-checked="true"] > span:first-child {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
 @media (prefers-reduced-motion: reduce) {
   .${COUNTDOWN_WARNING_CLASS} { animation: none; }
 }
 `
+
+/* 宿主「会一直等你回答」的文案, 意味着进入不超时状态 */
+const HELD_PATTERN = /会一直等你回答|Waiting until you answer/
+/* 宿主原文与插件改名后的「无限等待」文案 */
+const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', '无限等待', 'Take time', 'Wait indefinitely']
 
 /* 从卡片 key 解析会话与调用标识 */
 function parseCardKey(key: string | null): CardIdentity | undefined {
@@ -138,7 +149,7 @@ function escapeAttributeValue(value: string): string {
 
 /* 按 key 定位提问卡片 */
 function findCard(identity: CardIdentity): HTMLElement | undefined {
-  const selector = `[${'data-question-key'}="${escapeAttributeValue(`question:${identity.sessionId}:${identity.callId}`)}"]`
+  const selector = `[data-question-key="${escapeAttributeValue(`question:${identity.sessionId}:${identity.callId}`)}"]`
   const element = document.querySelector(selector)
   return element instanceof HTMLElement ? element : undefined
 }
@@ -152,13 +163,54 @@ function parseRemainingSeconds(text: string): number | undefined {
   return undefined
 }
 
-/* 注入闪烁样式,重复安装时跳过 */
+/* 界面语言是否中文, 用于写倒计时文案(不能靠解析旧文案判断) */
+function uiUsesChinese(): boolean {
+  const lang = (typeof document === 'undefined' ? '' : document.documentElement.lang) || (typeof navigator === 'undefined' ? '' : navigator.language)
+  return lang.toLowerCase().startsWith('zh')
+}
+
+/* 注入样式,重复安装时跳过 */
 function ensureStyle(): void {
   if (document.getElementById(COUNTDOWN_STYLE_ID) !== null) return
   const style = document.createElement('style')
   style.id = COUNTDOWN_STYLE_ID
   style.textContent = WARNING_STYLE
   document.head.appendChild(style)
+}
+
+/* 读取卡片里已选的选项文案 */
+function readSelected(card: HTMLElement): string[] {
+  const selected: string[] = []
+  for (const button of Array.from(card.querySelectorAll('button[aria-checked="true"]'))) {
+    const label = (button.getAttribute('aria-label') ?? '').trim()
+    if (label !== '' && !selected.includes(label)) selected.push(label)
+  }
+  return selected
+}
+
+/* 读取卡片输入框里的自由文本 */
+function readCustom(card: HTMLElement): string {
+  const field = card.querySelector('textarea')
+  return field instanceof HTMLTextAreaElement ? field.value : ''
+}
+
+/* 读取卡片里当前的答案 */
+function readAnswer(card: HTMLElement): CardAnswer {
+  return { selected: readSelected(card), custom: readCustom(card) }
+}
+
+/* 是否存在可注入的内容 */
+function hasAnswer(answer: CardAnswer): boolean {
+  return answer.selected.length > 0 || answer.custom.trim() !== ''
+}
+
+/* 把答案拼成一条可读的说明, 交给模型自行决定是否重新提问 */
+function composeBody(answer: CardAnswer): string {
+  const parts: string[] = []
+  if (answer.selected.length > 0) parts.push(`已选: ${answer.selected.join(' / ')}`)
+  const custom = answer.custom.trim()
+  if (custom !== '') parts.push(`补充: ${custom}`)
+  return parts.join('\n\n')
 }
 
 /* 按剩余秒数切换倒计时警示样式 */
@@ -198,7 +250,7 @@ function renameTakeTimeControl(card: HTMLElement, enabled: boolean): void {
   }
 }
 
-/* 收起问答面板: 面板隐藏后草稿仍留在该提问的浏览器草稿里 */
+/* 收起问答面板: 面板隐藏后宿主仍保留该提问的作答状态 */
 function closeCardPanel(card: HTMLElement): void {
   for (const element of Array.from(card.querySelectorAll('button'))) {
     const label = element.getAttribute('aria-label') ?? element.getAttribute('title') ?? ''
@@ -208,167 +260,27 @@ function closeCardPanel(card: HTMLElement): void {
   }
 }
 
-/* 读取卡片中当前可见编辑框里的草稿 */
-function readDraft(card: HTMLElement): string {
-  const field = card.querySelector('textarea')
-  return field instanceof HTMLTextAreaElement ? field.value.trim() : ''
-}
-
-/* 拼装注入上下文的草稿说明 */
-function draftMessage(draft: string): string {
-  return `${DRAFT_INJECTION_HEADER}\n\n${draft}\n\n${DRAFT_INJECTION_FOOTER}`
-}
-
-/* 把草稿作为晚回复答案送出,首个问题承载说明,其余问题记为跳过 */
-async function submitDraft(
+/* 把超时草稿经宿主官方通道送回模型: 它会把回复 steer 成一条用户消息 */
+async function injectAnswer(
   ctx: AdapterContext,
   identity: CardIdentity,
-  rows: ReadonlyArray<{ id: string }>,
-  draft: string,
+  questions: ReadonlyArray<{ id: string }>,
+  body: string,
 ): Promise<boolean> {
   const answer = ctx.remote?.userQuestions?.answer
-  if (answer === undefined || rows.length === 0) return false
-  const message = draftMessage(draft)
-  const answers: AnswerItem[] = rows.map((row, index) => ({
-    id: row.id,
-    selected: [],
-    ...(index === 0 ? { custom: message } : {}),
-  }))
+  if (answer === undefined || questions.length === 0) return false
+  const message = `${DRAFT_INJECTION_HEADER}\n\n${body}\n\n${DRAFT_INJECTION_FOOTER}`
+  const answers: AnswerItem[] = questions.map((question, index) =>
+    index === 0 ? { id: question.id, selected: [], custom: message } : { id: question.id, selected: [] },
+  )
   try {
-    const result = await answer.call(ctx.remote?.userQuestions, identity.sessionId, identity.callId, { answers })
-    return result.ok === true && result.value !== false
-  } catch {
+    await answer.call(ctx.remote?.userQuestions, identity.sessionId, identity.callId, { answers })
+    return true
+  } catch (error) {
+    console.warn('[question-timeout-protection] 超时草稿注入失败', error)
     return false
   }
 }
-
-/* 一条超时草稿的本地存储内容 */
-interface StoredDraft {
-  draft: string
-  sessionId: string
-  injected: boolean
-  at?: number
-}
-
-/* 把超时草稿写入浏览器本地存储, 重启后仍可查看 */
-function storeDraft(callId: string, sessionId: string, injected: boolean, draft: string): void {
-  if (draft === '') return
-  try {
-    window.localStorage.setItem(`${DRAFT_STORAGE_PREFIX}${callId}`, JSON.stringify({ draft, sessionId, injected, at: Date.now() }))
-  } catch {
-    /* 隐私模式等场景写入失败时忽略 */
-  }
-}
-
-/* 读取某个调用的超时草稿 */
-function readStoredDraft(callId: string): StoredDraft | undefined {
-  try {
-    const raw = window.localStorage.getItem(`${DRAFT_STORAGE_PREFIX}${callId}`)
-    if (raw === null) return undefined
-    const parsed = JSON.parse(raw) as Partial<StoredDraft>
-    if (typeof parsed.draft !== 'string') return undefined
-    return {
-      draft: parsed.draft,
-      sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : '',
-      injected: parsed.injected === true,
-      at: typeof parsed.at === 'number' ? parsed.at : 0,
-    }
-  } catch {
-    return undefined
-  }
-}
-
-/* 把草稿填进卡片输入框并走宿主原版提交流程 */
-async function submitViaCard(card: HTMLElement, message: string): Promise<boolean> {
-  const field = card.querySelector('textarea')
-  if (!(field instanceof HTMLTextAreaElement)) return false
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-  if (setter === undefined) return false
-  setter.call(field, message)
-  field.dispatchEvent(new Event('input', { bubbles: true }))
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  const findButton = (texts: readonly string[]): HTMLButtonElement | undefined =>
-    Array.from(card.querySelectorAll('button')).find((button) => texts.includes(button.textContent?.trim() ?? ''))
-  for (let step = 0; step < 12; step += 1) {
-    const submit = findButton(SUBMIT_TEXTS)
-    if (submit !== undefined) {
-      submit.click()
-      return true
-    }
-    const next = findButton(NEXT_QUESTION_TEXTS)
-    if (next !== undefined) {
-      next.click()
-    } else {
-      const skip = findButton(SKIP_QUESTION_TEXTS)
-      if (skip === undefined) return false
-      skip.click()
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
-  return false
-}
-
-/* 找到最近的超时草稿, 供无法从 DOM 关联 callId 时兜底 */
-function latestStoredDraft(): StoredDraft | undefined {
-  try {
-    let latest: StoredDraft | undefined
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index)
-      if (key === null || !key.startsWith(DRAFT_STORAGE_PREFIX)) continue
-      const stored = readStoredDraft(key.slice(DRAFT_STORAGE_PREFIX.length))
-      if (stored === undefined) continue
-      if (latest === undefined || (stored.at ?? 0) > (latest.at ?? 0)) latest = stored
-    }
-    return latest
-  } catch {
-    return undefined
-  }
-}
-
-/* 从元素所在行里找已保存的草稿 */
-function findDraftNear(element: Element): StoredDraft | undefined {
-  let node: Element | null = element
-  for (let depth = 0; depth < 10 && node !== null; depth += 1) {
-    for (const attribute of Array.from(node.attributes)) {
-      const stored = readStoredDraft(attribute.value)
-      if (stored !== undefined) return stored
-    }
-    node = node.parentElement
-  }
-  return undefined
-}
-
-/* 只读查看超时草稿的面板 */
-function showDraftPanel(label: string, draft: string): void {
-  document.getElementById(DRAFT_PANEL_ID)?.remove()
-  const panel = document.createElement('div')
-  panel.id = DRAFT_PANEL_ID
-  panel.style.cssText =
-    'position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35);padding:24px;'
-  const card = document.createElement('div')
-  card.style.cssText =
-    'max-width:680px;width:100%;max-height:70vh;overflow:auto;background:#ffffff;color:#1f2328;border-radius:12px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.25);font:14px/1.6 system-ui,sans-serif;'
-  const title = document.createElement('div')
-  title.textContent = label
-  title.style.cssText = 'font-weight:600;margin-bottom:8px;'
-  const body = document.createElement('div')
-  body.style.cssText = 'white-space:pre-wrap;word-break:break-word;'
-  body.textContent = draft
-  const close = document.createElement('button')
-  close.type = 'button'
-  close.textContent = clientText('close')
-  close.style.cssText = 'margin-top:12px;padding:6px 14px;border-radius:8px;border:1px solid #d0d7de;background:#f6f8fa;cursor:pointer;'
-  close.addEventListener('click', () => panel.remove())
-  card.append(title, body, close)
-  panel.append(card)
-  panel.addEventListener('click', (event) => {
-    if (event.target === panel) panel.remove()
-  })
-  document.body.append(panel)
-}
-
-/* 「无限等待」按钮的文案(宿主原文与插件改名后的文案) */
-const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', '无限等待', 'Take time', 'Wait indefinitely']
 
 /* 把「无限等待」的点击状态同步给服务端 */
 function reportInfiniteWait(identity: CardIdentity): void {
@@ -377,21 +289,6 @@ function reportInfiniteWait(identity: CardIdentity): void {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ callId: identity.callId, infinite: true }),
   }).catch(() => {})
-}
-
-/* 监听「无限等待」按钮, 点击时上报状态 */
-function watchInfiniteControl(
-  card: HTMLElement,
-  identity: CardIdentity,
-  bound: WeakSet<HTMLButtonElement>,
-  onInfinite: () => void,
-): void {
-  for (const element of Array.from(card.querySelectorAll('button'))) {
-    if (!(element instanceof HTMLButtonElement) || bound.has(element)) continue
-    if (!TAKE_TIME_TEXTS.includes(element.textContent?.trim() ?? '')) continue
-    bound.add(element)
-    element.addEventListener('click', onInfinite)
-  }
 }
 
 /**
@@ -407,28 +304,63 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
   const handled = new Set<string>()
   const timedOut = new Set<string>()
   const subscriptions = new Map<string, () => void>()
+  const infiniteCards = new Set<string>()
+  /* 每个调用最近一次填写内容, 卡片被重渲染或收起后仍可用于兜底 */
+  const lastAnswers = new Map<string, CardAnswer>()
+  /* 每个调用的截止时间, 按 callId 而非元素记录, 卡片重渲染后仍延续 */
+  const deadlines = new Map<string, number>()
+
+  /* 用插件自己的截止时间渲染倒计时, 宿主暂停时也继续走 */
+  const applyCountdown = (card: HTMLElement, identity: CardIdentity | undefined): void => {
+    const useZh = uiUsesChinese()
+    for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
+      if (!(element instanceof HTMLElement)) continue
+      const text = element.textContent?.trim() ?? ''
+      const held = HELD_PATTERN.test(text)
+      const total = parseRemainingSeconds(text)
+      const callId = identity?.callId
+      if (total !== undefined && callId !== undefined && !deadlines.has(callId)) deadlines.set(callId, Date.now() + total * 1000)
+      if (held && callId !== undefined && infiniteCards.has(callId)) continue
+      if (!held && total === undefined) continue
+      const deadline = callId === undefined ? undefined : deadlines.get(callId)
+      if (deadline === undefined) continue
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      const next = useZh ? `${remaining}秒后超时` : `Timeout in ${remaining}s`
+      if (text !== next) element.textContent = next
+    }
+  }
+
+  /* 超时后禁止继续在卡片里回答 */
+  const lockedCards = new WeakSet<HTMLElement>()
+  const lockCard = (card: HTMLElement): void => {
+    if (lockedCards.has(card)) return
+    lockedCards.add(card)
+    for (const field of Array.from(card.querySelectorAll('textarea, input'))) {
+      if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) field.disabled = true
+    }
+    for (const button of Array.from(card.querySelectorAll('button'))) {
+      const text = button.textContent?.trim() ?? ''
+      if (SUBMIT_TEXTS.includes(text) || NEXT_QUESTION_TEXTS.includes(text) || SKIP_QUESTION_TEXTS.includes(text)) {
+        button.disabled = true
+      }
+    }
+  }
 
   /*
    * 评估一行 continued 投影: 超时后不留问答框。
-   * ui 范围只收起面板, 草稿留在该提问的浏览器草稿里; context/both 把草稿作为晚回复送出。
+   * ui 范围只收起面板; context/both 把已选选项与草稿经官方通道送回模型。
    */
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
     if (handled.has(row.callId)) return
     if (!options.draftFallback) return
     const card = findCard(identity)
-    if (card === undefined) return
-    const draft = readDraft(card)
-    if (draft !== '') storeDraft(row.callId, identity.sessionId, injectsContext(options.fallback), draft)
+    const answer = (card === undefined ? undefined : readAnswer(card)) ?? lastAnswers.get(row.callId) ?? { selected: [], custom: '' }
     handled.add(row.callId)
-    if (!injectsContext(options.fallback) || draft === '') {
-      closeCardPanel(card)
+    if (!injectsContext(options.fallback) || !hasAnswer(answer)) {
+      if (card !== undefined) closeCardPanel(card)
       return
     }
-    void submitViaCard(card, draftMessage(draft)).then(async (submitted) => {
-      if (submitted) return
-      const sent = await submitDraft(ctx, identity, row.questions, draft)
-      if (!sent) handled.delete(row.callId)
-    })
+    void injectAnswer(ctx, identity, row.questions, composeBody(answer))
   }
 
   /* 评估一个会话的提问投影 */
@@ -457,120 +389,25 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     evaluate()
   }
 
-  /* 每张卡片的首个截止时间; 输入或聚焦都不影响它 */
-  const deadlines = new WeakMap<HTMLElement, number>()
-  const infiniteCards = new Set<string>()
-
-  /* 用插件自己的截止时间渲染倒计时, 宿主隐藏或暂停时也继续走 */
-  const applyCountdown = (card: HTMLElement, identity: CardIdentity | undefined): void => {
-    for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
-      if (!(element instanceof HTMLElement)) continue
-      const text = element.textContent?.trim() ?? ''
-      const held = /会一直等你回答|Waiting until you answer/.test(text)
-      const match =
-        /(\d+)\s*秒后(?:继续工作|超时|继续)/.exec(text) ??
-        /(?:Continuing in|Timeout in) (\d+)s/.exec(text) ??
-        /Paused · (\d+)s remaining/.exec(text)
-      if (match !== null && !deadlines.has(card)) deadlines.set(card, Date.now() + Number(match[1]) * 1000)
-      if (held && identity !== undefined && infiniteCards.has(identity.callId)) continue
-      if (!held && match === null) continue
-      const deadline = deadlines.get(card)
-      if (deadline === undefined) continue
-      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
-      const next = /秒/.test(text) ? `${remaining}秒后超时` : `Timeout in ${remaining}s`
-      if (text !== next) element.textContent = next
-    }
+  /*
+   * 委托监听「无限等待」点击: 宿主会在收起/展开时复用同一个按钮节点,
+   * 按节点绑定监听会把收起误判成无限等待, 所以每次点击都按当时的文案判定。
+   */
+  const onDocumentClick = (event: Event): void => {
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const button = target.closest('button')
+    if (button === null) return
+    if (!TAKE_TIME_TEXTS.includes(button.textContent?.trim() ?? '')) return
+    const card = button.closest(QUESTION_CARD_SELECTOR)
+    const identity = parseCardKey(card instanceof HTMLElement ? card.getAttribute('data-question-key') : null)
+    if (identity === undefined) return
+    infiniteCards.add(identity.callId)
+    reportInfiniteWait(identity)
   }
+  document.addEventListener('click', onDocumentClick, true)
 
-  /* 已绑定点击上报的按钮 */
-  const boundButtons = new WeakSet<HTMLButtonElement>()
-
-  /* 已装饰过的历史气泡 */
-  const decoratedBubbles = new WeakSet<Element>()
-
-  /* 给存有草稿的历史气泡换标签, 并让点击打开只读草稿 */
-  const decorateReplyBubbles = (): void => {
-    for (const element of Array.from(document.querySelectorAll('[data-question-reply]'))) {
-      const callId = element.getAttribute('data-question-reply')
-      if (callId === null) continue
-      const stored = readStoredDraft(callId)
-      if (stored === undefined) continue
-      const marker = stored.injected ? clientText('markerInjected') : clientText('markerUi')
-      const labelNode = Array.from(element.querySelectorAll('span')).find((node) => /(^|\s)[\w-]*_label(\s|$)/.test(node.className))
-      if (labelNode !== undefined && labelNode.textContent !== marker) labelNode.textContent = marker
-      if (decoratedBubbles.has(element)) continue
-      decoratedBubbles.add(element)
-      element.addEventListener(
-        'click',
-        (event) => {
-          const target = event.target
-          if (!(target instanceof Element)) return
-          if (target.closest('button[aria-expanded]') === null) return
-          event.preventDefault()
-          event.stopPropagation()
-          showDraftPanel(marker, stored.draft)
-        },
-        true,
-      )
-    }
-  }
-
-  /* 已绑定的工具行「回答」按钮 */
-  const boundReopen = new WeakSet<HTMLButtonElement>()
-
-  /* 超时后禁止继续在卡片里回答 */
-  const lockedCards = new WeakSet<HTMLElement>()
-  const lockCard = (card: HTMLElement): void => {
-    if (lockedCards.has(card)) return
-    lockedCards.add(card)
-    for (const field of Array.from(card.querySelectorAll('textarea, input'))) {
-      if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) field.disabled = true
-    }
-    for (const button of Array.from(card.querySelectorAll('button'))) {
-      const text = button.textContent?.trim() ?? ''
-      if (SUBMIT_TEXTS.includes(text) || NEXT_QUESTION_TEXTS.includes(text) || SKIP_QUESTION_TEXTS.includes(text)) {
-        button.disabled = true
-      }
-    }
-  }
-
-  /* 把工具调用行里「回答」按钮改成只读标记, 点击只查看草稿 */
-  const decorateAskReopenButtons = (): void => {
-    for (const button of Array.from(document.querySelectorAll('button'))) {
-      if (!(button instanceof HTMLButtonElement)) continue
-      if (!ASK_REOPEN_TEXTS.includes(button.textContent?.trim() ?? '')) continue
-      let node: Element | null = button
-      let pending = false
-      for (let depth = 0; depth < 6 && node !== null; depth += 1) {
-        if (ASK_PENDING_TEXTS.some((text) => node?.textContent?.includes(text) === true)) {
-          pending = true
-          break
-        }
-        node = node.parentElement
-      }
-      if (!pending) continue
-      const marker = clientText('markerTimedOut')
-      if (button.textContent !== marker) button.textContent = marker
-      if (boundReopen.has(button)) continue
-      boundReopen.add(button)
-      button.addEventListener(
-        'click',
-        (event) => {
-          event.preventDefault()
-          event.stopPropagation()
-          const stored = findDraftNear(button) ?? latestStoredDraft()
-          if (stored === undefined) {
-            showDraftPanel(clientText('draftPanelTitle'), clientText('noDraft'))
-            return
-          }
-          showDraftPanel(stored.injected ? clientText('markerInjected') : clientText('markerUi'), stored.draft)
-        },
-        true,
-      )
-    }
-  }
-
-  /* 扫描所有受管卡片: 切换警示样式,并确保所属会话已订阅 */
+  /* 扫描所有受管卡片: 记录作答、切换警示样式,并确保所属会话已订阅 */
   const scan = (): void => {
     if (!options.cardEnhancements) return
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
@@ -580,19 +417,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
       applyWarning(element, options.warningSeconds)
       renameTakeTimeControl(element, options.infiniteWait)
       hideHostControls(element)
-      if (identity !== undefined) {
-        if (timedOut.has(identity.callId)) lockCard(element)
-        if (options.infiniteWait) {
-          watchInfiniteControl(element, identity, boundButtons, () => {
-            infiniteCards.add(identity.callId)
-            reportInfiniteWait(identity)
-          })
-        }
-        ensureSubscription(identity.sessionId)
-      }
+      if (identity === undefined) continue
+      const answer = readAnswer(element)
+      if (hasAnswer(answer)) lastAnswers.set(identity.callId, answer)
+      if (timedOut.has(identity.callId)) lockCard(element)
+      ensureSubscription(identity.sessionId)
     }
-    decorateReplyBubbles()
-    decorateAskReopenButtons()
   }
 
   const observer = new MutationObserver(scan)
@@ -603,6 +433,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
   return () => {
     observer.disconnect()
     window.clearInterval(timer)
+    document.removeEventListener('click', onDocumentClick, true)
     for (const off of subscriptions.values()) off()
     subscriptions.clear()
   }

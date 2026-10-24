@@ -18,18 +18,19 @@ A plugin for dsh: once ask_user_question times out, the content you entered will
 - Visible timeout: the question card shows the remaining wait time and counts down
 - Near-timeout warning: the last seconds (default 5) flash in red
 - Timeout fallback: no waiting question box is left behind; the typed draft is handled by the fallback scope
-- Context injection: when the fallback scope includes the context, the entered content is submitted at timeout through the host's original submit flow; when that is unavailable it falls back to a late reply, and the model decides whether to ask again or skip the questions
+- Context injection: when the fallback scope includes the context, the selected options and the typed content are sent at timeout through the host's official `userQuestions.answer` channel, which steers the reply into the conversation as a user message; the model decides whether to ask again or skip the questions
+- Context rendering stays native: the injected content is not rendered by this plugin, the original tool result shows it in the transcript and the bubble keeps the host's own expand behavior
 - Card adaptation: rewrites the countdown to "Timeout in Xs", renames the "Take time" control to "Wait indefinitely", and hides the card's collapse/expand toggle
+- Selection highlight: a chosen single-choice option paints its index marker in the same solid fill the multi-select checkbox uses
 - State sync: clicking "Wait indefinitely" reports the state to the host, which keeps blocking instead of returning pending
-- Read-only history marker: a timed-out question shows "Timed out · injected into context" (or "Timed out · draft kept" in ui mode); clicking it shows the draft read-only, stored in browser local storage so it survives restarts
-- Configurable scope: collapse the box and keep the draft in the UI, send the draft into the context, or both
+- Configurable scope: collapse the box and keep the draft in the UI, send it into the context, or neither
 
 ## How it works
 
 - The host asks questions in blocking mode, so a question never times out. This plugin registers an `ask_user_question` of its own in each agent scope and shadows the host tool by scope proximity, so no preset edit is needed
 - The plugin enforces the deadline itself: the host card suspends its own timer while a client holds or starts editing the answer, so the plugin races the same duration and always returns pending at expiry
 - The tool uses the host timed wait: the card countdown, the freeze while the user focuses or edits, and the answerable question after a timeout all come from the host UI
-- A client adapter reads the countdown text, adds the red warning in the last seconds, and after a timeout collapses the question box (ui) or sends the draft back through the host late-reply channel (context and both)
+- A client adapter reads the countdown text, adds the red warning in the last seconds, and after a timeout collapses the question box (ui) or sends the selected options and typed content back through `userQuestions.answer` (context and both)
 
 ## Compatibility
 

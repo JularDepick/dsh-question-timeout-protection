@@ -107,11 +107,16 @@ export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
 /** 注入闪烁样式所用 style 元素的 id */
 export const COUNTDOWN_STYLE_ID = 'dqtp-countdown-warning-style'
 
-/** 倒计时文案的解析规则(宿主原文与插件改名后的文案, 中文与英文) */
-export const COUNTDOWN_PATTERNS: readonly RegExp[] = [/(\d+)\s*秒后(?:继续工作|超时)/, /(?:Continuing in|Timeout in) (\d+)s/]
-
-/** 宿主倒计时暂停文案的解析规则(中文与英文两套) */
-export const COUNTDOWN_PAUSED_PATTERNS: readonly RegExp[] = [/(\d+)\s*秒后继续/, /Paused · (\d+)s remaining/]
+/**
+ * 倒计时文案的解析规则: 运行态与暂停态并列, 中文与英文并列。
+ * 宿主在用户交互(选中选项等)后会切到暂停态文案, 两套都要能读出剩余秒数。
+ */
+export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
+  /(\d+)\s*秒后(?:继续工作|超时|继续)/,
+  /剩余\s*(\d+)\s*秒/,
+  /(?:Continuing in|Timeout in) (\d+)s/,
+  /Paused · (\d+)s remaining/,
+]
 
 /** 宿主「慢慢回答」控件的文案到「无限等待」的映射(中文与英文) */
 export const TAKE_TIME_LABELS: Readonly<Record<string, string>> = {
@@ -142,24 +147,6 @@ export const SYNC_PORT = 47831
 /** 客户端状态同步端点路径 */
 export const SYNC_PATH = '/question-timeout-protection/state'
 
-/** 历史记录里「可重新回答」按钮的文案(中文与英文) */
-export const REPLY_LABEL_TEXTS: readonly string[] = [
-  '回答先前等待中的问题',
-  'Answer a previously pending question',
-]
-
-/** 超时并已注入上下文后, 历史记录里显示的只读标记 */
-export const TIMED_OUT_INJECTED_MARKER = '回答超时·已注入上下文'
-
-/** ui 模式超时后, 历史记录里显示草稿已保留的只读标记 */
-export const TIMED_OUT_UI_MARKER = '回答超时·草稿已保留'
-
-/** 历史草稿在浏览器本地存储中的键前缀 */
-export const DRAFT_STORAGE_PREFIX = 'dqtp:draft:'
-
-/** 草稿查看面板的 DOM id */
-export const DRAFT_PANEL_ID = 'dqtp-draft-panel'
-
 /** 宿主卡片提交按钮文案(中文与英文) */
 export const SUBMIT_TEXTS: readonly string[] = ['提交', 'Submit']
 
@@ -169,11 +156,4 @@ export const NEXT_QUESTION_TEXTS: readonly string[] = ['下一题', 'Next']
 /** 宿主卡片「跳过」按钮文案(中文与英文) */
 export const SKIP_QUESTION_TEXTS: readonly string[] = ['跳过', 'Skip']
 
-/** 工具调用行「回答」按钮的文案(中文与英文) */
-export const ASK_REOPEN_TEXTS: readonly string[] = ['回答', 'Answer']
 
-/** 工具调用行里超时问题仍可回答的状态文案(中文与英文) */
-export const ASK_PENDING_TEXTS: readonly string[] = ['已继续工作，仍可回答', 'continued; answer still available']
-
-/** 超时且没有草稿时的只读标记 */
-export const TIMED_OUT_MARKER = '回答超时'
