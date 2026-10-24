@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config } from './config'
 import { PLUGIN_NAME } from './constants'
 import { QuestionTimeoutService } from './question/service'
+import { startQuestionSync, stopQuestionSync } from './sync/server'
 
 export const name = PLUGIN_NAME
 
@@ -24,7 +25,9 @@ export type { FallbackMode } from './constants'
 export function apply(ctx: Context, config: Config): void {
   const service = new QuestionTimeoutService(ctx, config)
   service.start()
+  startQuestionSync()
   ctx.effect(() => () => {
     service.dispose()
+    stopQuestionSync()
   })
 }

@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { Config } from '../config'
+import { clearInfiniteWait, isInfiniteWait } from '../sync/server'
 import {
   ASK_USER_TOOL_NAME,
   MAX_TIMEOUT_SECONDS,
@@ -200,24 +201,51 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         }
       }
       if (exec.agent === undefined) throw new Error('timed questions require a live agent')
-      const result = await ctx.userQuestions.askTimed(
+      const timeoutMs = timeoutSeconds * 1000
+      const wait = ctx.userQuestions.askTimed(
         {
           questions,
           agent: exec.agent,
           signal: exec.signal,
         },
         exec.callId,
-        timeoutSeconds * 1000,
+        timeoutMs,
       )
-      if ('pending' in result) {
-        return { pending: true as const, callId: result.callId, message: TIMEOUT_PENDING_NOTICE }
-      }
-      return {
+      /*
+       * 宿主在客户端接管等待后会暂停自己的定时器, 正在编辑的回答还会让卡片取消倒计时;
+       * 这里用插件自己的计时器与宿主等待赛跑, 保证到期一定返回 pending 并进入兜底流程。
+       */
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const expired = new Promise<{ pending: true; callId: string }>((resolve) => {
+        timer = setTimeout(() => resolve({ pending: true, callId: exec.callId }), timeoutMs)
+      })
+      const toAnswers = (result: { answers: ReadonlyArray<{ id: string; selected: readonly string[]; custom?: string }> }) => ({
         answers: result.answers.map((answer) => ({
           id: answer.id,
           selected: [...answer.selected],
           ...(answer.custom === undefined ? {} : { custom: answer.custom }),
         })),
+      })
+      try {
+        const result = await Promise.race([wait, expired])
+        if ('pending' in result) {
+          /*
+           * 客户端已点击「无限等待」时, 状态同步通道会先登记该调用;
+           * 此时不返回 pending, 继续等待用户提交, 模型工作被阻塞。
+           */
+          if (isInfiniteWait(exec.callId)) {
+            const settled = await wait
+            if ('pending' in settled) {
+              return { pending: true as const, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }
+            }
+            return toAnswers(settled)
+          }
+          return { pending: true as const, callId: result.callId, message: TIMEOUT_PENDING_NOTICE }
+        }
+        return toAnswers(result)
+      } finally {
+        clearInfiniteWait(exec.callId)
+        if (timer !== undefined) clearTimeout(timer)
       }
     },
   })

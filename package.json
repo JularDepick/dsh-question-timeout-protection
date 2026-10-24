@@ -27,6 +27,7 @@
   },
   "files": [
     "dist",
+    "COPYRIGHT",
     "cordis.patch.yml",
     "src/translation/*.ini",
     "src/translation/.example_zh-CN.ini",
@@ -35,6 +36,9 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
+    "pack:release": "tsdown && pnpm pack --ignore-scripts && node scripts/pack-release.mjs --strict",
+    "prepack": "tsdown",
+    "postpack": "node scripts/pack-release.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

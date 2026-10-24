@@ -61,16 +61,16 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
 /**
  * 超时后随 pending 结果返回给模型的说明。
  * 语义要点: 这是 pending 而不是跳过;问题仍可回答;随后可能收到用户在超时前
- * 已输入的草稿,应按草稿重新提问而不是当作最终答复。
+ * 已输入的草稿,由模型自行决定是否重新提问或暂时跳过。
  */
 export const TIMEOUT_PENDING_NOTICE =
-  'The question wait expired before an answer batch arrived. This is pending, not a skipped answer: the questions remain answerable and the user may still reply. If a later user message carries text the user had typed before the wait expired, treat that text as the input to ask again with, not as a final answer.'
+  'The user did not answer before the wait expired. This is pending, not a skipped answer: the user may still reply. If a later user message carries the content the user had entered before the timeout, decide yourself whether to ask again or to skip these questions for now.'
 
 /** 超时草稿注入消息的前缀(客户端拼装后经晚回复通道送入上下文) */
-export const DRAFT_INJECTION_HEADER = '提问等待已超时,以下是我在超时前已经输入但尚未提交的内容:'
+export const DRAFT_INJECTION_HEADER = '用户回答超时,超时后已输入的内容为如下:'
 
-/** 超时草稿注入消息的后缀,提示模型按草稿重新提问 */
-export const DRAFT_INJECTION_FOOTER = '这不是我对提问的最终答复,请根据以上内容重新向我提问。'
+/** 超时草稿注入消息的后缀,把是否重新提问或跳过的决定权交给模型 */
+export const DRAFT_INJECTION_FOOTER = '请自行决定是否重新提问或暂时跳过相关问答'
 
 /** 是否把超时草稿注入对话上下文 */
 export function injectsContext(mode: FallbackMode): boolean {
@@ -89,8 +89,55 @@ export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
 /** 注入闪烁样式所用 style 元素的 id */
 export const COUNTDOWN_STYLE_ID = 'dqtp-countdown-warning-style'
 
-/** 宿主倒计时文案的解析规则(中文与英文两套) */
-export const COUNTDOWN_PATTERNS: readonly RegExp[] = [/(\d+)\s*秒后继续工作/, /Continuing in (\d+)s/]
+/** 倒计时文案的解析规则(宿主原文与插件改名后的文案, 中文与英文) */
+export const COUNTDOWN_PATTERNS: readonly RegExp[] = [/(\d+)\s*秒后(?:继续工作|超时)/, /(?:Continuing in|Timeout in) (\d+)s/]
 
 /** 宿主倒计时暂停文案的解析规则(中文与英文两套) */
 export const COUNTDOWN_PAUSED_PATTERNS: readonly RegExp[] = [/(\d+)\s*秒后继续/, /Paused · (\d+)s remaining/]
+
+/** 宿主「慢慢回答」控件的文案到「无限等待」的映射(中文与英文) */
+export const TAKE_TIME_LABELS: Readonly<Record<string, string>> = {
+  '慢慢回答': '无限等待',
+  'Take time': 'Wait indefinitely',
+}
+
+/** 宿主问答卡片收起/展开控件的文案(中文与英文), 用于隐藏该控件 */
+export const COLLAPSE_CONTROL_LABELS: readonly string[] = [
+  '收起问题卡片',
+  '展开问题卡片',
+  'Collapse the question card',
+  'Expand the question card',
+]
+
+/** 宿主的「收起问题面板」按钮文案(中文与英文) */
+export const CLOSE_PANEL_LABELS: readonly string[] = [
+  '收起问题面板，可从工具调用重新打开',
+  'Close the panel — reopen it from the tool call',
+]
+
+/** 隐藏宿主控件时附加的类名 */
+export const HIDDEN_CONTROL_CLASS = 'dqtp-host-control-hidden'
+
+/** 客户端状态同步端点端口(只监听回环地址) */
+export const SYNC_PORT = 47831
+
+/** 客户端状态同步端点路径 */
+export const SYNC_PATH = '/question-timeout-protection/state'
+
+/** 历史记录里「可重新回答」按钮的文案(中文与英文) */
+export const REPLY_LABEL_TEXTS: readonly string[] = [
+  '回答先前等待中的问题',
+  'Answer a previously pending question',
+]
+
+/** 超时并已注入上下文后, 历史记录里显示的只读标记 */
+export const TIMED_OUT_INJECTED_MARKER = '回答超时·已注入上下文'
+
+/** ui 模式超时后, 历史记录里显示草稿已保留的只读标记 */
+export const TIMED_OUT_UI_MARKER = '回答超时·草稿已保留'
+
+/** 历史草稿在浏览器本地存储中的键前缀 */
+export const DRAFT_STORAGE_PREFIX = 'dqtp:draft:'
+
+/** 草稿查看面板的 DOM id */
+export const DRAFT_PANEL_ID = 'dqtp-draft-panel'
