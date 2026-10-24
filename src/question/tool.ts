@@ -10,9 +10,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { Config } from '../config'
+import { configValue } from '../config-value'
 import { clearInfiniteWait, isInfiniteWait } from '../sync/server'
 import {
   ASK_USER_TOOL_NAME,
+  DEFAULT_TIMEOUT_SECONDS,
   MAX_TIMEOUT_SECONDS,
   MIN_TIMEOUT_SECONDS,
   TIMED_TIMEOUT_PARAMETER,
@@ -109,7 +111,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       },
       [TIMED_TIMEOUT_PARAMETER]: {
         type: 'integer',
-        description: `Wait seconds for the entire question batch (default ${String(config.timeoutSeconds)}); omit unless the user specifies a duration. Use -1 only when an answer is required before proceeding.`,
+        description: `Wait seconds for the entire question batch (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)}); omit unless the user specifies a duration. Use -1 only when an answer is required before proceeding.`,
       },
     },
     output: {
@@ -174,7 +176,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
-      const timeoutSeconds = resolveTimeout(args.timeout, config.timeoutSeconds)
+      const timeoutSeconds = resolveTimeout(args.timeout, configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)
+      const infiniteEnabled = configValue(config.infiniteWait) ?? true
       assertUniqueQuestionIds(args.questions)
       const questions = args.questions.map((question) => ({
         id: question.id,
@@ -233,7 +236,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            * 客户端已点击「无限等待」时, 状态同步通道会先登记该调用;
            * 此时不返回 pending, 继续等待用户提交, 模型工作被阻塞。
            */
-          if (isInfiniteWait(exec.callId)) {
+          if (infiniteEnabled && isInfiniteWait(exec.callId)) {
             const settled = await wait
             if ('pending' in settled) {
               return { pending: true as const, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }

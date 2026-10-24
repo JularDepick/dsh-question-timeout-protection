@@ -51,9 +51,12 @@ dsh plugin --profile <profile> add release/dsh-question-timeout-protection-<版�
 
 | 配置项 | 取值 | 默认值 | 说明 |
 |:---:|:---:|:---:|:---|
-| `fallback` | `ui` / `context` / `both` | `ui` | 超时草稿的处理范围: `ui` 只收起问答框,草稿留在该提问的浏览器草稿里,可从对话历史重新打开; `context` 与 `both` 把草稿作为晚回复送进上下文 |
+| `fallback` | `ui` / `context` / `both` | `ui` | 超时草稿的处理范围: `ui` 走宿主原版超时,草稿存到本地并可在历史里查看; `context` 与 `both` 把草稿按原版提交送进上下文 |
 | `warningSeconds` | 数字 | 5 | 进入红字闪烁警示的剩余秒数 |
 | `timeoutSeconds` | 数字 | 120 | 提问等待时长(秒);工具调用也可用 `timeout` 参数单次覆盖 |
+| `cardEnhancements` | 布尔 | `true` | 卡片增强: 倒计时文案、隐藏收起/展开、超时锁定与历史只读标记 |
+| `infiniteWait` | 布尔 | `true` | 提供「无限等待」按钮与点击后的阻塞行为 |
+| `draftFallback` | 布尔 | `true` | 超时后保存草稿并按兜底范围处理 |
 
 > `fallback` 为 `ui` 时草稿只留在该提问的浏览器草稿里,不进入模型上下文;`context` 与 `both` 模式下,超时后已输入的内容会作为一条消息送回模型,由模型自行决定是否重新提问或暂时跳过相关问答。
 

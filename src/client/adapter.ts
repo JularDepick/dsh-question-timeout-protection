@@ -41,6 +41,12 @@ export interface AdapterOptions {
   warningSeconds: number
   /** 兜底范围 */
   fallback: FallbackMode
+  /** 是否启用卡片增强 */
+  cardEnhancements: boolean
+  /** 是否启用「无限等待」 */
+  infiniteWait: boolean
+  /** 是否启用超时草稿兜底 */
+  draftFallback: boolean
 }
 
 /** 一条晚回复答案 */
@@ -172,12 +178,16 @@ function hideHostControls(card: HTMLElement): void {
   }
 }
 
-/* 把宿主的「慢慢回答」按钮改名为「无限等待」 */
-function renameTakeTimeControl(card: HTMLElement): void {
+/* 把宿主的「慢慢回答」按钮改名为「无限等待」, 关闭该功能时隐藏按钮 */
+function renameTakeTimeControl(card: HTMLElement, enabled: boolean): void {
   for (const element of Array.from(card.querySelectorAll('button'))) {
     const label = element.textContent?.trim() ?? ''
     const renamed = TAKE_TIME_LABELS[label]
     if (renamed === undefined) continue
+    if (!enabled) {
+      element.classList.add(HIDDEN_CONTROL_CLASS)
+      continue
+    }
     const first = element.firstChild
     if (first !== null && first.nodeType === Node.TEXT_NODE && element.childNodes.length === 1) {
       if (first.nodeValue !== renamed) first.nodeValue = renamed
@@ -384,6 +394,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
    */
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
     if (handled.has(row.callId)) return
+    if (!options.draftFallback) return
     const card = findCard(identity)
     if (card === undefined) return
     const draft = readDraft(card)
@@ -537,19 +548,22 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
 
   /* 扫描所有受管卡片: 切换警示样式,并确保所属会话已订阅 */
   const scan = (): void => {
+    if (!options.cardEnhancements) return
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
       if (!(element instanceof HTMLElement)) continue
       const identity = parseCardKey(element.getAttribute('data-question-key'))
       applyCountdown(element, identity)
       applyWarning(element, options.warningSeconds)
-      renameTakeTimeControl(element)
+      renameTakeTimeControl(element, options.infiniteWait)
       hideHostControls(element)
       if (identity !== undefined) {
         if (timedOut.has(identity.callId)) lockCard(element)
-        watchInfiniteControl(element, identity, boundButtons, () => {
-          infiniteCards.add(identity.callId)
-          reportInfiniteWait(identity)
-        })
+        if (options.infiniteWait) {
+          watchInfiniteControl(element, identity, boundButtons, () => {
+            infiniteCards.add(identity.callId)
+            reportInfiniteWait(identity)
+          })
+        }
         ensureSubscription(identity.sessionId)
       }
     }

@@ -7,33 +7,59 @@
  */
 
 import type { Config as ConfigModel } from '../config'
-import { DEFAULT_FALLBACK_MODE, DEFAULT_TIMEOUT_SECONDS, DEFAULT_WARNING_SECONDS } from '../constants'
+import { configValue } from '../config-value'
+import {
+  DEFAULT_CARD_ENHANCEMENTS,
+  DEFAULT_DRAFT_FALLBACK,
+  DEFAULT_FALLBACK_MODE,
+  DEFAULT_INFINITE_WAIT,
+  DEFAULT_WARNING_SECONDS,
+} from '../constants'
 import { installQuestionTimeoutAdapter } from './adapter'
-import type { AdapterContext } from './adapter'
+import type { AdapterContext, AdapterOptions } from './adapter'
+import { registerSettingsPage } from './settings'
+import type { SettingsContext } from './settings'
 
 export const name = 'dsh-question-timeout-protection/client'
 
 /** 需要的客户端服务: 会话绑定(提问投影)与提问晚回复通道 */
 export const inject = ['sessions', 'remote.userQuestions']
 
-/* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子 */
-type ClientContext = AdapterContext & {
+/* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子与配置页服务 */
+type ClientContext = AdapterContext & SettingsContext & {
   effect?: (install: () => () => void) => void
 }
 
-/* 未收到配置时的默认值,与插件 Config schema 的默认值保持一致 */
-const DEFAULT_CONFIG: ConfigModel = {
-  fallback: DEFAULT_FALLBACK_MODE,
-  warningSeconds: DEFAULT_WARNING_SECONDS,
-  timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+/* 把配置归一成适配器选项, 缺失时使用 schema 默认值 */
+function resolveOptions(config: Partial<ConfigModel> | undefined): AdapterOptions {
+  return {
+    fallback: configValue(config?.fallback) ?? DEFAULT_FALLBACK_MODE,
+    warningSeconds: configValue(config?.warningSeconds) ?? DEFAULT_WARNING_SECONDS,
+    cardEnhancements: configValue(config?.cardEnhancements) ?? DEFAULT_CARD_ENHANCEMENTS,
+    infiniteWait: configValue(config?.infiniteWait) ?? DEFAULT_INFINITE_WAIT,
+    draftFallback: configValue(config?.draftFallback) ?? DEFAULT_DRAFT_FALLBACK,
+  }
 }
 
-export function apply(rawCtx: unknown, config: ConfigModel = DEFAULT_CONFIG): void {
+export function apply(rawCtx: unknown, config?: Partial<ConfigModel>): void {
   const ctx = rawCtx as ClientContext
-  const dispose = installQuestionTimeoutAdapter(ctx, {
-    warningSeconds: config.warningSeconds,
-    fallback: config.fallback,
-  })
-  if (typeof ctx.effect === 'function') ctx.effect(() => dispose)
-  else dispose()
+  let disposeAdapter: () => void = () => {}
+  let disposeSettings: () => void = () => {}
+  try {
+    disposeAdapter = installQuestionTimeoutAdapter(ctx, resolveOptions(config))
+  } catch (error) {
+    console.error('[question-timeout-protection] 卡片适配器安装失败', error)
+  }
+  try {
+    disposeSettings = registerSettingsPage(ctx)
+  } catch (error) {
+    console.error('[question-timeout-protection] 配置页注册失败', error)
+  }
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(() => disposeAdapter)
+    ctx.effect(() => disposeSettings)
+  } else {
+    disposeAdapter()
+    disposeSettings()
+  }
 }

@@ -42,6 +42,24 @@ export const MAX_WARNING_SECONDS = 60
 /** 提问等待时长默认值(秒);仅在本插件接管提问等待时生效 */
 export const DEFAULT_TIMEOUT_SECONDS = 120
 
+/** 默认启用卡片增强(倒计时文案、隐藏收起/展开、超时锁定等) */
+export const DEFAULT_CARD_ENHANCEMENTS = true
+
+/** 默认启用「无限等待」与点击后的阻塞行为 */
+export const DEFAULT_INFINITE_WAIT = true
+
+/** 默认启用超时草稿兜底 */
+export const DEFAULT_DRAFT_FALLBACK = true
+
+/** 插件配置页的插槽名 */
+export const SETTINGS_SLOT = 'plugins.row.config'
+
+/** 插件配置页的条目 id */
+export const SETTINGS_ENTRY_ID = 'dsh-question-timeout-protection#question-timeout-protection'
+
+/** 插件配置页的文案命名空间 */
+export const SETTINGS_LOCALE = 'questionTimeoutProtection'
+
 /** 提问等待时长下限(秒) */
 export const MIN_TIMEOUT_SECONDS = 1
 

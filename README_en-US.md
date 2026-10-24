@@ -51,7 +51,10 @@ dsh plugin --profile <profile> add release/dsh-question-timeout-protection-<vers
 
 | Option | Values | Default | Description |
 |:---:|:---:|:---:|:---|
-| `fallback` | `ui` / `context` / `both` | `ui` | How the timeout draft is handled: `ui` only collapses the box and keeps the draft in that question's browser draft, reopenable from the conversation history; `context` and `both` send the draft into the context as a late reply |
+| `fallback` | `ui` / `context` / `both` | `ui` | How the timeout draft is handled: `ui` uses the host timeout and keeps the draft locally for later viewing; `context` and `both` submit the draft through the original flow |
+| `cardEnhancements` | boolean | `true` | Card enhancements: countdown wording, hidden collapse toggle, timeout locking and read-only history markers |
+| `infiniteWait` | boolean | `true` | The "Wait indefinitely" control and the blocking it triggers |
+| `draftFallback` | boolean | `true` | Keep the draft at timeout and handle it by the fallback scope |
 | `warningSeconds` | number | 5 | Seconds remaining when the red warning starts |
 | `timeoutSeconds` | number | 120 | Question wait time in seconds; a tool call may override it with `timeout` |
 
