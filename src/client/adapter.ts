@@ -34,6 +34,7 @@ import {
   injectsContext,
 } from '../constants'
 import type { FallbackMode } from '../constants'
+import { clientText } from './i18n'
 
 /** 适配器需要的插件配置 */
 export interface AdapterOptions {
@@ -246,13 +247,14 @@ interface StoredDraft {
   draft: string
   sessionId: string
   injected: boolean
+  at?: number
 }
 
 /* 把超时草稿写入浏览器本地存储, 重启后仍可查看 */
 function storeDraft(callId: string, sessionId: string, injected: boolean, draft: string): void {
   if (draft === '') return
   try {
-    window.localStorage.setItem(`${DRAFT_STORAGE_PREFIX}${callId}`, JSON.stringify({ draft, sessionId, injected }))
+    window.localStorage.setItem(`${DRAFT_STORAGE_PREFIX}${callId}`, JSON.stringify({ draft, sessionId, injected, at: Date.now() }))
   } catch {
     /* 隐私模式等场景写入失败时忽略 */
   }
@@ -269,6 +271,7 @@ function readStoredDraft(callId: string): StoredDraft | undefined {
       draft: parsed.draft,
       sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : '',
       injected: parsed.injected === true,
+      at: typeof parsed.at === 'number' ? parsed.at : 0,
     }
   } catch {
     return undefined
@@ -305,6 +308,23 @@ async function submitViaCard(card: HTMLElement, message: string): Promise<boolea
   return false
 }
 
+/* 找到最近的超时草稿, 供无法从 DOM 关联 callId 时兜底 */
+function latestStoredDraft(): StoredDraft | undefined {
+  try {
+    let latest: StoredDraft | undefined
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index)
+      if (key === null || !key.startsWith(DRAFT_STORAGE_PREFIX)) continue
+      const stored = readStoredDraft(key.slice(DRAFT_STORAGE_PREFIX.length))
+      if (stored === undefined) continue
+      if (latest === undefined || (stored.at ?? 0) > (latest.at ?? 0)) latest = stored
+    }
+    return latest
+  } catch {
+    return undefined
+  }
+}
+
 /* 从元素所在行里找已保存的草稿 */
 function findDraftNear(element: Element): StoredDraft | undefined {
   let node: Element | null = element
@@ -336,7 +356,7 @@ function showDraftPanel(label: string, draft: string): void {
   body.textContent = draft
   const close = document.createElement('button')
   close.type = 'button'
-  close.textContent = '关闭'
+  close.textContent = clientText('close')
   close.style.cssText = 'margin-top:12px;padding:6px 14px;border-radius:8px;border:1px solid #d0d7de;background:#f6f8fa;cursor:pointer;'
   close.addEventListener('click', () => panel.remove())
   card.append(title, body, close)
@@ -475,7 +495,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
       if (callId === null) continue
       const stored = readStoredDraft(callId)
       if (stored === undefined) continue
-      const marker = stored.injected ? TIMED_OUT_INJECTED_MARKER : TIMED_OUT_UI_MARKER
+      const marker = stored.injected ? clientText('markerInjected') : clientText('markerUi')
       const labelNode = Array.from(element.querySelectorAll('span')).find((node) => /(^|\s)[\w-]*_label(\s|$)/.test(node.className))
       if (labelNode !== undefined && labelNode.textContent !== marker) labelNode.textContent = marker
       if (decoratedBubbles.has(element)) continue
@@ -529,8 +549,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
         node = node.parentElement
       }
       if (!pending) continue
-      const stored = findDraftNear(button)
-      const marker = stored === undefined ? TIMED_OUT_MARKER : stored.injected ? TIMED_OUT_INJECTED_MARKER : TIMED_OUT_UI_MARKER
+      const marker = clientText('markerTimedOut')
       if (button.textContent !== marker) button.textContent = marker
       if (boundReopen.has(button)) continue
       boundReopen.add(button)
@@ -539,7 +558,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
         (event) => {
           event.preventDefault()
           event.stopPropagation()
-          if (stored !== undefined) showDraftPanel(marker, stored.draft)
+          const stored = findDraftNear(button) ?? latestStoredDraft()
+          if (stored === undefined) {
+            showDraftPanel(clientText('draftPanelTitle'), clientText('noDraft'))
+            return
+          }
+          showDraftPanel(stored.injected ? clientText('markerInjected') : clientText('markerUi'), stored.draft)
         },
         true,
       )

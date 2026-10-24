@@ -6,7 +6,8 @@
  */
 
 import { useEffect, useState } from 'react'
-import { SETTINGS_ENTRY_ID, SETTINGS_LOCALE, SETTINGS_SLOT } from '../constants'
+import { PLUGIN_NAME, SETTINGS_ENTRY_ID, SETTINGS_LOCALE, SETTINGS_SLOT } from '../constants'
+import { clientText, SETTINGS_DICTIONARY } from './i18n'
 
 /* 表单里的普通值(服务端已解析 volatile) */
 interface SettingsValues {
@@ -36,20 +37,23 @@ interface FormsLike {
   get<T>(entryId: string): FormLike<T>
 }
 
+/* 文案服务的注册接口 */
+interface LocaleLike {
+  register(id: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void
+}
+
 /** 配置页的客户端上下文 */
 export interface SettingsContext {
   slots?: {
-    inject(name: string, register: () => () => void): (() => void) | undefined
+    inject(name: string, register: () => (() => void) | Iterable<() => void>): (() => void) | undefined
     register(options: { name: string; key?: string; locale?: string }, component: (props: { view?: string }) => unknown): () => void
   }
   configForms?: FormsLike
+  locale?: LocaleLike
 }
 
-const FALLBACK_OPTIONS: ReadonlyArray<{ value: SettingsValues['fallback']; label: string }> = [
-  { value: 'ui', label: '仅界面保留草稿' },
-  { value: 'context', label: '注入到上下文' },
-  { value: 'both', label: '界面与上下文都保留' },
-]
+/* 配置页注册的候选 key: 包名#行 id 与包名 */
+const SETTINGS_KEYS: readonly string[] = [SETTINGS_ENTRY_ID, PLUGIN_NAME]
 
 /* 配置表单页面 */
 function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
@@ -63,16 +67,22 @@ function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
     void form.set(field, next).catch(() => {})
   }
 
+  const fallbackOptions: ReadonlyArray<{ value: SettingsValues['fallback']; label: string }> = [
+    { value: 'ui', label: clientText('fallbackUi') },
+    { value: 'context', label: clientText('fallbackContext') },
+    { value: 'both', label: clientText('fallbackBoth') },
+  ]
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 520 }}>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span>超时兜底范围</span>
+        <span>{clientText('fallbackLabel')}</span>
         <select
           disabled={disabled}
           value={String(value.fallback ?? 'ui')}
           onChange={(event) => setField('fallback', event.target.value)}
         >
-          {FALLBACK_OPTIONS.map((option) => (
+          {fallbackOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
@@ -80,7 +90,7 @@ function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
         </select>
       </label>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span>警示秒数(最后多少秒红字闪烁)</span>
+        <span>{clientText('warningLabel')}</span>
         <input
           type="number"
           min={1}
@@ -91,7 +101,7 @@ function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
         />
       </label>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span>提问等待时长(秒)</span>
+        <span>{clientText('timeoutLabel')}</span>
         <input
           type="number"
           min={1}
@@ -108,7 +118,7 @@ function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
           checked={value.cardEnhancements ?? true}
           onChange={(event) => setField('cardEnhancements', event.target.checked)}
         />
-        <span>卡片增强(倒计时文案、隐藏收起/展开、超时锁定)</span>
+        <span>{clientText('cardEnhancementsLabel')}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input
@@ -117,7 +127,7 @@ function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
           checked={value.infiniteWait ?? true}
           onChange={(event) => setField('infiniteWait', event.target.checked)}
         />
-        <span>无限等待按钮与点击后的阻塞</span>
+        <span>{clientText('infiniteWaitLabel')}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input
@@ -126,9 +136,9 @@ function SettingsPage({ forms }: { forms: FormsLike }): JSX.Element {
           checked={value.draftFallback ?? true}
           onChange={(event) => setField('draftFallback', event.target.checked)}
         />
-        <span>超时草稿兜底(保存草稿并按兜底范围处理)</span>
+        <span>{clientText('draftFallbackLabel')}</span>
       </label>
-      {snapshot.status === 'unavailable' ? <span style={{ color: '#b42318' }}>当前部署未暴露该配置</span> : null}
+      {snapshot.status === 'unavailable' ? <span style={{ color: '#b42318' }}>{clientText('unavailable')}</span> : null}
     </div>
   )
 }
@@ -159,16 +169,30 @@ export function registerSettingsPage(ctx: SettingsContext): () => void {
   const forms = readService<NonNullable<SettingsContext['configForms']>>(ctx, 'configForms')
   if (slots === undefined || forms === undefined) return () => {}
   if (typeof slots.inject !== 'function' || typeof slots.register !== 'function') return () => {}
+  const locale = readService<LocaleLike>(ctx, 'locale')
+  const disposers: Array<() => void> = []
   try {
-    const register = (): (() => void) =>
-      slots.register(
-        { name: SETTINGS_SLOT, key: SETTINGS_ENTRY_ID },
-        (props) => (props.view === 'summary' ? '提问超时保护' : <SettingsPage forms={forms} />),
-      )
+    if (locale !== undefined && typeof locale.register === 'function') {
+      const off = locale.register(SETTINGS_LOCALE, SETTINGS_DICTIONARY)
+      if (typeof off === 'function') disposers.push(off)
+    }
+  } catch {
+    /* 文案注册失败不影响页面 */
+  }
+  try {
+    const register = (): Iterable<() => void> =>
+      SETTINGS_KEYS.map((key) =>
+        slots.register(
+          { name: SETTINGS_SLOT, key, locale: SETTINGS_LOCALE },
+          (props) => (props.view === 'summary' ? clientText('settingsSummary') : <SettingsPage forms={forms} />),
+        ),
+      ).filter((off) => typeof off === 'function')
     const off = slots.inject(SETTINGS_SLOT, register)
-    return typeof off === 'function' ? off : () => {}
+    if (typeof off === 'function') disposers.push(off)
   } catch (error) {
     console.error('[question-timeout-protection] 配置页注册失败', error)
-    return () => {}
+  }
+  return () => {
+    for (const dispose of disposers) dispose()
   }
 }

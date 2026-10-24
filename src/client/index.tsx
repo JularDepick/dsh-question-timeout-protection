@@ -22,8 +22,8 @@ import type { SettingsContext } from './settings'
 
 export const name = 'dsh-question-timeout-protection/client'
 
-/** 需要的客户端服务: 会话绑定(提问投影)与提问晚回复通道 */
-export const inject = ['sessions', 'remote.userQuestions']
+/** 需要的客户端服务: 会话绑定、提问晚回复通道、插槽、配置表单与文案 */
+export const inject = ['sessions', 'remote.userQuestions', 'slots', 'configForms', 'locale']
 
 /* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子与配置页服务 */
 type ClientContext = AdapterContext & SettingsContext & {
