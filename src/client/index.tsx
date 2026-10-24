@@ -22,8 +22,12 @@ import type { SettingsContext } from './settings'
 
 export const name = 'dsh-question-timeout-protection/client'
 
-/** 需要的客户端服务: 会话绑定、提问晚回复通道、插槽、配置表单与文案 */
-export const inject = ['sessions', 'remote.userQuestions', 'slots', 'configForms', 'locale']
+/**
+ * 需要的客户端服务: 会话绑定、提问晚回复通道、插槽与文案。
+ * 配置表单由宿主经插槽下发(props.form), 因此不依赖 configForms 服务:
+ * 任一硬注入项缺失都会让整个客户端 apply 不执行, 连卡片适配器一并失效。
+ */
+export const inject = ['sessions', 'remote.userQuestions', 'slots', 'locale']
 
 /* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子与配置页服务 */
 type ClientContext = AdapterContext & SettingsContext & {

@@ -22,6 +22,12 @@ const ZH = {
   cardEnhancementsLabel: '卡片增强(倒计时文案、隐藏收起/展开、超时锁定)',
   infiniteWaitLabel: '无限等待按钮与点击后的阻塞',
   draftFallbackLabel: '超时草稿兜底(保存草稿并按兜底范围处理)',
+  save: '保存',
+  reset: '重置',
+  saving: '保存中',
+  saved: '已保存',
+  rejected: '保存被拒绝, 已重新读取宿主配置',
+  loading: '正在读取配置',
   unavailable: '当前部署未暴露该配置',
 } as const
 
@@ -42,6 +48,12 @@ const EN: Record<keyof typeof ZH, string> = {
   cardEnhancementsLabel: 'Card enhancements (countdown wording, hidden collapse toggle, timeout lock)',
   infiniteWaitLabel: 'Wait-indefinitely control and its blocking behavior',
   draftFallbackLabel: 'Draft fallback at timeout',
+  save: 'Save',
+  reset: 'Reset',
+  saving: 'Saving',
+  saved: 'Saved',
+  rejected: 'The host refused the write and its configuration was reloaded',
+  loading: 'Reading the configuration',
   unavailable: 'This deployment does not expose the setting',
 }
 
