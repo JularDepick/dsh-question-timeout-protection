@@ -2,7 +2,7 @@
  * ask_user_question 工具定义
  *
  * 以同名工具就近遮蔽宿主的阻塞式提问: 本定义走 ctx.userQuestions.askTimed,
- * 前台等待到期后返回 pending 结果,问题仍可回答,模型可以继续独立工作。
+ * 前台等待到期后返回 pending 结果,该次提问随之结束,模型可以继续独立工作。
  * 作者: JularDepick
  */
 
@@ -23,7 +23,7 @@ import {
 
 /* 模型侧工具说明 */
 const TOOL_DESCRIPTION =
-  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: the questions stay answerable and the user may still reply.'
+  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: that question batch is closed and the user cannot answer it any more, so decide yourself whether to ask again.'
 
 /* 模型侧问题数组说明 */
 const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'

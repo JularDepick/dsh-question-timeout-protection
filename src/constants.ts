@@ -42,10 +42,10 @@ export const MAX_WARNING_SECONDS = 60
 /** 提问等待时长默认值(秒);仅在本插件接管提问等待时生效 */
 export const DEFAULT_TIMEOUT_SECONDS = 120
 
-/** 默认启用卡片增强(倒计时文案、隐藏收起/展开、超时锁定等) */
+/** 默认启用卡片增强(倒计时、无限等待按钮、单选底色、提问气泡、超时锁定) */
 export const DEFAULT_CARD_ENHANCEMENTS = true
 
-/** 默认启用「无限等待」与点击后的阻塞行为 */
+/** 默认启用「无限等待」按钮与点击后的暂停行为 */
 export const DEFAULT_INFINITE_WAIT = true
 
 /** 默认启用超时草稿兜底 */
@@ -78,37 +78,58 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
 
 /**
  * 超时后随 pending 结果返回给模型的说明。
- * 语义要点: 这是 pending 而不是跳过;问题仍可回答;随后可能收到用户在超时前
- * 已输入的草稿,由模型自行决定是否重新提问或暂时跳过。
+ * 语义要点: 这是 pending 而不是跳过;该次提问已超时, 用户不能再继续回答;
+ * 随后可能收到一条带超时草稿的用户消息, 由模型自行决定是否重新提问。
  */
 export const TIMEOUT_PENDING_NOTICE =
-  'The user did not answer before the wait expired. This is pending, not a skipped answer: the user may still reply. If a later user message carries the content the user had entered before the timeout, decide yourself whether to ask again or to skip these questions for now.'
+  'The user did not answer before the wait expired. This is pending, not a skipped answer, and this question batch is closed: the user cannot answer it any more. If a later user message carries the draft the user had entered before the timeout, decide yourself whether to ask again or to handle it in another way.'
 
 /** 超时草稿注入消息的前缀(客户端拼装后经晚回复通道送入上下文) */
 export const DRAFT_INJECTION_HEADER = '用户回答超时,超时后已输入的内容为如下:'
 
-/** 超时草稿注入消息的后缀,把是否重新提问或跳过的决定权交给模型 */
-export const DRAFT_INJECTION_FOOTER = '请自行决定是否重新提问或暂时跳过相关问答'
+/** 超时草稿注入消息的后缀,把是否重新提问的决定权交给模型 */
+export const DRAFT_INJECTION_FOOTER =
+  '以上内容只是用户超时时的草稿, 用户并没有正式提交这次回答; 请自行决定是重新提问还是别的处理方式, 插件不代为决定最终决策。'
+
+/** 草稿文本里已选选项行的前缀 */
+export const DRAFT_SELECTED_LABEL_ZH = '已选: '
+export const DRAFT_SELECTED_LABEL_EN = 'Selected: '
+
+/** 草稿文本里自由输入行的前缀 */
+export const DRAFT_CUSTOM_LABEL_ZH = '补充: '
+export const DRAFT_CUSTOM_LABEL_EN = 'Additional: '
 
 /** 是否把超时草稿注入对话上下文 */
 export function injectsContext(mode: FallbackMode): boolean {
   return mode === 'context' || mode === 'both'
 }
 
-/** 宿主提问卡片的容器选择器 */
+/** 宿主提问卡片的容器选择器(容器带 data-question-key) */
 export const QUESTION_CARD_SELECTOR = '[data-question-key]'
 
-/** 宿主提问卡片内等待状态文本所在元素的选择器(类名带构建哈希,按后缀匹配) */
+/** 卡片 key 前缀,宿主形如 question:<sessionId>:<callId> */
+export const QUESTION_CARD_KEY_PREFIX = 'question:'
+
+/** 宿主提问卡片右上角操作区(类名带构建哈希,按后缀匹配) */
+export const HEADER_ACTIONS_SELECTOR = '[class*="_headerActions"]'
+
+/** 宿主提问卡片底部按钮区(提交/下一题/跳过) */
+export const CARD_FOOTER_ACTIONS_SELECTOR = '[class*="_footerActions"]'
+
+/** 宿主提问卡片的选项容器 */
+export const CARD_OPTIONS_SELECTOR = '[class*="_options"]'
+
+/** 宿主提问卡片内的输入控件 */
+export const CARD_INPUT_SELECTOR = 'textarea, input'
+
+/** 卡片内可点击的控件 */
+export const CARD_BUTTON_SELECTOR = 'button'
+
+/** 宿主倒计时与等待状态文本所在元素的选择器(类名带构建哈希,按后缀匹配) */
 export const WAIT_STATUS_SELECTOR = '[class*="_waitStatus"]'
 
-/** 进入警示态时给倒计时文本附加的类名 */
-export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
-
-/** 注入闪烁样式所用 style 元素的 id */
-export const COUNTDOWN_STYLE_ID = 'dqtp-countdown-warning-style'
-
 /**
- * 倒计时文案的解析规则: 运行态与暂停态并列, 中文与英文并列。
+ * 宿主倒计时文案的解析规则: 运行态与暂停态并列, 中文与英文并列。
  * 宿主在用户交互(选中选项等)后会切到暂停态文案, 两套都要能读出剩余秒数。
  */
 export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
@@ -118,11 +139,14 @@ export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
   /Paused · (\d+)s remaining/,
 ]
 
-/** 宿主「慢慢回答」控件的文案到「无限等待」的映射(中文与英文) */
-export const TAKE_TIME_LABELS: Readonly<Record<string, string>> = {
-  '慢慢回答': '无限等待',
-  'Take time': 'Wait indefinitely',
-}
+/** 宿主「会一直等你回答」的等待文案, 中文与英文 */
+export const HELD_PATTERN = /会一直等你回答|Waiting until you answer/
+
+/** 宿主「已继续工作, 仍可回答」的晚回复文案, 中文与英文 */
+export const CONTINUED_PATTERN = /已继续工作|Work continued/
+
+/** 宿主「慢慢回答」控件的文案(中文与英文), 用于隐藏该控件 */
+export const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', 'Take time']
 
 /** 宿主问答卡片收起/展开控件的文案(中文与英文), 用于隐藏该控件 */
 export const COLLAPSE_CONTROL_LABELS: readonly string[] = [
@@ -141,19 +165,120 @@ export const CLOSE_PANEL_LABELS: readonly string[] = [
 /** 隐藏宿主控件时附加的类名 */
 export const HIDDEN_CONTROL_CLASS = 'dqtp-host-control-hidden'
 
+/** 提问工具调用行的选择器(宿主 tool 行根节点) */
+export const ASK_ROW_SELECTOR = 'div[data-tool="ask_user_question"]'
+
+/** 工具调用行的 callId 属性(宿主 ToolCall 包裹层) */
+export const TOOL_CALL_ID_ATTRIBUTE = 'data-chat-call-id'
+
+/** 工具调用行的 callId 选择器 */
+export const TOOL_CALL_ID_SELECTOR = '[data-chat-call-id]'
+
+/** 宿主工具行里打开提问面板的气泡按钮(类名带构建哈希,按后缀匹配) */
+export const PANEL_BUTTON_SELECTOR = 'button[class*="_panelButton"]'
+
+/** 插件自绘倒计时的属性名(值形如 question:<sessionId>:<callId>) */
+export const COUNTDOWN_ATTRIBUTE = 'data-dqtp-countdown'
+
+/** 插件自绘「无限等待」按钮的类名 */
+export const INFINITE_BUTTON_CLASS = 'dqtp-infinite-wait'
+
+/** 插件自绘「提问标识气泡」的类名 */
+export const BUBBLE_BUTTON_CLASS = 'dqtp-question-bubble'
+
+/** 插件自绘「提问标识气泡」的选择器 */
+export const BUBBLE_BUTTON_SELECTOR = 'button.' + BUBBLE_BUTTON_CLASS
+
+/** 「提问标识气泡」的状态属性: open 无草稿 / draft 已记录草稿 */
+export const BUBBLE_STATE_ATTRIBUTE = 'data-dqtp-bubble'
+
+/** 气泡草稿态取值 */
+export const BUBBLE_STATE_DRAFT = 'draft'
+
+/** 气泡普通态取值 */
+export const BUBBLE_STATE_OPEN = 'open'
+
+/** 进入警示态时给倒计时附加的类名 */
+export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
+
+/** 「无限等待」暂停态给倒计时附加的类名 */
+export const COUNTDOWN_PAUSED_CLASS = 'dqtp-countdown-paused'
+
+/** 超时锁定卡片时附加的类名 */
+export const CARD_LOCKED_CLASS = 'dqtp-card-locked'
+
+/** 注入样式所用 style 元素的 id */
+export const COUNTDOWN_STYLE_ID = 'dqtp-countdown-warning-style'
+
+/** 只读草稿面板的元素 id */
+export const DRAFT_PANEL_ID = 'dqtp-draft-panel'
+
 /** 客户端状态同步端点端口(只监听回环地址) */
 export const SYNC_PORT = 47831
 
 /** 客户端状态同步端点路径 */
 export const SYNC_PATH = '/question-timeout-protection/state'
 
-/** 宿主卡片提交按钮文案(中文与英文) */
+/** 卡片底部提交按钮的文案(中文与英文) */
 export const SUBMIT_TEXTS: readonly string[] = ['提交', 'Submit']
 
-/** 宿主卡片「下一题」按钮文案(中文与英文) */
+/** 卡片底部下一题按钮的文案(中文与英文) */
 export const NEXT_QUESTION_TEXTS: readonly string[] = ['下一题', 'Next']
 
-/** 宿主卡片「跳过」按钮文案(中文与英文) */
+/** 卡片底部跳过按钮的文案(中文与英文) */
 export const SKIP_QUESTION_TEXTS: readonly string[] = ['跳过', 'Skip']
 
+/** 倒计时文案模板,{seconds} 由剩余秒数替换 */
+export const COUNTDOWN_TEXT_ZH = '{seconds}秒后超时'
 
+/** 倒计时文案模板(英文) */
+export const COUNTDOWN_TEXT_EN = 'Timeout in {seconds}s'
+
+/** 「无限等待」暂停后的倒计时文案(中文) */
+export const COUNTDOWN_PAUSED_TEXT_ZH = '已暂停 · 剩余 {seconds}秒'
+
+/** 「无限等待」暂停后的倒计时文案(英文) */
+export const COUNTDOWN_PAUSED_TEXT_EN = 'Paused · {seconds}s remaining'
+
+/** 「无限等待」按钮文案(中文) */
+export const INFINITE_WAIT_LABEL_ZH = '无限等待'
+
+/** 「无限等待」按钮文案(英文) */
+export const INFINITE_WAIT_LABEL_EN = 'Wait indefinitely'
+
+/** 「提问标识气泡」文案(中文),无草稿时显示 */
+export const BUBBLE_LABEL_ZH = '提问'
+
+/** 「提问标识气泡」文案(英文),无草稿时显示 */
+export const BUBBLE_LABEL_EN = 'Question'
+
+/** 「提问标识气泡」文案(中文),已记录超时草稿时显示 */
+export const BUBBLE_DRAFT_LABEL_ZH = '提问·超时草稿'
+
+/** 「提问标识气泡」文案(英文),已记录超时草稿时显示 */
+export const BUBBLE_DRAFT_LABEL_EN = 'Question · timed-out draft'
+
+/** 只读草稿面板标题(中文) */
+export const DRAFT_PANEL_TITLE_ZH = '超时草稿(只读)'
+
+/** 只读草稿面板标题(英文) */
+export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft (read only)'
+
+/** 只读草稿面板的说明(中文),提示该次提问已结束 */
+export const DRAFT_PANEL_NOTE_ZH = '该次提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容。'
+
+/** 只读草稿面板的说明(英文) */
+export const DRAFT_PANEL_NOTE_EN =
+  'This question batch expired and can no longer be answered; the content below is only the draft as it stood at the timeout.'
+
+/** 只读草稿面板没有可展示内容时的提示(中文) */
+export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输入内容。'
+
+/** 只读草稿面板没有可展示内容时的提示(英文) */
+export const DRAFT_PANEL_EMPTY_EN = 'No option was selected and no text had been entered at the timeout.'
+
+/** 只读草稿面板的关闭按钮文案(中文) */
+export const DRAFT_PANEL_CLOSE_ZH = '关闭'
+
+/** 只读草稿面板的关闭按钮文案(英文) */
+export const DRAFT_PANEL_CLOSE_EN = 'Close'

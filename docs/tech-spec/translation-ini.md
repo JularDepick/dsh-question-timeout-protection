@@ -35,7 +35,7 @@
 
 ## 键名与代码的对应
 
-- 键名分段对应文案所在位置: `settings.*` 对应插件配置页(键名与 `src/client/i18n.ts` 的字典键一一对应), `countdown.*` 对应提问卡片的倒计时文案, `control.*` 对应卡片控件文案, `draft.*` 对应超时草稿的注入正文.
+- 键名分段对应文案所在位置: `settings.*` 对应插件配置页(键名与 `src/client/i18n.ts` 的字典键一一对应), `countdown.*` 对应提问卡片右上角的插件自绘倒计时文案, `control.*` 对应卡片控件文案, `bubble.*` 对应提问工具行的气泡按钮文案, `draft.*` 对应超时草稿的注入正文, `draftPanel.*` 对应只读草稿面板文案.
 - 配置页文案的实际来源是客户端半身的 `src/client/i18n.ts`, 它经宿主 locale 注册字典, 不读取本目录的 ini; 其余文案的实际来源是 `src/constants.ts` 与 `src/client/adapter.ts` 里的字面量. 本目录的 ini 是这些文案的同一套措辞镜像, 供 `TranslationManager` 与后续多语言接入使用.
 - 因此改动任一可见文案时, 需同步字面量所在文件与本节所列 ini 的对应键, 保持键集与取值一致.
 
@@ -44,10 +44,13 @@
 | 键名 | 对应位置 | 说明 |
 |:---:|:---:|:---:|
 | `settings.*` | `src/client/i18n.ts` | 配置页文案, 共 22 个键 |
-| `countdown.remaining` | `src/client/adapter.ts` 的 `applyCountdown` | 倒计时文案 |
-| `control.takeTime` / `control.infiniteWait` | `src/constants.ts` 的 `TAKE_TIME_LABELS` | 宿主控件原文与插件改名后的文案 |
+| `countdown.remaining` / `countdown.paused` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN` 与 `COUNTDOWN_PAUSED_TEXT_ZH`/`COUNTDOWN_PAUSED_TEXT_EN` | 插件自绘倒计时的运行态与暂停态文案 |
+| `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
+| `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
+| `bubble.label` / `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_LABEL_*` / `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的常态与超时草稿态文案 |
 | `draft.header` / `draft.footer` | `src/constants.ts` 的 `DRAFT_INJECTION_HEADER` / `DRAFT_INJECTION_FOOTER` | 注入正文的首尾说明 |
-| `draft.selected` / `draft.custom` | `src/client/adapter.ts` 的 `composeBody` | 注入正文里的已选项与补充输入 |
+| `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 注入正文里的已选项与补充输入 |
+| `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.close` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态与关闭按钮 |
 
 ## 语言切换机制
 
