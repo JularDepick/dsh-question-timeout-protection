@@ -29,12 +29,12 @@ A plugin for dsh: once ask_user_question times out, the content you entered will
 
 - The host asks questions in blocking mode, so a question never times out. This plugin registers an `ask_user_question` of its own in each agent scope and shadows the host tool by scope proximity, so no preset edit is needed
 - The plugin enforces the deadline itself: the host card suspends its own timer while a client holds or starts editing the answer, so the plugin races the same duration and always returns pending at expiry
-- The tool uses the host timed wait: the card countdown, the freeze while the user focuses or edits, and the answerable question after a timeout all come from the host UI
+- The tool uses the host timed wait: the card, its options and the answerable question after a timeout come from the host UI, while the plugin renders the countdown from its own deadline so focusing or editing never pauses it
 - A client adapter reads the countdown text, adds the red warning in the last seconds, and after a timeout collapses the question box (ui) or sends the selected options and typed content back through `userQuestions.answer` (context and both)
 
 ## Compatibility
 
-- dsh: `0.2.1-rc.2`
+- dsh: `>=0.2.1-rc.1 <=0.2.1-rc.3`
 - Runtime: Node.js >= 20
 
 ## Install
@@ -55,7 +55,7 @@ The config page sits in the plugin-level config block at the **top of the plugin
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---|
 | `fallback` | `ui` / `context` / `both` | `ui` | One switch | Timeout fallback; the page only offers "Inject into the context", writing `both` when checked and `ui` when not. Keeping the draft in the UI is always on, so `context` never appears |
-| `cardEnhancements` | boolean | `true` | Fixed | Card enhancements: countdown wording, hidden collapse toggle, timeout locking and read-only history markers |
+| `cardEnhancements` | boolean | `true` | Fixed | Card enhancements: countdown wording, hidden collapse toggle, locked input after the timeout |
 | `infiniteWait` | boolean | `true` | Fixed | The "Wait indefinitely" control and the blocking it triggers |
 | `draftFallback` | boolean | `true` | Fixed | Keep the draft at timeout and handle it by the fallback scope |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts |
