@@ -30,7 +30,12 @@ const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'
 
 /* 判定并规范化本次调用的等待秒数;允许 -1 表示必答(回到阻塞等待) */
 function resolveTimeout(requested: number | undefined, fallback: number): number {
-  const raw = requested ?? fallback
+  if (requested === undefined) {
+    throw new Error(
+      `timeout is required: pass the wait seconds explicitly (for example ${String(fallback)}), or -1 when an answer must arrive before you continue`,
+    )
+  }
+  const raw = requested
   if (raw === -1) return -1
   /* 配置里的 timeoutSeconds 允许小数, 这里取整贴合真实等待时长, 不因 90.5 让提问整体报错 */
   const value = Number.isFinite(raw) ? Math.round(raw) : raw
@@ -113,7 +118,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       },
       [TIMED_TIMEOUT_PARAMETER]: {
         type: 'integer',
-        description: `Wait seconds for the entire question batch (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)}); omit unless the user specifies a duration. Use -1 only when an answer is required before proceeding.`,
+        required: true,
+        description: `Required. Wait seconds for the entire question batch; always pass it explicitly (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)} when you have no better value). Pass -1 only when an answer is required before proceeding. Omitting it makes the host treat the batch as a blocking wait and the timeout protection cannot apply.`,
       },
     },
     output: {

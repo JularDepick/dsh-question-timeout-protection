@@ -361,16 +361,6 @@ function readCustom(card: HTMLElement): string {
   return ''
 }
 
-/* 卡片当前是否仍在宿主倒计时中, 用于判断本页是否真正接管过这次等待 */
-function hostShowsCountdown(card: HTMLElement | undefined): boolean {
-  if (card === undefined) return false
-  for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
-    if (!(element instanceof HTMLElement)) continue
-    if (parseRemainingSeconds(element.textContent?.trim() ?? '') !== undefined) return true
-  }
-  return false
-}
-
 /* 单题空草稿 */
 function emptyItem(): DraftItem {
   return { selected: [], custom: '', skipped: false }
@@ -615,18 +605,34 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     return [...ids]
   }
 
-  /* 回收一个已结算调用的全部页内状态, 避免长会话里无限累积 */
+  /*
+   * 回收一个已结算调用的瞬态, 避免长会话里无限累积。
+   * 草稿快照要留下: 气泡按钮靠它展示只读悬浮卡片, 结算后就抹掉等于把入口一起删了。
+   */
   const forgetCall = (callId: string): void => {
     handled.delete(callId)
     timedOut.delete(callId)
     passive.delete(callId)
     syncUnavailable.delete(callId)
     submitting.delete(callId)
-    drafts.delete(callId)
-    lastDrafts.delete(callId)
     deadlines.delete(callId)
     paused.delete(callId)
     deferred.delete(callId)
+  }
+
+  /* 草稿快照只保留最近若干条, 防止长时间使用后无限增长 */
+  const MAX_KEPT_DRAFTS = 200
+  const pruneDrafts = (): void => {
+    while (drafts.size > MAX_KEPT_DRAFTS) {
+      const oldest = drafts.keys().next()
+      if (oldest.done) break
+      drafts.delete(oldest.value)
+    }
+    while (lastDrafts.size > MAX_KEPT_DRAFTS) {
+      const oldest = lastDrafts.keys().next()
+      if (oldest.done) break
+      lastDrafts.delete(oldest.value)
+    }
   }
   /* 当前打开的只读草稿悬浮卡片 */
   let panel: HTMLElement | undefined
@@ -1054,17 +1060,16 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     lastDrafts.set(row.callId, items)
     const current = options()
     /*
-     * 接管条件(全满足才动卡片与草稿):
-     * 1. 超时草稿兜底开启, 否则完全交还宿主;
-     * 2. 「无限等待」上报没有失败, 通道不可达时不能按超时提交, 否则违背用户意图;
-     * 3. 本页真正接管过这次等待(有截止时间或卡片仍在宿主倒计时中), 否则刷新后
-     *    宿主重新发布的 continued 卡片会把遗留草稿当成"本次超时草稿"注入;
-     * 4. 草稿非空, 超时那一刻没有任何选择与输入时同样交还宿主原版路径。
-     * 未满足时保持卡片 continued 原样(可继续作答), 不锁定、不收起、不提交, 也不隐藏宿主「回答」。
+     * 接管条件只有两条: 超时草稿兜底开启, 且草稿非空; 另外「无限等待」上报失败时让路,
+     * 因为通道不可用还照常提交会违背用户意图。其余情形一律接管, 不让宿主把超时问题继续挂着。
      */
-    const live = deadlines.has(row.callId) || paused.has(row.callId) || hostShowsCountdown(card)
+    /*
+     * 只有两种情况可以退让: 兜底关闭, 或「无限等待」通道不可用。
+     * 草稿非空就必须接管 —— 否则用户会看到宿主那句「已继续工作, 仍可回答」,
+     * 等于超时了还把问题挂着, 与插件存在的意义相反。
+     */
     const takeover =
-      current.draftFallback && !syncUnavailable.has(row.callId) && live && items.some(hasItemContent)
+      current.draftFallback && !syncUnavailable.has(row.callId) && items.some(hasItemContent)
     if (!takeover) {
       passive.add(row.callId)
       timedOut.delete(row.callId)
@@ -1074,7 +1079,10 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     }
     timedOut.add(row.callId)
     if (card !== undefined) lockCard(card)
-    if (current.draftFallback) drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
+    if (current.draftFallback) {
+      drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
+      pruneDrafts()
+    }
     /* 注入开启且至少一题有内容时走宿主官方晚回复通道, 提交成功后卡片随结算被宿主移除 */
     const shouldInject = current.draftFallback && injectsContext(current.fallback)
     if (shouldInject) {
