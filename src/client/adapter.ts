@@ -4,11 +4,12 @@
  * 不接管宿主提问卡片的渲染, 只在其 DOM 上补齐插件要求的界面能力:
  * 卡片右上角的插件自绘倒计时与「无限等待」按钮、单选选项选中后的方形底色、
  * 工具调用行的提问标识气泡。超时后按兜底范围分流: 开启注入时经宿主官方晚回复
- * 通道提交草稿并附超时说明, 卡片随结算由宿主移除; 未开启注入时驱动宿主收起
- * 卡片, 不做任何提交。草稿统一存在内存里, 由气泡弹出的锚定悬浮卡片只读查看。
+ * 通道按题提交草稿本身, 卡片随结算由宿主移除; 未开启注入时驱动宿主收起卡片,
+ * 不做任何提交。草稿存在内存里, 由气泡弹出的锚定悬浮卡片只读查看。
  * 作者: JularDepick
  */
 
+import { pick } from './locale'
 import {
   ASK_REOPEN_LABELS,
   ASK_ROW_SELECTOR,
@@ -18,6 +19,8 @@ import {
   BUBBLE_STATE_ATTRIBUTE,
   BUBBLE_STATE_DRAFT,
   CARD_BUTTON_SELECTOR,
+  CARD_OPTIONS_SELECTOR,
+  HOST_WAIT_PATTERNS,
   CARD_FOOTER_ACTIONS_SELECTOR,
   CARD_INPUT_SELECTOR,
   CARD_LOCKED_CLASS,
@@ -322,19 +325,6 @@ function parseRemainingSeconds(text: string): number | undefined {
   return undefined
 }
 
-/* 界面语言是否中文, 用于写插件自绘控件的文案 */
-function uiUsesChinese(): boolean {
-  const lang =
-    (typeof document === 'undefined' ? '' : document.documentElement.lang) ||
-    (typeof navigator === 'undefined' ? '' : navigator.language)
-  return lang.toLowerCase().startsWith('zh')
-}
-
-/* 按界面语言取中英文之一 */
-function pick(zh: string, en: string): string {
-  return uiUsesChinese() ? zh : en
-}
-
 /* 注入样式,重复安装时跳过 */
 function ensureStyle(): void {
   if (document.getElementById(COUNTDOWN_STYLE_ID) !== null) return
@@ -344,7 +334,11 @@ function ensureStyle(): void {
   document.head.appendChild(style)
 }
 
-/* 读取卡片里已选的选项文案 */
+/*
+ * 读取卡片里已选的选项文案。
+ * 用无障碍标签而不是节点文本: 选项按钮里同时含标号, 标题与说明, 文本会拼成一大段,
+ * 而宿主持久化的 selected 用的正是这个标签, 两者必须一致才不会把说明当成选项。
+ */
 function readSelected(card: HTMLElement): string[] {
   const selected: string[] = []
   for (const button of Array.from(card.querySelectorAll('button[aria-checked="true"]'))) {
@@ -354,9 +348,10 @@ function readSelected(card: HTMLElement): string[] {
   return selected
 }
 
-/* 读取卡片输入框里的自由文本 */
+/* 读取卡片输入框里的自由文本, 优先取作答区里的输入框 */
 function readCustom(card: HTMLElement): string {
-  const field = card.querySelector(CARD_INPUT_SELECTOR)
+  const scoped = card.querySelector(CARD_OPTIONS_SELECTOR + ' textarea')
+  const field = scoped ?? card.querySelector(CARD_INPUT_SELECTOR)
   if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) return field.value
   return ''
 }
@@ -458,7 +453,14 @@ function mergeDrafts(
     const first = primary?.[i] ?? emptyItem()
     const second = fallback?.[i] ?? emptyItem()
     if (i === liveIndex) {
-      merged.push({ selected: [...second.selected], custom: second.custom, skipped: second.skipped })
+      /*
+       * 当前显示的这一题以卡片实时值为准, 但卡片在超时后可能被宿主重渲染成空,
+       * 所以实时值为空时仍要保留宿主持久化的内容, 不能把已选的选项丢掉。
+       */
+      const liveHasContent = second.selected.length > 0 || second.custom.trim() !== ''
+      merged.push(liveHasContent
+        ? { selected: [...second.selected], custom: second.custom, skipped: second.skipped }
+        : { selected: [...first.selected], custom: first.custom, skipped: first.skipped })
       continue
     }
     merged.push({
@@ -751,7 +753,22 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     card.classList.remove(CARD_LOCKED_CLASS)
   }
 
-  /* 装饰一张提问卡片: 倒计时、无限等待按钮、宿主控件隐藏、超时收起 */
+  /*
+ * 按文案隐藏宿主的等待状态提示: 宿主可能把「会一直等你回答」「已继续工作, 仍可回答」
+ * 渲染在类名不匹配的容器里, 只靠类名后缀会漏掉, 插件接管后必须一并藏起来。
+ */
+function hideHostWaitText(card: HTMLElement): void {
+  for (const element of Array.from(card.querySelectorAll('span, div'))) {
+    if (!(element instanceof HTMLElement)) continue
+    if (element.hasAttribute(COUNTDOWN_ATTRIBUTE) || element.querySelector('button') !== null) continue
+    const text = (element.textContent ?? '').trim()
+    if (text === '' || text.length > 40) continue
+    if (!HOST_WAIT_PATTERNS.some((pattern) => pattern.test(text))) continue
+    element.classList.add(HIDDEN_CONTROL_CLASS)
+  }
+}
+
+/* 装饰一张提问卡片: 倒计时、无限等待按钮、宿主控件隐藏、超时收起 */
   const decorateCard = (card: HTMLElement, identity: CardIdentity): void => {
     /* 草稿为空的超时不接管, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
@@ -783,6 +800,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       return
     }
     hideHostWaitStatus(card)
+    hideHostWaitText(card)
     hideHostControls(card)
     const countdown = ensureCountdown(card, key)
     if (countdown !== undefined) {

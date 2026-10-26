@@ -39,7 +39,8 @@
     "pack:release": "tsdown && pnpm pack --ignore-scripts && node scripts/pack-release.mjs --strict",
     "prepack": "tsdown",
     "postpack": "node scripts/pack-release.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:translation": "node scripts/check-translation.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.5"
@@ -78,9 +79,19 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-client-locale"
       ]
     }
-  }
+  },
+  "homepage": "https://github.com/JularDepick/dsh-question-timeout-protection#readme",
+  "bugs": {
+    "url": "https://github.com/JularDepick/dsh-question-timeout-protection/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "question",
+    "timeout",
+    "countdown"
+  ]
 }

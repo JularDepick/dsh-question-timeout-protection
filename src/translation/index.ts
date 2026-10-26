@@ -57,20 +57,28 @@ const PACKAGE_ROOT = resolvePackageRoot()
 export class TranslationManager {
   private tables: Record<string, TranslationTable> = {}
   private language: string = DEFAULT_LANGUAGE
+  private readonly warned = new Set<string>()
 
-  /** 加载指定语言的翻译表,文件缺失时回退空表 */
+  /** 加载指定语言的翻译表; 读取失败时返回空表但不缓存, 便于修复后自动恢复 */
   load(locale: string): TranslationTable {
-    if (this.tables[locale]) return this.tables[locale]
-    let table: TranslationTable = {}
+    const cached = this.tables[locale]
+    if (cached) return cached
     const filePath = join(PACKAGE_ROOT, TRANSLATION_DIR, `${locale}.ini`)
     try {
-      const text = readFileSync(filePath, 'utf-8')
-      table = parseTranslationSection(text)
-    } catch {
-      // 文件缺失时使用空表,由主逻辑兜底
+      const table = parseTranslationSection(readFileSync(filePath, 'utf-8'))
+      this.tables[locale] = table
+      return table
+    } catch (error) {
+      /* 不缓存失败结果: 打包漏发 ini 或路径变化修好后下一次调用即可恢复 */
+      if (!this.warned.has(locale)) {
+        this.warned.add(locale)
+        console.warn(
+          '[question-timeout-protection] 翻译文件读取失败, 将回退到默认语言:',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+      return {}
     }
-    this.tables[locale] = table
-    return table
   }
 
   /** 切换当前语言 */

@@ -25,7 +25,13 @@ export type { FallbackMode } from './constants'
 export function apply(ctx: Context, config: Config): void {
   const service = new QuestionTimeoutService(ctx, config)
   service.start()
-  startQuestionSync()
+  /*
+   * 状态同步端点只服务网页客户端: 纯命令行或终端界面的 profile 没有客户端模块注册表,
+   * 在那里开端口纯属占用, 因此等该服务就绪后再启动, 等不到就不启动。
+   */
+  ctx.inject(['clientModules'], () => {
+    startQuestionSync()
+  })
   ctx.effect(() => () => {
     service.dispose()
     stopQuestionSync()

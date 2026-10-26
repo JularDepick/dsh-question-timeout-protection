@@ -38,7 +38,8 @@ export default defineConfig([
     dts: false,
     outputOptions: { entryFileNames: 'client.js' },
     deps: { neverBundle: PLATFORM_EXTERNALS },
-    banner: 'var module = { exports: {} }; var exports = module.exports;\nwindow.__ModuleLoader__.load({ id: "dsh-question-timeout-protection", factory: (require) => {',
+    banner:
+      'window.__ModuleLoader__.load({ id: "dsh-question-timeout-protection", factory: (require) => {\nvar module = { exports: {} };\nvar exports = module.exports;',
     footer: 'return module.exports; } });',
   },
 ])

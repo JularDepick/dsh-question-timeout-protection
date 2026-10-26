@@ -47,6 +47,11 @@ function resolveTimeout(requested: number | undefined, fallback: number): number
   return value
 }
 
+/* 题目数组不能为空, 空数组没有可等待的内容 */
+function assertQuestionsPresent(questions: ReadonlyArray<unknown>): void {
+  if (questions.length === 0) throw new Error('questions must contain at least one question')
+}
+
 /* 同一调用内的问题 id 必须唯一,否则回答无法定位 */
 function assertUniqueQuestionIds(questions: ReadonlyArray<{ id: string }>): void {
   const seen = new Set<string>()
@@ -186,6 +191,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
     async execute(args, exec) {
       const timeoutSeconds = resolveTimeout(args.timeout, configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)
       const infiniteEnabled = configValue(config.infiniteWait) ?? true
+      assertQuestionsPresent(args.questions)
       assertUniqueQuestionIds(args.questions)
       const questions = args.questions.map((question) => ({
         id: question.id,

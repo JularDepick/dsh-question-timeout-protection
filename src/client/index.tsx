@@ -30,7 +30,7 @@ export const name = 'dsh-question-timeout-protection/client'
  * 配置表单走软取(宿主可能晚于本插件就绪, 也可能不提供),
  * 硬注入缺失会让整个客户端 apply 不执行, 连卡片适配器一并失效。
  */
-export const inject = ['sessions', 'remote', 'remote.userQuestions', 'slots', 'locale']
+export const inject = ['sessions', 'remote', 'slots', 'locale']
 
 /* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子与配置页服务 */
 type ClientContext = AdapterContext & SettingsContext & {
@@ -55,6 +55,8 @@ function resolveOptions(config: Partial<ConfigModel> | undefined): AdapterOption
  */
 function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterOptionsSource {
   let form: ConfigFormLike | undefined
+  let warnedMissing = false
+  const startedAt = Date.now()
   return {
     getOptions(): AdapterOptions {
       try {
@@ -62,7 +64,17 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
           form = readClientService<FormsLike>(ctx, 'configForms')?.get(SETTINGS_NAMESPACE)
         }
         const value = form?.getSnapshot()?.value
-        if (value === undefined) return base
+        if (value === undefined) {
+          /*
+           * 配置服务可能只是还没就绪, 因此只在装载一段时间后仍然读不到时才提示,
+           * 避免开屏那一次误报。
+           */
+          if (!warnedMissing && Date.now() - startedAt > 5000) {
+            warnedMissing = true
+            console.warn('[question-timeout-protection] 读不到宿主配置, 本次按 schema 默认值工作')
+          }
+          return base
+        }
         return {
           fallback: value.fallback ?? base.fallback,
           warningSeconds: typeof value.warningSeconds === 'number' ? value.warningSeconds : base.warningSeconds,
@@ -95,7 +107,10 @@ export function apply(rawCtx: unknown, config?: Partial<ConfigModel>): void {
     ctx.effect(() => disposeAdapter)
     ctx.effect(() => disposeSettings)
   } else {
-    disposeAdapter()
-    disposeSettings()
+    /*
+     * 拿不到生命周期钩子时保留实例: 立即卸载等于让插件在这个部署里完全失效,
+     * 而且没有任何提示, 不如让它继续工作并留下一条可追的日志。
+     */
+    console.warn('[question-timeout-protection] 客户端缺少 effect 生命周期钩子, 适配器将在页面存续期间常驻')
   }
 }

@@ -111,6 +111,9 @@ export const CARD_FOOTER_ACTIONS_SELECTOR = '[class*="_footerActions"]'
 
 
 /** 宿主提问卡片内的输入控件 */
+export const CARD_OPTIONS_SELECTOR = '[class*="_options"]'
+
+/** 卡片输入框选择器 */
 export const CARD_INPUT_SELECTOR = 'textarea, input'
 
 /** 卡片内可点击的控件 */
@@ -118,6 +121,9 @@ export const CARD_BUTTON_SELECTOR = 'button'
 
 /** 宿主倒计时与等待状态文本所在元素的选择器(类名带构建哈希,按后缀匹配) */
 export const WAIT_STATUS_SELECTOR = '[class*="_waitStatus"]'
+
+/** 宿主等待状态文案的识别模式: 宿主可能把「会一直等你回答」「已继续工作」渲染在别的容器里 */
+export const HOST_WAIT_PATTERNS = [/会一直等你回答/, /已继续工作/, /Waiting until you answer/, /Work continued/]
 
 /**
  * 宿主倒计时文案的解析规则: 运行态与暂停态并列, 中文与英文并列。

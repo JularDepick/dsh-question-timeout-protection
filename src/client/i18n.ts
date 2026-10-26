@@ -47,12 +47,13 @@ const EN: Record<keyof typeof ZH, string> = {
   unavailable: 'This deployment does not expose the setting',
 }
 
+import { uiUsesChinese } from './locale'
+
 export type ClientTextKey = keyof typeof ZH
 
-/** 按浏览器语言返回文案 */
+/** 按界面语言返回文案(判定与卡片控件共用) */
 export function clientText(key: ClientTextKey): string {
-  const language = typeof navigator === 'undefined' ? 'zh' : navigator.language
-  return language.toLowerCase().startsWith('zh') ? ZH[key] : EN[key]
+  return uiUsesChinese() ? ZH[key] : EN[key]
 }
 
 /** 配置页的文案字典(供宿主 locale 注册) */
