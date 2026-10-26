@@ -191,14 +191,12 @@ export const BUBBLE_BUTTON_CLASS = 'dqtp-question-bubble'
 /** 插件自绘「提问标识气泡」的选择器 */
 export const BUBBLE_BUTTON_SELECTOR = 'button.' + BUBBLE_BUTTON_CLASS
 
-/** 「提问标识气泡」的状态属性: open 无草稿 / draft 已记录草稿 */
+/** 「提问标识气泡」的状态属性: 仅在已记录超时草稿时出现 */
 export const BUBBLE_STATE_ATTRIBUTE = 'data-dqtp-bubble'
 
 /** 气泡草稿态取值 */
 export const BUBBLE_STATE_DRAFT = 'draft'
 
-/** 气泡普通态取值 */
-export const BUBBLE_STATE_OPEN = 'open'
 
 /** 进入警示态时给倒计时附加的类名 */
 export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
@@ -240,10 +238,10 @@ export const COUNTDOWN_TEXT_ZH = '{seconds}秒后超时'
 export const COUNTDOWN_TEXT_EN = 'Timeout in {seconds}s'
 
 /** 「无限等待」暂停后的倒计时文案(中文) */
-export const COUNTDOWN_PAUSED_TEXT_ZH = '已暂停 · 剩余 {seconds}秒'
+export const COUNTDOWN_PAUSED_TEXT_ZH = '已暂停'
 
 /** 「无限等待」暂停后的倒计时文案(英文) */
-export const COUNTDOWN_PAUSED_TEXT_EN = 'Paused · {seconds}s remaining'
+export const COUNTDOWN_PAUSED_TEXT_EN = 'Paused'
 
 /** 「无限等待」按钮文案(中文) */
 export const INFINITE_WAIT_LABEL_ZH = '无限等待'
@@ -251,11 +249,7 @@ export const INFINITE_WAIT_LABEL_ZH = '无限等待'
 /** 「无限等待」按钮文案(英文) */
 export const INFINITE_WAIT_LABEL_EN = 'Wait indefinitely'
 
-/** 「提问标识气泡」文案(中文),无草稿时显示 */
-export const BUBBLE_LABEL_ZH = '提问'
 
-/** 「提问标识气泡」文案(英文),无草稿时显示 */
-export const BUBBLE_LABEL_EN = 'Question'
 
 /** 「提问标识气泡」文案(中文),已记录超时草稿时显示 */
 export const BUBBLE_DRAFT_LABEL_ZH = '提问·超时草稿'

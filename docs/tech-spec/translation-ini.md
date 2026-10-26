@@ -47,7 +47,7 @@
 | `countdown.remaining` / `countdown.paused` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN` 与 `COUNTDOWN_PAUSED_TEXT_ZH`/`COUNTDOWN_PAUSED_TEXT_EN` | 插件自绘倒计时的运行态与暂停态文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
-| `bubble.label` / `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_LABEL_*` / `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的常态与超时草稿态文案 |
+| `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 注入正文里的已选项与补充输入 |
 | `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.unanswered` / `draftPanel.close` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态, 未作答提示与关闭按钮 |
 

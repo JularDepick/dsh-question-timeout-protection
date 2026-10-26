@@ -15,11 +15,8 @@ import {
   BUBBLE_BUTTON_CLASS,
   BUBBLE_DRAFT_LABEL_EN,
   BUBBLE_DRAFT_LABEL_ZH,
-  BUBBLE_LABEL_EN,
-  BUBBLE_LABEL_ZH,
   BUBBLE_STATE_ATTRIBUTE,
   BUBBLE_STATE_DRAFT,
-  BUBBLE_STATE_OPEN,
   CARD_BUTTON_SELECTOR,
   CARD_FOOTER_ACTIONS_SELECTOR,
   CARD_INPUT_SELECTOR,
@@ -694,9 +691,26 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     hideHostControls(card)
 
     const key = QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId
-    const countdown = ensureCountdown(card, key)
     const frozen = paused.get(identity.callId)
     const deadline = deadlines.get(identity.callId)
+    /*
+     * 只有正在进行的提问才挂倒计时与「无限等待」: 历史提问与已结算回答的只读卡片
+     * 没有宿主等待状态, 也就拿不到截止时间, 这时把插件控件一律隐藏。
+     */
+    const live = frozen !== undefined || deadline !== undefined
+    if (!live) {
+      for (const stale of Array.from(
+        card.querySelectorAll('[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS),
+      )) {
+        if (stale instanceof HTMLElement) stale.classList.add(HIDDEN_CONTROL_CLASS)
+      }
+      if (timedOut.has(identity.callId) && !submitting.has(identity.callId)) {
+        lockCard(card)
+        hideCard(card)
+      }
+      return
+    }
+    const countdown = ensureCountdown(card, key)
     if (countdown !== undefined) {
       let remainingMs: number | undefined
       if (frozen !== undefined) remainingMs = frozen
@@ -863,7 +877,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     const button = document.createElement('button')
     button.type = 'button'
     button.className = BUBBLE_BUTTON_CLASS
-    button.setAttribute(BUBBLE_STATE_ATTRIBUTE, BUBBLE_STATE_OPEN)
     const anchor = row.querySelector(PANEL_BUTTON_SELECTOR)
     if (anchor instanceof HTMLElement && anchor.parentElement !== null) {
       anchor.parentElement.insertBefore(button, anchor.nextSibling)
@@ -885,18 +898,26 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     }
   }
 
-  /* 装饰一行提问工具调用: 气泡文案随是否记录到草稿切换, 超时后去掉宿主重开入口 */
+  /*
+   * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡, 未超时或已正常作答的行
+   * 交给宿主自己的「回答 / 查看回答」入口, 避免两个功能重复的气泡并存。
+   */
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
     if (callId === undefined) return
     const button = ensureBubble(row)
     if (button === undefined) return
     const draft = drafts.get(callId)
-    const label =
-      draft === undefined ? pick(BUBBLE_LABEL_ZH, BUBBLE_LABEL_EN) : pick(BUBBLE_DRAFT_LABEL_ZH, BUBBLE_DRAFT_LABEL_EN)
+    const hidden = draft === undefined
+    button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
+    if (draft === undefined) {
+      if (timedOut.has(callId)) hideHostReopen(row)
+      return
+    }
+    const label = pick(BUBBLE_DRAFT_LABEL_ZH, BUBBLE_DRAFT_LABEL_EN)
     if (button.textContent !== label) button.textContent = label
-    const state = draft === undefined ? BUBBLE_STATE_OPEN : BUBBLE_STATE_DRAFT
-    if (button.getAttribute(BUBBLE_STATE_ATTRIBUTE) !== state) button.setAttribute(BUBBLE_STATE_ATTRIBUTE, state)
+    if (button.getAttribute(BUBBLE_STATE_ATTRIBUTE) !== BUBBLE_STATE_DRAFT)
+      button.setAttribute(BUBBLE_STATE_ATTRIBUTE, BUBBLE_STATE_DRAFT)
     if (timedOut.has(callId)) hideHostReopen(row)
   }
 
@@ -997,14 +1018,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       const callId = resolveCallId(row)
       if (callId === undefined) return
       const draft = drafts.get(callId)
-      if (draft !== undefined) {
-        if (panel !== undefined && panelAnchor === button) closeDraftPanel()
-        else openDraftPanel(draft, button)
-        return
-      }
-      closeDraftPanel()
-      const anchor = row.querySelector(PANEL_BUTTON_SELECTOR)
-      if (anchor instanceof HTMLElement) anchor.click()
+      if (draft === undefined) return
+      if (panel !== undefined && panelAnchor === button) closeDraftPanel()
+      else openDraftPanel(draft, button)
       return
     }
 

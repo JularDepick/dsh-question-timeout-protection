@@ -17,9 +17,9 @@ A plugin for dsh: once ask_user_question times out, the content you entered will
 
 - Top-right countdown: the question dialog shows the remaining wait time at its top right and counts down
 - Near-timeout warning: the last seconds (default 5) flash in red
-- Wait indefinitely: a "Wait indefinitely" button next to the countdown pauses this question's countdown until the user submits
+- Wait indefinitely: a live question shows this button next to the countdown; clicking it freezes the countdown and shows "Paused" until the user submits. History questions and settled answers' read-only cards show neither the countdown nor this button
 - Selection fill: a chosen single-choice option fills the square marker in front of it
-- Question bubble: the model's question tool call in the conversation gets a bubble button that opens the question
+- Question bubble: it appears at the question tool call only after a timeout has recorded a draft; clicking it opens a read-only floating card next to the bubble. Questions that never timed out, or that were answered normally, show no such bubble and use the host's own entry instead
 - Draft kept in memory: at timeout the selected options and the typed content are kept in memory
 - Context injection: on by default, the timed-out draft enters the model context per question, each question keeping its own selected options and typed text; the timeout semantics live in the tool's pending result, and the model must tell the user about the timeout and its handling decision at the end of its reply
 - Draft recorded in the bubble: at timeout the draft is recorded in the bubble button of that question tool call, which pops a read-only floating card next to it; that question no longer offers any way to answer
