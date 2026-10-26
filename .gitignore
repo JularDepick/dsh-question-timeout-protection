@@ -4,6 +4,7 @@ node_modules/
 .agents/
 .agent/
 temp/
+.env
 
 # 构建与打包产物
 dist/

@@ -556,6 +556,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const handled = new Set<string>()
   /* 已超时的调用, 卡片一律锁定并收起 */
   const timedOut = new Set<string>()
+  /* 超时时草稿为空的调用, 交还宿主原版超时路径, 插件不再改卡片与工具行 */
+  const passive = new Set<string>()
   /* 点击「无限等待」后冻结的剩余毫秒 */
   const paused = new Map<string, number>()
   /* 每个调用的截止时间, 按 callId 记, 卡片重渲染后延续 */
@@ -675,8 +677,26 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     card.classList.add(HIDDEN_CONTROL_CLASS)
   }
 
+  /*
+   * 把卡片还原成宿主原样: 撤销插件加的隐藏类, 移除自绘倒计时与「无限等待」按钮。
+   * 草稿为空时超时不接管, 宿主按 continued 原版继续显示并允许作答。
+   */
+  const restoreCard = (card: HTMLElement): void => {
+    for (const element of Array.from(card.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
+      element.classList.remove(HIDDEN_CONTROL_CLASS)
+    }
+    for (const element of Array.from(
+      card.querySelectorAll('[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS),
+    )) {
+      element.remove()
+    }
+    card.classList.remove(CARD_LOCKED_CLASS)
+  }
+
   /* 装饰一张提问卡片: 倒计时、无限等待按钮、宿主控件隐藏、超时收起 */
   const decorateCard = (card: HTMLElement, identity: CardIdentity): void => {
+    /* 草稿为空的超时不接管, 卡片保持宿主原样 */
+    if (passive.has(identity.callId)) return
     /* 首次读到的剩余时长记为插件自己的截止时间 */
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
       for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
@@ -782,8 +802,21 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     root.style.top = String(Math.round(top)) + 'px'
   }
 
+  /*
+   * 跟随锚点重新定位; 锚点被滚出视口或已从文档移除时直接收起悬浮卡片,
+   * 避免卡片停在界面之外或指向已经不在视野里的气泡。
+   */
   const repositionPanel = (): void => {
     if (panel === undefined || panelAnchor === undefined) return
+    if (!panelAnchor.isConnected) {
+      closeDraftPanel()
+      return
+    }
+    const rect = panelAnchor.getBoundingClientRect()
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeDraftPanel()
+      return
+    }
     placePanel(panel, panelAnchor)
   }
 
@@ -907,6 +940,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     if (callId === undefined) return
     const button = ensureBubble(row)
     if (button === undefined) return
+    /* 草稿为空的超时交还宿主, 插件气泡不出现, 宿主「回答」入口保持可见 */
+    if (passive.has(callId)) {
+      button.classList.add(HIDDEN_CONTROL_CLASS)
+      return
+    }
     const draft = drafts.get(callId)
     const hidden = draft === undefined
     button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
@@ -941,15 +979,26 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     }
     handled.add(row.callId)
     deferred.delete(row.callId)
-    timedOut.add(row.callId)
-    if (card !== undefined) lockCard(card)
     const count = row.questions.length
     const items = mergeDrafts(readHostDrafts(identity, count) ?? stored, readLiveDrafts(card, count), count)
     lastDrafts.set(row.callId, items)
+    /*
+     * 机械校验: 超时那一刻没有任何选择或输入时, 插件不接管, 交还宿主原版超时路径 ——
+     * 卡片保持 continued 原样(可继续作答), 不锁定、不收起、不提交, 也不隐藏宿主「回答」入口。
+     */
+    if (!items.some(hasItemContent)) {
+      passive.add(row.callId)
+      timedOut.delete(row.callId)
+      drafts.delete(row.callId)
+      if (card !== undefined) restoreCard(card)
+      return
+    }
+    timedOut.add(row.callId)
+    if (card !== undefined) lockCard(card)
     const current = options()
     if (current.draftFallback) drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
     /* 注入开启且至少一题有内容时走宿主官方晚回复通道, 提交成功后卡片随结算被宿主移除 */
-    const shouldInject = current.draftFallback && injectsContext(current.fallback) && items.some(hasItemContent)
+    const shouldInject = current.draftFallback && injectsContext(current.fallback)
     if (shouldInject) {
       submitting.add(row.callId)
       void injectAnswer(ctx, identity, row.questions, items)

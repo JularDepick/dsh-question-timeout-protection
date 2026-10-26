@@ -23,7 +23,7 @@ A plugin for dsh: once ask_user_question times out, the content you entered will
 - Draft kept in memory: at timeout the selected options and the typed content are kept in memory
 - Context injection: on by default, the timed-out draft enters the model context per question, each question keeping its own selected options and typed text; the timeout semantics live in the tool's pending result, and the model must tell the user about the timeout and its handling decision at the end of its reply
 - Draft recorded in the bubble: at timeout the draft is recorded in the bubble button of that question tool call, which pops a read-only floating card next to it; that question no longer offers any way to answer
-- Timeout wrap-up: with injection on the card disappears once the draft settles; with injection off the plugin withdraws the card, so a disabled question box never stays behind
+- Timeout wrap-up: with a draft, injection on submits it and the card disappears as the answer settles, while injection off withdraws the card; with an empty draft (no selection and no typed text at the timeout) the plugin does not take over and leaves the host's original timeout path intact, so the card stays answerable
 - No fallback answering: a timed-out question is never answered on the user's behalf
 
 ## Scope
@@ -44,7 +44,7 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 - It does not edit user presets: it registers an identically named tool in each agent scope and shadows the host tool by scope proximity
 - It does not answer for the user: a timeout never ticks any option and never submits the draft as a formal answer
 - It does not decide for the model: whether to ask again or handle the draft otherwise is the model's call; the plugin only delivers the information
-- It does not fall back to continued answering: a timed-out question is withdrawn and the host "Answer" entry is hidden, so no way to answer remains
+- It does not fall back to continued answering: a timed-out question that carries a draft is withdrawn and the host "Answer" entry is hidden; with an empty draft the plugin leaves the host behaviour untouched
 - It does not persist anything: the draft lives only in client memory and is lost on a page refresh or a new session
 - It adds no custom RPC or storage: injection reuses the host's existing late-reply channel and state sync uses one loopback HTTP endpoint
 
