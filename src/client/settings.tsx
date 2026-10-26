@@ -2,7 +2,8 @@
  * 插件配置页
  *
  * 注册在插件级配置插槽(plugins.bundle.config), 显示在插件详情页顶部, 不在「包含的组件」的行里。
- * 唯一可配置项是「注入到上下文」; 其余能力随插件启用状态固定生效, 只做展示。
+ * 唯一可配置项是「注入到上下文」, 勾选变化即写入宿主配置, 不需要保存与重置;
+ * 其余能力随插件启用状态固定生效, 只做展示。
  * 作者: JularDepick
  */
 
@@ -12,15 +13,16 @@ import { clientText, SETTINGS_DICTIONARY } from './i18n'
 import type { ClientTextKey } from './i18n'
 
 /* 表单里的普通值(服务端已解析 volatile) */
-interface SettingsValues {
+export interface SettingsValues {
   fallback: 'ui' | 'context' | 'both'
+  warningSeconds?: number
   cardEnhancements: boolean
   infiniteWait: boolean
   draftFallback: boolean
 }
 
 /* 宿主配置表单的快照 */
-interface ConfigSnapshot {
+export interface ConfigSnapshot {
   status: 'loading' | 'ready' | 'unavailable'
   value?: Partial<SettingsValues>
   revision?: number
@@ -35,14 +37,14 @@ interface ConfigOperation {
 }
 
 /* 宿主某设置命名空间的配置表单 */
-interface ConfigFormLike {
+export interface ConfigFormLike {
   getSnapshot(): ConfigSnapshot
   subscribe(listener: () => void): () => void
   mutate(operations: ConfigOperation[], expectedRevision?: number): Promise<boolean>
 }
 
 /* 配置表单服务 */
-interface FormsLike {
+export interface FormsLike {
   get(id: string): ConfigFormLike
 }
 
@@ -86,11 +88,6 @@ const SETTINGS_STYLE = `
 .dqtp-fixed + .dqtp-fixed,.dqtp-option + .dqtp-fixed,.dqtp-fixed + .dqtp-option{border-top:1px solid var(--dsw-alias-border-tertiary,rgba(127,127,127,.16))}
 .dqtp-fixed-mark{flex:none;width:15px;font-size:12px;line-height:20px;text-align:center;color:var(--dsw-alias-label-secondary,#6b7280)}
 .dqtp-fixed-label{font-weight:500;color:var(--dsw-alias-label-secondary,#4b5563)}
-.dqtp-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
-.dqtp-button{font:inherit;padding:5px 15px;border-radius:8px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.34));background:transparent;color:inherit;cursor:pointer}
-.dqtp-button:hover:not(:disabled){border-color:var(--dsw-alias-label-secondary,#9aa0a6)}
-.dqtp-button:disabled{opacity:.45;cursor:not-allowed}
-.dqtp-button.is-primary{border-color:transparent;background:var(--dsw-alias-brand-primary,#3b6cf0);color:#fff}
 .dqtp-notice{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280)}
 .dqtp-problem{font-size:12px;color:var(--dsw-alias-label-danger,#c0392b)}
 `
@@ -123,17 +120,16 @@ function readInject(value: Partial<SettingsValues> | undefined): boolean {
 
 /* 配置页内容 */
 function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
-  const forms = readService<FormsLike>(host, 'configForms')
+  const forms = readClientService<FormsLike>(host, 'configForms')
   const [form, setForm] = useState<ConfigFormLike | undefined>(() => forms?.get(SETTINGS_NAMESPACE))
   const [snapshot, setSnapshot] = useState<ConfigSnapshot>(() => form?.getSnapshot() ?? PENDING)
   const [injectContext, setInjectContext] = useState<boolean>(() => readInject(snapshot.value))
-  const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
   useEffect(() => ensureStyle(), [])
 
-  /* 配置服务可能晚于插件就绪, 拿到服务后再取控制器(每个命名空间只取一次) */
+  /* 配置服务可能晚于插件就绪, 拿到服务后再取控制器 */
   useEffect(() => {
     if (form !== undefined || forms === undefined) return
     setForm(forms.get(SETTINGS_NAMESPACE))
@@ -146,71 +142,45 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
     return form.subscribe(() => setSnapshot(form.getSnapshot()))
   }, [form])
 
-  /* 宿主刷新快照时同步勾选, 正在编辑(dirty)时不覆盖用户输入 */
+  /* 宿主刷新快照时同步勾选, 写入进行中不覆盖用户操作 */
   useEffect(() => {
-    if (dirty) return
+    if (busy) return
     setInjectContext(readInject(snapshot.value))
-  }, [snapshot.revision, snapshot.status, dirty])
+  }, [snapshot.revision, snapshot.status, busy])
 
   const ready = form !== undefined && snapshot.status === 'ready' && snapshot.writable !== false
   const disabled = !ready || busy
 
-  const edit = (next: boolean): void => {
-    setInjectContext(next)
-    setDirty(true)
-    setNotice('')
-  }
-
-  const reset = (): void => {
-    setInjectContext(readInject(form?.getSnapshot().value ?? snapshot.value))
-    setDirty(false)
-    setNotice('')
-  }
-
-  const save = async (): Promise<void> => {
+  /* 勾选变化即写入, 成功静默, 失败回滚并提示 */
+  const toggle = (next: boolean): void => {
     if (form === undefined || !ready || busy) return
+    setInjectContext(next)
     setBusy(true)
     setNotice('')
-    try {
-      /* 界面保留草稿与三项固定特性恒定开启, 一并归一为开启 */
-      const accepted = await form.mutate(
-        [
-          { op: 'set', path: ['fallback'], value: injectContext ? 'both' : 'ui' },
-          { op: 'set', path: ['cardEnhancements'], value: true },
-          { op: 'set', path: ['infiniteWait'], value: true },
-          { op: 'set', path: ['draftFallback'], value: true },
-        ],
-        snapshot.revision,
-      )
-      setNotice(clientText(accepted ? 'saved' : 'rejected'))
-      if (accepted) setDirty(false)
-    } catch {
-      setNotice(clientText('rejected'))
-    } finally {
-      setBusy(false)
-    }
+    void form
+      .mutate([{ op: 'set', path: ['fallback'], value: next ? 'both' : 'ui' }], snapshot.revision)
+      .then((accepted) => {
+        if (!accepted) {
+          setInjectContext(readInject(form.getSnapshot().value))
+          setNotice(clientText('rejected'))
+        }
+      })
+      .catch(() => {
+        setInjectContext(readInject(form.getSnapshot().value))
+        setNotice(clientText('rejected'))
+      })
+      .finally(() => setBusy(false))
   }
 
   return (
-    <form
-      className="dqtp-form"
-      onSubmit={(event) => {
-        event.preventDefault()
-        void save()
-      }}
-    >
+    <form className="dqtp-form" onSubmit={(event) => event.preventDefault()}>
       <section className="dqtp-card">
         <header className="dqtp-card-head">
           <span className="dqtp-card-title">{clientText('fallbackSection')}</span>
           <span className="dqtp-card-note">{clientText('fallbackNote')}</span>
         </header>
         <label className="dqtp-option">
-          <input
-            type="checkbox"
-            disabled={disabled}
-            checked={injectContext}
-            onChange={(event) => edit(event.target.checked)}
-          />
+          <input type="checkbox" disabled={disabled} checked={injectContext} onChange={(event) => toggle(event.target.checked)} />
           <span className="dqtp-option-body">
             <span className="dqtp-option-label">{clientText('injectLabel')}</span>
             <span className="dqtp-option-desc">{clientText('injectDesc')}</span>
@@ -224,7 +194,7 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
         </header>
         {FIXED_ROWS.map((row) => (
           <div key={row.label} className="dqtp-fixed">
-            <span className="dqtp-fixed-mark">{'\u2713'}</span>
+            <span className="dqtp-fixed-mark">{'✓'}</span>
             <span className="dqtp-option-body">
               <span className="dqtp-fixed-label">{clientText(row.label)}</span>
               <span className="dqtp-option-desc">{clientText(row.desc)}</span>
@@ -232,19 +202,11 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
           </div>
         ))}
       </section>
-      <div className="dqtp-actions">
-        <button type="submit" className="dqtp-button is-primary" disabled={disabled || !dirty}>
-          {clientText(busy ? 'saving' : 'save')}
-        </button>
-        <button type="button" className="dqtp-button" disabled={disabled || !dirty} onClick={reset}>
-          {clientText('reset')}
-        </button>
-        {notice === '' ? null : (
-          <span className="dqtp-notice" role="status">
-            {notice}
-          </span>
-        )}
-      </div>
+      {notice === '' ? null : (
+        <span className="dqtp-notice" role="status">
+          {notice}
+        </span>
+      )}
       {ready || busy ? null : (
         <p className="dqtp-problem" role="status">
           {clientText(snapshot.status === 'loading' ? 'loading' : 'unavailable')}
@@ -255,7 +217,7 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
 }
 
 /* 安全读取宿主服务: 未注入时属性访问可能抛错 */
-function readService<T>(ctx: unknown, name: string): T | undefined {
+export function readClientService<T>(ctx: unknown, name: string): T | undefined {
   try {
     const getter = (ctx as { get?: (key: string) => unknown }).get
     if (typeof getter === 'function') {
@@ -276,12 +238,12 @@ function readService<T>(ctx: unknown, name: string): T | undefined {
 
 /** 注册插件详情页顶部的配置区块 */
 export function registerSettingsPage(ctx: SettingsContext): () => void {
-  const slots = readService<NonNullable<SettingsContext['slots']>>(ctx, 'slots')
+  const slots = readClientService<NonNullable<SettingsContext['slots']>>(ctx, 'slots')
   if (slots === undefined || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
     console.error('[question-timeout-protection] 缺少插槽服务, 配置页未注册')
     return () => {}
   }
-  const locale = readService<LocaleLike>(ctx, 'locale')
+  const locale = readClientService<LocaleLike>(ctx, 'locale')
   const disposers: Array<() => void> = []
   try {
     if (locale !== undefined && typeof locale.register === 'function') {

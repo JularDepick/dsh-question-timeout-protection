@@ -21,8 +21,9 @@ A plugin for dsh: once ask_user_question times out, the content you entered will
 - Selection fill: a chosen single-choice option fills the square marker in front of it
 - Question bubble: the model's question tool call in the conversation gets a bubble button that opens the question
 - Draft kept in memory: at timeout the selected options and the typed content are kept in memory
-- Context injection: with injection on, the timed-out draft enters the model context as a regular answer, ending with a reminder that this is the user's draft at the timeout, that the user never submitted it, and that the model decides whether to ask again
-- Draft recorded in the bubble: at timeout the draft is recorded in the bubble button of that question tool call, which opens it read only; that question no longer offers any way to answer
+- Context injection: on by default, the timed-out draft enters the model context per question, each question keeping its own selected options and typed text; the timeout semantics live in the tool's pending result, and the model must tell the user about the timeout and its handling decision at the end of its reply
+- Draft recorded in the bubble: at timeout the draft is recorded in the bubble button of that question tool call, which pops a read-only floating card next to it; that question no longer offers any way to answer
+- Timeout wrap-up: with injection on the card disappears once the draft settles; with injection off the plugin withdraws the card, so a disabled question box never stays behind
 - No fallback answering: a timed-out question is never answered on the user's behalf
 
 ## Scope
@@ -43,7 +44,7 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 - It does not edit user presets: it registers an identically named tool in each agent scope and shadows the host tool by scope proximity
 - It does not answer for the user: a timeout never ticks any option and never submits the draft as a formal answer
 - It does not decide for the model: whether to ask again or handle the draft otherwise is the model's call; the plugin only delivers the information
-- It does not fall back to continued answering: a timed-out question locks its card and offers no way to answer
+- It does not fall back to continued answering: a timed-out question is withdrawn and the host "Answer" entry is hidden, so no way to answer remains
 - It does not persist anything: the draft lives only in client memory and is lost on a page refresh or a new session
 - It adds no custom RPC or storage: injection reuses the host's existing late-reply channel and state sync uses one loopback HTTP endpoint
 
@@ -52,7 +53,8 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 - The host asks questions in blocking mode, so a question never times out. This plugin registers an `ask_user_question` of its own in each agent scope and shadows the host tool by scope proximity, so no preset edit is needed
 - The plugin enforces the deadline itself: the host card suspends its own timer while a client holds or starts editing the answer, so the plugin races the same duration and always returns pending at expiry
 - The tool uses the host timed wait: the card and its options come from the host UI, while the plugin draws the countdown at the card's top right from its own deadline so focusing or editing never pauses it
-- The client adapter only enhances the host card DOM: it inserts the countdown and the "Wait indefinitely" button, fills the single-choice marker, and adds the bubble button to the question tool row; at timeout it keeps the draft in memory, injects it through `userQuestions.answer` as a regular answer when the fallback scope allows, and locks the card against further answering
+- The client adapter only enhances the host card DOM: it inserts the countdown and the "Wait indefinitely" button, fills the single-choice marker, and adds the bubble button to the question tool row; at timeout it keeps the draft in memory and either submits it through `userQuestions.answer` with a timeout disclosure (the card then disappears as the answer settles) or withdraws the card without submitting anything
+- The client reads the configuration live through the host `configForms` service, so toggling the checkbox on the plugin page changes behaviour immediately without saving or reloading
 
 ## Compatibility
 
@@ -72,18 +74,18 @@ dsh plugin --profile <profile> add release/dsh-question-timeout-protection-<vers
 
 ## Configuration
 
-The config page sits in the plugin-level config block at the **top of the plugin detail view**, not inside "Included components". Only "Inject into the context" can be changed; every other capability follows the plugin's enabled state and is listed for reference only.
+The config page sits in the plugin-level config block at the **top of the plugin detail view**, not inside "Included components". Only "Inject into the context" can be changed, and the change is written as soon as the checkbox toggles; every other capability follows the plugin's enabled state and is listed for reference only.
 
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---|
-| `fallback` | `ui` / `context` / `both` | `ui` | One switch | Timeout fallback; the page only offers "Inject into the context", writing `both` when checked and `ui` when not. Keeping the draft in the UI is always on, so `context` never appears |
+| `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback; the page only offers "Inject into the context", checked by default, writing `both` when checked and `ui` when not. Keeping the draft in the UI is always on, so `context` never appears. A toggle writes immediately |
 | `cardEnhancements` | boolean | `true` | Fixed | Card enhancements: top-right countdown with warning blink, filled radio marker, question bubble, locked input after the timeout |
 | `infiniteWait` | boolean | `true` | Fixed | The "Wait indefinitely" button next to the countdown that pauses this countdown until the user submits |
 | `draftFallback` | boolean | `true` | Fixed | Keeps the draft in memory at the timeout, records it in the question bubble, and handles it by the fallback scope |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts |
 | `timeoutSeconds` | number | 120 | Not exposed | Question wait time in seconds, decided by the `timeout` argument of each tool call; this value is only the default when the argument is omitted |
 
-> Keeping the draft in the UI is mandatory: at timeout the draft always stays in memory and is recorded in the bubble button of that question tool call, which opens it read only. Once "Inject into the context" is checked, the timed-out draft enters the model context as a regular answer whose trailing reminder says the user never submitted it, and the model decides whether to ask again. A timed-out question no longer offers any way to answer.
+> Keeping the draft in the UI is mandatory: at timeout the draft always stays in memory and is recorded in the bubble button of that question tool call, which pops a read-only floating card beside it. With "Inject into the context" checked (the default), the draft is submitted as a regular late reply per question; the question card then disappears as the answer settles. Unchecked, the plugin only withdraws the card and submits nothing. The timeout notice lives only in the tool's pending result: it says the batch expired, the user never submitted, the draft was kept, and the model must report the timeout and its decision about the draft to the user. A timed-out question no longer offers any way to answer.
 
 ## Development
 

@@ -43,14 +43,13 @@
 
 | 键名 | 对应位置 | 说明 |
 |:---:|:---:|:---:|
-| `settings.*` | `src/client/i18n.ts` | 配置页文案, 共 22 个键 |
+| `settings.*` | `src/client/i18n.ts` | 配置页文案, 共 18 个键 |
 | `countdown.remaining` / `countdown.paused` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN` 与 `COUNTDOWN_PAUSED_TEXT_ZH`/`COUNTDOWN_PAUSED_TEXT_EN` | 插件自绘倒计时的运行态与暂停态文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
 | `bubble.label` / `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_LABEL_*` / `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的常态与超时草稿态文案 |
-| `draft.header` / `draft.footer` | `src/constants.ts` 的 `DRAFT_INJECTION_HEADER` / `DRAFT_INJECTION_FOOTER` | 注入正文的首尾说明 |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 注入正文里的已选项与补充输入 |
-| `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.close` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态与关闭按钮 |
+| `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.unanswered` / `draftPanel.close` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态, 未作答提示与关闭按钮 |
 
 ## 语言切换机制
 

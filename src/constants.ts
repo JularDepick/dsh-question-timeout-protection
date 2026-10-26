@@ -27,8 +27,8 @@ export const FALLBACK_MODES = ['ui', 'context', 'both'] as const
 /** 兜底范围类型 */
 export type FallbackMode = (typeof FALLBACK_MODES)[number]
 
-/** 兜底范围默认值(仅保留到界面,不向模型上下文注入内容) */
-export const DEFAULT_FALLBACK_MODE: FallbackMode = 'ui'
+/** 兜底范围默认值(界面保留草稿并把超时草稿注入上下文) */
+export const DEFAULT_FALLBACK_MODE: FallbackMode = 'both'
 
 /** 倒计时进入警示态的剩余秒数默认值(最后数秒红字闪烁) */
 export const DEFAULT_WARNING_SECONDS = 5
@@ -78,18 +78,11 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
 
 /**
  * 超时后随 pending 结果返回给模型的说明。
- * 语义要点: 这是 pending 而不是跳过;该次提问已超时, 用户不能再继续回答;
- * 随后可能收到一条带超时草稿的用户消息, 由模型自行决定是否重新提问。
+ * 语义要点: 本轮提问已超时、用户没有正式提交, 但输入草稿保留了下来;
+ * 草稿足够完整时可以据此继续任务, 最后必须告知用户出现过超时以及对该草稿的处理与决策。
  */
 export const TIMEOUT_PENDING_NOTICE =
-  'The user did not answer before the wait expired. This is pending, not a skipped answer, and this question batch is closed: the user cannot answer it any more. If a later user message carries the draft the user had entered before the timeout, decide yourself whether to ask again or to handle it in another way.'
-
-/** 超时草稿注入消息的前缀(客户端拼装后经晚回复通道送入上下文) */
-export const DRAFT_INJECTION_HEADER = '用户回答超时,超时后已输入的内容为如下:'
-
-/** 超时草稿注入消息的后缀,把是否重新提问的决定权交给模型 */
-export const DRAFT_INJECTION_FOOTER =
-  '以上内容只是用户超时时的草稿, 用户并没有正式提交这次回答; 请自行决定是重新提问还是别的处理方式, 插件不代为决定最终决策。'
+  '该轮提问已超时,用户没有正式提交,但输入草稿保留了下来。如果草稿足够完整可以继续任务,但是最后一定要告知用户出现过提问超时以及你对该超时携带的草稿的处理和决策。'
 
 /** 草稿文本里已选选项行的前缀 */
 export const DRAFT_SELECTED_LABEL_ZH = '已选: '
@@ -162,6 +155,15 @@ export const CLOSE_PANEL_LABELS: readonly string[] = [
   'Close the panel — reopen it from the tool call',
 ]
 
+/** 宿主提问工具行「回答」按钮的文案(中文与英文),超时后隐藏以免重新打开问答框 */
+export const ASK_REOPEN_LABELS: readonly string[] = ['回答', 'Answer']
+
+/** 草稿悬浮卡片与气泡之间的间距(px) */
+export const DRAFT_PANEL_OFFSET = 8
+
+/** 草稿悬浮卡片与视口边缘的最小间距(px) */
+export const DRAFT_PANEL_MARGIN = 8
+
 /** 隐藏宿主控件时附加的类名 */
 export const HIDDEN_CONTROL_CLASS = 'dqtp-host-control-hidden'
 
@@ -218,6 +220,9 @@ export const SYNC_PORT = 47831
 
 /** 客户端状态同步端点路径 */
 export const SYNC_PATH = '/question-timeout-protection/state'
+
+/** 宿主保存分题草稿的 localStorage 键前缀(其后拼会话 id) */
+export const HOST_DRAFT_STORAGE_PREFIX = 'dsh.user-questions.drafts.v1'
 
 /** 卡片底部提交按钮的文案(中文与英文) */
 export const SUBMIT_TEXTS: readonly string[] = ['提交', 'Submit']
@@ -282,3 +287,9 @@ export const DRAFT_PANEL_CLOSE_ZH = '关闭'
 
 /** 只读草稿面板的关闭按钮文案(英文) */
 export const DRAFT_PANEL_CLOSE_EN = 'Close'
+
+/** 只读草稿面板里某题没有作答时的提示(中文) */
+export const DRAFT_PANEL_UNANSWERED_ZH = '未作答'
+
+/** 只读草稿面板里某题没有作答时的提示(英文) */
+export const DRAFT_PANEL_UNANSWERED_EN = 'Not answered'

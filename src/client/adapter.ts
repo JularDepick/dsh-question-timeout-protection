@@ -1,15 +1,16 @@
 /*
  * 客户端提问增强适配器
  *
- * 不接管宿主提问卡片的渲染, 只在其 DOM 上补齐插件要求的三处界面能力:
+ * 不接管宿主提问卡片的渲染, 只在其 DOM 上补齐插件要求的界面能力:
  * 卡片右上角的插件自绘倒计时与「无限等待」按钮、单选选项选中后的方形底色、
- * 工具调用行的提问标识气泡。超时后把已选选项与已输入内容保存在内存里,
- * 按配置以正常问答提交的方式注入上下文, 并把草稿记入气泡供只读查看;
- * 已超时的提问不再提供继续回答的入口。
+ * 工具调用行的提问标识气泡。超时后按兜底范围分流: 开启注入时经宿主官方晚回复
+ * 通道提交草稿并附超时说明, 卡片随结算由宿主移除; 未开启注入时驱动宿主收起
+ * 卡片, 不做任何提交。草稿统一存在内存里, 由气泡弹出的锚定悬浮卡片只读查看。
  * 作者: JularDepick
  */
 
 import {
+  ASK_REOPEN_LABELS,
   ASK_ROW_SELECTOR,
   BUBBLE_BUTTON_CLASS,
   BUBBLE_DRAFT_LABEL_EN,
@@ -23,6 +24,7 @@ import {
   CARD_FOOTER_ACTIONS_SELECTOR,
   CARD_INPUT_SELECTOR,
   CARD_LOCKED_CLASS,
+  CLOSE_PANEL_LABELS,
   COLLAPSE_CONTROL_LABELS,
   COUNTDOWN_ATTRIBUTE,
   COUNTDOWN_PATTERNS,
@@ -35,21 +37,24 @@ import {
   COUNTDOWN_WARNING_CLASS,
   DRAFT_CUSTOM_LABEL_EN,
   DRAFT_CUSTOM_LABEL_ZH,
-  DRAFT_INJECTION_FOOTER,
-  DRAFT_INJECTION_HEADER,
   DRAFT_PANEL_CLOSE_EN,
   DRAFT_PANEL_CLOSE_ZH,
   DRAFT_PANEL_EMPTY_EN,
   DRAFT_PANEL_EMPTY_ZH,
   DRAFT_PANEL_ID,
+  DRAFT_PANEL_MARGIN,
   DRAFT_PANEL_NOTE_EN,
   DRAFT_PANEL_NOTE_ZH,
+  DRAFT_PANEL_OFFSET,
   DRAFT_PANEL_TITLE_EN,
   DRAFT_PANEL_TITLE_ZH,
+  DRAFT_PANEL_UNANSWERED_EN,
+  DRAFT_PANEL_UNANSWERED_ZH,
   DRAFT_SELECTED_LABEL_EN,
   DRAFT_SELECTED_LABEL_ZH,
   HEADER_ACTIONS_SELECTOR,
   HIDDEN_CONTROL_CLASS,
+  HOST_DRAFT_STORAGE_PREFIX,
   INFINITE_BUTTON_CLASS,
   INFINITE_WAIT_LABEL_EN,
   INFINITE_WAIT_LABEL_ZH,
@@ -83,6 +88,11 @@ export interface AdapterOptions {
   draftFallback: boolean
 }
 
+/** 配置来源, 每次读取都返回当前生效的选项 */
+export interface AdapterOptionsSource {
+  getOptions(): AdapterOptions
+}
+
 /** 一条晚回复答案 */
 interface AnswerItem {
   id: string
@@ -94,7 +104,14 @@ interface AnswerItem {
 interface ProjectionRow {
   callId: string
   state: string
-  questions: ReadonlyArray<{ id: string }>
+  questions: ReadonlyArray<QuestionMeta>
+}
+
+/** 投影里的题目元信息 */
+interface QuestionMeta {
+  id: string
+  question?: string
+  header?: string
 }
 
 /** 会话投影面 */
@@ -140,16 +157,22 @@ interface CardAnswer {
   custom: string
 }
 
-/** 超时后保存在内存里的一次草稿 */
+/** 单题的草稿内容 */
+interface DraftItem {
+  selected: string[]
+  custom: string
+  skipped: boolean
+}
+
+/** 超时后保存在内存里的一次草稿, 按题分开 */
 interface StoredDraft {
   sessionId: string
   callId: string
-  selected: string[]
-  custom: string
-  questions: ReadonlyArray<{ id: string }>
+  questions: ReadonlyArray<QuestionMeta>
+  items: DraftItem[]
 }
 
-/* 插件自绘控件的样式: 倒计时、无限等待按钮、提问气泡、只读草稿面板 */
+/* 插件自绘控件的样式: 倒计时、无限等待按钮、提问气泡、锚定草稿悬浮卡片 */
 const CARD_STYLE = `
 @keyframes dqtp-countdown-blink {
   0%, 100% { color: #e5484d; opacity: 1; }
@@ -219,27 +242,26 @@ const CARD_STYLE = `
 }
 #dqtp-draft-panel {
   position: fixed;
-  inset: 0;
   z-index: 2147483000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.32);
 }
 #dqtp-draft-panel .dqtp-draft-card {
-  width: min(680px, calc(100vw - 32px));
-  max-height: min(70vh, 560px);
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(320px, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px 20px;
-  border-radius: 12px;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.16));
   background: var(--dsw-alias-bg-elevated, #fff);
   color: var(--dsw-alias-label-primary, #111);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
 }
 #dqtp-draft-panel .dqtp-draft-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
 }
 #dqtp-draft-panel .dqtp-draft-note {
@@ -254,13 +276,16 @@ const CARD_STYLE = `
   word-break: break-word;
   font-size: 13px;
   line-height: 20px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: 8px;
   background: var(--dsw-alias-bg-secondary, rgba(0, 0, 0, 0.04));
 }
+#dqtp-draft-panel .dqtp-draft-actions {
+  display: flex;
+  justify-content: flex-end;
+}
 #dqtp-draft-panel .dqtp-draft-close {
-  align-self: flex-end;
-  height: 28px;
+  height: 26px;
   padding: 0 14px;
   border-radius: 999px;
   border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.16));
@@ -347,36 +372,163 @@ function readAnswer(card: HTMLElement): CardAnswer {
   return { selected: readSelected(card), custom: readCustom(card) }
 }
 
-/* 是否存在可记录的内容 */
-function hasAnswer(answer: CardAnswer): boolean {
-  return answer.selected.length > 0 || answer.custom.trim() !== ''
+/* 单题空草稿 */
+function emptyItem(): DraftItem {
+  return { selected: [], custom: '', skipped: false }
 }
 
-/* 把作答内容拼成一段可读文本, 供草稿气泡与上下文注入共用 */
-function composeBody(answer: { selected: readonly string[]; custom: string }): string {
+/* 单题是否有可展示的内容 */
+function hasItemContent(item: DraftItem): boolean {
+  return item.selected.length > 0 || item.custom.trim() !== ''
+}
+
+/* 把单题内容拼成一段可读文本, 供只读悬浮卡片展示 */
+function composeItem(item: DraftItem): string {
   const parts: string[] = []
-  if (answer.selected.length > 0)
-    parts.push(pick(DRAFT_SELECTED_LABEL_ZH, DRAFT_SELECTED_LABEL_EN) + answer.selected.join(' / '))
-  const custom = answer.custom.trim()
+  if (item.selected.length > 0)
+    parts.push(pick(DRAFT_SELECTED_LABEL_ZH, DRAFT_SELECTED_LABEL_EN) + item.selected.join(' / '))
+  const custom = item.custom.trim()
   if (custom !== '') parts.push(pick(DRAFT_CUSTOM_LABEL_ZH, DRAFT_CUSTOM_LABEL_EN) + custom)
   return parts.join('\n\n')
 }
 
-/* 把超时草稿经宿主官方通道送回模型: 它会把回复 steer 成一条用户消息 */
+/* 读取宿主分页文案里的题目序号与题数(形如 2 / 3) */
+function readProgress(card: HTMLElement): { index: number; count: number } | undefined {
+  const element = card.querySelector('[class*="_progress"]')
+  const matched = /(\d+)\s*\/\s*(\d+)/.exec(element?.textContent ?? '')
+  if (matched === null) return undefined
+  const index = Number(matched[1]) - 1
+  const count = Number(matched[2])
+  if (!Number.isInteger(index) || index < 0 || !Number.isInteger(count) || count <= 0) return undefined
+  return { index, count }
+}
+
+/*
+ * 读取宿主持久化的分题草稿。
+ * 宿主把未提交的草稿按会话写进 localStorage(键 dsh.user-questions.drafts.v1.session-<id>),
+ * 内容是 { progressByRequest: { "question:<session>:<callId>": { index, drafts: [...] } } },
+ * drafts 每项对应一题的 { selected, custom, skipped }。
+ */
+function readHostDrafts(identity: CardIdentity, count: number): DraftItem[] | undefined {
+  try {
+    const storage = window.localStorage
+    const cacheKey = QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i)
+      if (key === null || !key.startsWith(HOST_DRAFT_STORAGE_PREFIX)) continue
+      if (!key.includes(identity.sessionId)) continue
+      const raw = storage.getItem(key)
+      if (raw === null) continue
+      const parsed = JSON.parse(raw) as { progressByRequest?: Record<string, { drafts?: unknown }> }
+      const drafts = parsed.progressByRequest?.[cacheKey]?.drafts
+      if (!Array.isArray(drafts) || drafts.length !== count) continue
+      return drafts.map((entry) => {
+        const value = (typeof entry === 'object' && entry !== null ? entry : {}) as {
+          selected?: unknown
+          custom?: unknown
+          skipped?: unknown
+        }
+        return {
+          selected: Array.isArray(value.selected)
+            ? value.selected.filter((label): label is string => typeof label === 'string')
+            : [],
+          custom: typeof value.custom === 'string' ? value.custom : '',
+          skipped: value.skipped === true,
+        }
+      })
+    }
+  } catch {
+    /* 存储不可用时按缺失处理 */
+  }
+  return undefined
+}
+
+/* 宿主没有持久化记录时, 至少把卡片当前显示这一题的作答放到对应位置 */
+function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem[] {
+  const items = Array.from({ length: count }, () => emptyItem())
+  if (card === undefined) return items
+  const progress = readProgress(card)
+  if (progress === undefined || progress.index >= count) return items
+  items[progress.index] = { selected: readSelected(card), custom: readCustom(card), skipped: false }
+  return items
+}
+
+/* 合并两批分题草稿: 前一批(宿主持久化)优先, 缺的用后一批补齐 */
+function mergeDrafts(primary: DraftItem[] | undefined, fallback: DraftItem[] | undefined, count: number): DraftItem[] {
+  const merged: DraftItem[] = []
+  for (let i = 0; i < count; i += 1) {
+    const first = primary?.[i] ?? emptyItem()
+    const second = fallback?.[i] ?? emptyItem()
+    merged.push({
+      selected: [...(first.selected.length > 0 ? first.selected : second.selected)],
+      custom: first.custom.trim() !== '' ? first.custom : second.custom,
+      skipped: first.skipped && second.skipped,
+    })
+  }
+  return merged
+}
+
+/** 宿主晚回复调用签名 */
+type RemoteAnswer = (sessionId: string, callId: string, answer: { answers: AnswerItem[] }) => Promise<RemoteResult>
+
+/*
+ * 解析宿主晚回复通道。
+ * 客户端上下文按服务声明可能只暴露 remote 或 remote.userQuestions, 未注入时直接读属性会抛错,
+ * 因此先按属性读、再退回服务查找, 两条都失败就按缺失处理。
+ */
+function resolveRemoteAnswer(ctx: AdapterContext): RemoteAnswer | undefined {
+  try {
+    const remote = (ctx as { remote?: { userQuestions?: { answer?: RemoteAnswer } } }).remote
+    if (typeof remote?.userQuestions?.answer === 'function') return remote.userQuestions.answer.bind(remote.userQuestions)
+  } catch {
+    /* 未注入 remote 时按缺失处理 */
+  }
+  try {
+    const getter = (ctx as { get?: (name: string) => unknown }).get
+    if (typeof getter === 'function') {
+      const direct = getter.call(ctx, 'remote.userQuestions') as { answer?: RemoteAnswer } | undefined
+      if (typeof direct?.answer === 'function') return direct.answer.bind(direct)
+      const remote = getter.call(ctx, 'remote') as { userQuestions?: { answer?: RemoteAnswer } } | undefined
+      if (typeof remote?.userQuestions?.answer === 'function') return remote.userQuestions.answer.bind(remote.userQuestions)
+    }
+  } catch {
+    /* 服务不可用时按缺失处理 */
+  }
+  return undefined
+}
+
+/*
+ * 把各题的超时草稿按题结构化地送回模型: 每题带自己的已选与补充, 不附加任何整批说明文本,
+ * 超时语义由工具的 pending 说明承担。宿主会把这条回复 steer 成一条用户消息。
+ */
 async function injectAnswer(
   ctx: AdapterContext,
   identity: CardIdentity,
   questions: ReadonlyArray<{ id: string }>,
-  body: string,
+  items: DraftItem[],
 ): Promise<boolean> {
-  const answer = ctx.remote?.userQuestions?.answer
+  const answer = resolveRemoteAnswer(ctx)
   if (answer === undefined || questions.length === 0) return false
-  const message = DRAFT_INJECTION_HEADER + '\n\n' + body + '\n\n' + DRAFT_INJECTION_FOOTER
-  const answers: AnswerItem[] = questions.map((question, index) =>
-    index === 0 ? { id: question.id, selected: [], custom: message } : { id: question.id, selected: [] },
+  const answers: AnswerItem[] = questions.map((question, index) => {
+    const item = items[index] ?? emptyItem()
+    const custom = item.custom.trim()
+    return {
+      id: question.id,
+      selected: [...item.selected],
+      ...(custom === '' ? {} : { custom }),
+    }
+  })
+  const lastFilled = answers.reduce(
+    (last, item, index) => (item.selected.length > 0 || (item.custom ?? '').trim() !== '' ? index : last),
+    -1,
   )
+  if (lastFilled < 0) return false
   try {
-    await answer.call(ctx.remote?.userQuestions, identity.sessionId, identity.callId, { answers })
+    const result = await answer(identity.sessionId, identity.callId, { answers })
+    if (result !== undefined && (result.ok === false || result.value === false)) {
+      console.warn('[question-timeout-protection] 超时草稿注入被宿主拒绝', JSON.stringify(result))
+      return false
+    }
     return true
   } catch (error) {
     console.warn('[question-timeout-protection] 超时草稿注入失败', error)
@@ -396,16 +548,16 @@ function reportInfiniteWait(identity: CardIdentity): void {
 /**
  * 安装提问超时适配器。
  * @param ctx 客户端上下文
- * @param options 插件配置
+ * @param source 配置来源, 每次读取都取当前生效值
  * @returns 卸载函数
  */
-export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: AdapterOptions): () => void {
+export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: AdapterOptionsSource): () => void {
   if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
   ensureStyle()
 
   /* 已处理过超时流程的调用 */
   const handled = new Set<string>()
-  /* 已超时的调用, 卡片一律锁定 */
+  /* 已超时的调用, 卡片一律锁定并收起 */
   const timedOut = new Set<string>()
   /* 点击「无限等待」后冻结的剩余毫秒 */
   const paused = new Map<string, number>()
@@ -413,14 +565,25 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
   const deadlines = new Map<string, number>()
   /* 超时草稿(内存), 键为 callId */
   const drafts = new Map<string, StoredDraft>()
-  /* 每个调用最近一次填写内容, 卡片重渲染后仍可用 */
-  const lastAnswers = new Map<string, CardAnswer>()
+  /* 每个调用最近一次的分题草稿, 卡片重渲染后仍可用 */
+  const lastDrafts = new Map<string, DraftItem[]>()
   /* 会话提问投影订阅 */
   const subscriptions = new Map<string, () => void>()
   /* 已锁定过的卡片节点 */
   const lockedCards = new WeakSet<HTMLElement>()
-  /* 当前打开的只读草稿面板 */
+  /* 已触发过收起的卡片节点, 避免重复点击宿主的关闭按钮 */
+  const hiddenCards = new WeakSet<HTMLElement>()
+  /* 正在提交超时草稿的调用, 提交期间先不隐藏卡片 */
+  const submitting = new Set<string>()
+  /* 投影已到达但卡片尚未挂载的调用, 等卡片出现再评估 */
+  const deferred = new Map<string, ProjectionRow>()
+  /* 当前打开的只读草稿悬浮卡片 */
   let panel: HTMLElement | undefined
+  /* 悬浮卡片锚定的气泡按钮 */
+  let panelAnchor: HTMLElement | undefined
+
+  /* 当前生效的插件配置 */
+  const options = (): AdapterOptions => source.getOptions()
 
   /* 倒计时文案, 暂停态与运行态分开 */
   const countdownText = (remainingMs: number, isPaused: boolean): string => {
@@ -498,7 +661,24 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     }
   }
 
-  /* 装饰一张提问卡片: 倒计时、无限等待按钮、宿主控件隐藏、超时锁定 */
+  /*
+   * 收起问答卡片: 先按宿主自带的关闭按钮触发它的 dismiss(仅撤下卡片, 请求仍存活),
+   * 再加隐藏类兜底, 防止宿主重渲染把卡片带回界面。
+   */
+  const hideCard = (card: HTMLElement): void => {
+    if (!hiddenCards.has(card)) {
+      hiddenCards.add(card)
+      for (const button of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
+        const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '').trim()
+        if (!CLOSE_PANEL_LABELS.includes(label)) continue
+        button.click()
+        break
+      }
+    }
+    card.classList.add(HIDDEN_CONTROL_CLASS)
+  }
+
+  /* 装饰一张提问卡片: 倒计时、无限等待按钮、宿主控件隐藏、超时收起 */
   const decorateCard = (card: HTMLElement, identity: CardIdentity): void => {
     /* 首次读到的剩余时长记为插件自己的截止时间 */
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
@@ -532,7 +712,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
         const seconds = Math.ceil(remainingMs / 1000)
         countdown.classList.toggle(
           COUNTDOWN_WARNING_CLASS,
-          frozen === undefined && seconds <= options.warningSeconds,
+          frozen === undefined && seconds <= options().warningSeconds,
         )
         countdown.classList.toggle(COUNTDOWN_PAUSED_CLASS, frozen !== undefined)
       }
@@ -540,13 +720,17 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
 
     const button = ensureInfiniteButton(card, countdown)
     if (button !== undefined) {
-      const hidden = !options.infiniteWait || timedOut.has(identity.callId) || frozen !== undefined
+      const hidden = !options().infiniteWait || timedOut.has(identity.callId) || frozen !== undefined
       button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
       const label = pick(INFINITE_WAIT_LABEL_ZH, INFINITE_WAIT_LABEL_EN)
       if (button.textContent !== label) button.textContent = label
     }
 
-    if (timedOut.has(identity.callId)) lockCard(card)
+    /* 超时后锁定并收起卡片; 提交进行中先保留, 结算后由宿主移除 */
+    if (timedOut.has(identity.callId) && !submitting.has(identity.callId)) {
+      lockCard(card)
+      hideCard(card)
+    }
   }
 
   /* 点击「无限等待」: 冻结本次问答的倒计时, 直到用户提交为止 */
@@ -564,15 +748,61 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     decorateCard(card, identity)
   }
 
-  /* 关闭只读草稿面板 */
+  /* 把悬浮卡片摆到气泡旁边: 优先下方, 放不下翻到上方, 水平居中并夹在视口内 */
+  const placePanel = (root: HTMLElement, anchor: HTMLElement): void => {
+    const card = root.firstElementChild
+    if (!(card instanceof HTMLElement)) return
+    const rect = anchor.getBoundingClientRect()
+    const width = card.offsetWidth
+    const height = card.offsetHeight
+    const viewWidth = window.innerWidth
+    const viewHeight = window.innerHeight
+    let left = rect.left + rect.width / 2 - width / 2
+    left = Math.max(DRAFT_PANEL_MARGIN, Math.min(left, viewWidth - width - DRAFT_PANEL_MARGIN))
+    let top = rect.bottom + DRAFT_PANEL_OFFSET
+    if (top + height > viewHeight - DRAFT_PANEL_MARGIN) {
+      const above = rect.top - DRAFT_PANEL_OFFSET - height
+      top = above >= DRAFT_PANEL_MARGIN ? above : Math.max(DRAFT_PANEL_MARGIN, viewHeight - height - DRAFT_PANEL_MARGIN)
+    }
+    root.style.left = String(Math.round(left)) + 'px'
+    root.style.top = String(Math.round(top)) + 'px'
+  }
+
+  const repositionPanel = (): void => {
+    if (panel === undefined || panelAnchor === undefined) return
+    placePanel(panel, panelAnchor)
+  }
+
+  /* 关闭只读草稿悬浮卡片 */
   const closeDraftPanel = (): void => {
     if (panel === undefined) return
     panel.remove()
     panel = undefined
+    panelAnchor = undefined
+    window.removeEventListener('scroll', repositionPanel, true)
+    window.removeEventListener('resize', repositionPanel)
+    document.removeEventListener('keydown', onPanelKeyDown, true)
+    document.removeEventListener('pointerdown', onPanelPointerDown, true)
   }
 
-  /* 打开只读草稿面板: 只展示超时那一刻的内容, 不提供任何作答入口 */
-  const openDraftPanel = (draft: StoredDraft): void => {
+  /* Esc 关闭悬浮卡片 */
+  function onPanelKeyDown(event: Event): void {
+    if (!(event instanceof KeyboardEvent) || event.key !== 'Escape') return
+    closeDraftPanel()
+  }
+
+  /* 点击卡片外部关闭悬浮卡片, 点气泡本身交给点击处理器做开关 */
+  function onPanelPointerDown(event: Event): void {
+    if (panel === undefined) return
+    const target = event.target
+    if (!(target instanceof Node)) return
+    if (panel.contains(target)) return
+    if (panelAnchor !== undefined && panelAnchor.contains(target)) return
+    closeDraftPanel()
+  }
+
+  /* 打开只读草稿悬浮卡片: 只展示超时那一刻的内容, 不提供任何作答入口 */
+  const openDraftPanel = (draft: StoredDraft, anchor: HTMLElement): void => {
     closeDraftPanel()
     const root = document.createElement('div')
     root.id = DRAFT_PANEL_ID
@@ -586,23 +816,36 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     note.textContent = pick(DRAFT_PANEL_NOTE_ZH, DRAFT_PANEL_NOTE_EN)
     const body = document.createElement('div')
     body.className = 'dqtp-draft-body'
-    const composed = composeBody(draft)
-    body.textContent = composed === '' ? pick(DRAFT_PANEL_EMPTY_ZH, DRAFT_PANEL_EMPTY_EN) : composed
+    const blocks = draft.questions.map((question, index) => {
+      const item = draft.items[index] ?? emptyItem()
+      const heading = (question.header ?? question.question ?? '').trim()
+      const content = hasItemContent(item)
+        ? composeItem(item)
+        : pick(DRAFT_PANEL_UNANSWERED_ZH, DRAFT_PANEL_UNANSWERED_EN)
+      return (heading === '' ? '' : heading + '\n') + content
+    })
+    body.textContent = blocks.length === 0 ? pick(DRAFT_PANEL_EMPTY_ZH, DRAFT_PANEL_EMPTY_EN) : blocks.join('\n\n')
+    const actions = document.createElement('div')
+    actions.className = 'dqtp-draft-actions'
     const close = document.createElement('button')
     close.type = 'button'
     close.className = 'dqtp-draft-close'
     close.textContent = pick(DRAFT_PANEL_CLOSE_ZH, DRAFT_PANEL_CLOSE_EN)
     close.addEventListener('click', closeDraftPanel)
+    actions.appendChild(close)
     card.appendChild(title)
     card.appendChild(note)
     card.appendChild(body)
-    card.appendChild(close)
+    card.appendChild(actions)
     root.appendChild(card)
-    root.addEventListener('click', (event) => {
-      if (event.target === root) closeDraftPanel()
-    })
     document.body.appendChild(root)
     panel = root
+    panelAnchor = anchor
+    placePanel(root, anchor)
+    window.addEventListener('scroll', repositionPanel, true)
+    window.addEventListener('resize', repositionPanel)
+    document.addEventListener('keydown', onPanelKeyDown, true)
+    document.addEventListener('pointerdown', onPanelPointerDown, true)
   }
 
   /* 从工具调用行向上取 callId */
@@ -630,7 +873,19 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     return button
   }
 
-  /* 装饰一行提问工具调用: 气泡文案随是否记录到草稿切换 */
+  /* 超时后隐藏宿主「回答」按钮, 去掉重新打开问答框的入口 */
+  const hideHostReopen = (row: HTMLElement): void => {
+    for (const button of Array.from(row.querySelectorAll(CARD_BUTTON_SELECTOR))) {
+      if (button.classList.contains(BUBBLE_BUTTON_CLASS)) continue
+      const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '').trim()
+      const text = (button.textContent ?? '').trim()
+      if (ASK_REOPEN_LABELS.includes(label) || ASK_REOPEN_LABELS.includes(text)) {
+        button.classList.add(HIDDEN_CONTROL_CLASS)
+      }
+    }
+  }
+
+  /* 装饰一行提问工具调用: 气泡文案随是否记录到草稿切换, 超时后去掉宿主重开入口 */
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
     if (callId === undefined) return
@@ -642,27 +897,52 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     if (button.textContent !== label) button.textContent = label
     const state = draft === undefined ? BUBBLE_STATE_OPEN : BUBBLE_STATE_DRAFT
     if (button.getAttribute(BUBBLE_STATE_ATTRIBUTE) !== state) button.setAttribute(BUBBLE_STATE_ATTRIBUTE, state)
+    if (timedOut.has(callId)) hideHostReopen(row)
   }
 
-  /* 评估一行 continued 投影: 记录草稿、锁定卡片, 按配置注入上下文 */
+  /* 超时后的统一收尾: 锁定并收起卡片, 不产生任何提交 */
+  const closeCardAfterTimeout = (identity: CardIdentity): void => {
+    const card = findCard(identity)
+    if (card === undefined) return
+    lockCard(card)
+    hideCard(card)
+  }
+
+  /* 评估一行 continued 投影: 按题收集草稿, 按兜底范围提交或收起卡片 */
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
     if (handled.has(row.callId)) return
-    handled.add(row.callId)
-    timedOut.add(row.callId)
     const card = findCard(identity)
+    const stored = lastDrafts.get(row.callId)
+    /* 卡片还没挂载也没有历史记录时先挂起, 等扫描到卡片再评估, 避免丢失卡里已填内容 */
+    if (card === undefined && stored === undefined) {
+      deferred.set(row.callId, row)
+      return
+    }
+    handled.add(row.callId)
+    deferred.delete(row.callId)
+    timedOut.add(row.callId)
     if (card !== undefined) lockCard(card)
-    if (!options.draftFallback) return
-    const answer =
-      (card === undefined ? undefined : readAnswer(card)) ?? lastAnswers.get(row.callId) ?? { selected: [], custom: '' }
-    drafts.set(row.callId, {
-      sessionId: identity.sessionId,
-      callId: row.callId,
-      selected: answer.selected,
-      custom: answer.custom,
-      questions: row.questions,
-    })
-    if (!injectsContext(options.fallback) || !hasAnswer(answer)) return
-    void injectAnswer(ctx, identity, row.questions, composeBody(answer))
+    const count = row.questions.length
+    const items = mergeDrafts(readHostDrafts(identity, count) ?? stored, readLiveDrafts(card, count), count)
+    lastDrafts.set(row.callId, items)
+    const current = options()
+    if (current.draftFallback) drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
+    /* 注入开启且至少一题有内容时走宿主官方晚回复通道, 提交成功后卡片随结算被宿主移除 */
+    const shouldInject = current.draftFallback && injectsContext(current.fallback) && items.some(hasItemContent)
+    if (shouldInject) {
+      submitting.add(row.callId)
+      void injectAnswer(ctx, identity, row.questions, items)
+        .then((accepted) => {
+          submitting.delete(row.callId)
+          if (!accepted) closeCardAfterTimeout(identity)
+        })
+        .catch(() => {
+          submitting.delete(row.callId)
+          closeCardAfterTimeout(identity)
+        })
+      return
+    }
+    closeCardAfterTimeout(identity)
   }
 
   /* 评估一个会话的提问投影 */
@@ -718,9 +998,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
       if (callId === undefined) return
       const draft = drafts.get(callId)
       if (draft !== undefined) {
-        openDraftPanel(draft)
+        if (panel !== undefined && panelAnchor === button) closeDraftPanel()
+        else openDraftPanel(draft, button)
         return
       }
+      closeDraftPanel()
       const anchor = row.querySelector(PANEL_BUTTON_SELECTOR)
       if (anchor instanceof HTMLElement) anchor.click()
       return
@@ -734,7 +1016,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
     if (identity === undefined) return
     paused.delete(identity.callId)
     deadlines.delete(identity.callId)
-    lastAnswers.delete(identity.callId)
+    lastDrafts.delete(identity.callId)
   }
   document.addEventListener('click', onDocumentClick, true)
 
@@ -744,17 +1026,22 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, options: Adap
       if (!(element instanceof HTMLElement)) continue
       const identity = parseCardKey(element.getAttribute('data-question-key'))
       if (identity === undefined) continue
-      if (options.cardEnhancements) {
-        const answer = readAnswer(element)
-        if (hasAnswer(answer)) lastAnswers.set(identity.callId, answer)
+      if (options().cardEnhancements) {
+        const pending = deferred.get(identity.callId)
+        if (pending !== undefined) evaluateRow(identity, pending)
+        const previous = lastDrafts.get(identity.callId)
+        const progress = readProgress(element)
+        const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
+        lastDrafts.set(identity.callId, mergeDrafts(readLiveDrafts(element, count), previous, count))
         decorateCard(element, identity)
       }
       ensureSubscription(identity.sessionId)
     }
-    if (!options.cardEnhancements) return
+    if (!options().cardEnhancements) return
     for (const row of Array.from(document.querySelectorAll(ASK_ROW_SELECTOR))) {
       if (row instanceof HTMLElement) decorateRow(row)
     }
+    repositionPanel()
   }
 
   const observer = new MutationObserver(scan)

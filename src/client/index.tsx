@@ -1,8 +1,10 @@
 /*
  * 客户端入口
  *
- * 客户端半身只做宿主提问卡片之外的一层适配: 倒计时警示样式与超时草稿注入,
+ * 客户端半身只做宿主提问卡片之外的一层适配: 倒计时、无限等待、超时草稿与气泡,
  * 提问卡片本身仍由宿主 dsh-client-ui-user-questions 渲染。
+ * 配置不随客户端模块下发, 因此这里从宿主的 configForms 服务读取实时值,
+ * 让配置页的改动立即影响超时行为; 服务缺失时回退到 schema 默认值。
  * 作者: JularDepick
  */
 
@@ -14,20 +16,21 @@ import {
   DEFAULT_FALLBACK_MODE,
   DEFAULT_INFINITE_WAIT,
   DEFAULT_WARNING_SECONDS,
+  SETTINGS_NAMESPACE,
 } from '../constants'
 import { installQuestionTimeoutAdapter } from './adapter'
-import type { AdapterContext, AdapterOptions } from './adapter'
-import { registerSettingsPage } from './settings'
-import type { SettingsContext } from './settings'
+import type { AdapterContext, AdapterOptions, AdapterOptionsSource } from './adapter'
+import { readClientService, registerSettingsPage } from './settings'
+import type { ConfigFormLike, FormsLike, SettingsContext } from './settings'
 
 export const name = 'dsh-question-timeout-protection/client'
 
 /**
  * 需要的客户端服务: 会话绑定、提问晚回复通道、插槽与文案。
- * 配置表单由宿主经插槽下发(props.form), 因此不依赖 configForms 服务:
- * 任一硬注入项缺失都会让整个客户端 apply 不执行, 连卡片适配器一并失效。
+ * 配置表单走软取(宿主可能晚于本插件就绪, 也可能不提供),
+ * 硬注入缺失会让整个客户端 apply 不执行, 连卡片适配器一并失效。
  */
-export const inject = ['sessions', 'remote.userQuestions', 'slots', 'locale']
+export const inject = ['sessions', 'remote', 'remote.userQuestions', 'slots', 'locale']
 
 /* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子与配置页服务 */
 type ClientContext = AdapterContext & SettingsContext & {
@@ -45,12 +48,41 @@ function resolveOptions(config: Partial<ConfigModel> | undefined): AdapterOption
   }
 }
 
+/**
+ * 构造实时配置来源。
+ * 客户端模块不会收到插件配置, 因此以宿主 configForms 的快照为准;
+ * 服务缺失或尚未就绪时回退到启动时的默认值。
+ */
+function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterOptionsSource {
+  let form: ConfigFormLike | undefined
+  return {
+    getOptions(): AdapterOptions {
+      try {
+        if (form === undefined) {
+          form = readClientService<FormsLike>(ctx, 'configForms')?.get(SETTINGS_NAMESPACE)
+        }
+        const value = form?.getSnapshot()?.value
+        if (value === undefined) return base
+        return {
+          fallback: value.fallback ?? base.fallback,
+          warningSeconds: typeof value.warningSeconds === 'number' ? value.warningSeconds : base.warningSeconds,
+          cardEnhancements: value.cardEnhancements ?? base.cardEnhancements,
+          infiniteWait: value.infiniteWait ?? base.infiniteWait,
+          draftFallback: value.draftFallback ?? base.draftFallback,
+        }
+      } catch {
+        return base
+      }
+    },
+  }
+}
+
 export function apply(rawCtx: unknown, config?: Partial<ConfigModel>): void {
   const ctx = rawCtx as ClientContext
   let disposeAdapter: () => void = () => {}
   let disposeSettings: () => void = () => {}
   try {
-    disposeAdapter = installQuestionTimeoutAdapter(ctx, resolveOptions(config))
+    disposeAdapter = installQuestionTimeoutAdapter(ctx, createOptionsSource(ctx, resolveOptions(config)))
   } catch (error) {
     console.error('[question-timeout-protection] 卡片适配器安装失败', error)
   }
