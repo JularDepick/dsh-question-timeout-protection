@@ -42,7 +42,7 @@ export const MAX_WARNING_SECONDS = 60
 /** 提问等待时长默认值(秒);仅在本插件接管提问等待时生效 */
 export const DEFAULT_TIMEOUT_SECONDS = 120
 
-/** 默认启用卡片增强(倒计时、无限等待按钮、单选底色、提问气泡、超时锁定) */
+/** 默认启用卡片增强(倒计时、无限等待按钮、单选底色、提问气泡、隐藏宿主控件); 超时后的锁卡与收尾由超时草稿兜底驱动 */
 export const DEFAULT_CARD_ENHANCEMENTS = true
 
 /** 默认启用「无限等待」按钮与点击后的暂停行为 */
@@ -85,12 +85,12 @@ export const TIMEOUT_PENDING_NOTICE =
   '该轮提问已超时,用户没有正式提交,但输入草稿保留了下来。如果草稿足够完整可以继续任务,但是最后一定要告知用户出现过提问超时以及你对该超时携带的草稿的处理和决策。'
 
 /** 草稿文本里已选选项行的前缀 */
-export const DRAFT_SELECTED_LABEL_ZH = '已选: '
-export const DRAFT_SELECTED_LABEL_EN = 'Selected: '
+export const DRAFT_SELECTED_LABEL_ZH = '已选: {items}'
+export const DRAFT_SELECTED_LABEL_EN = 'Selected: {items}'
 
 /** 草稿文本里自由输入行的前缀 */
-export const DRAFT_CUSTOM_LABEL_ZH = '补充: '
-export const DRAFT_CUSTOM_LABEL_EN = 'Additional: '
+export const DRAFT_CUSTOM_LABEL_ZH = '补充: {text}'
+export const DRAFT_CUSTOM_LABEL_EN = 'Additional: {text}'
 
 /** 是否把超时草稿注入对话上下文 */
 export function injectsContext(mode: FallbackMode): boolean {

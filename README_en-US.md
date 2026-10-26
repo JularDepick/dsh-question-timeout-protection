@@ -34,7 +34,7 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 
 - Makes the wait visible: the question dialog shows this question's countdown at its top right and flashes red near the deadline
 - Makes the wait pausable: a "Wait indefinitely" button next to the countdown pauses this question's countdown until the user submits
-- Makes the question recognizable: a filled square marker on the selected single-choice option and a question bubble button at the question tool call in the conversation
+- Makes the question recognizable: a filled square marker on the selected single-choice option, plus a question bubble button at the question tool call once a timeout has recorded a draft
 - Keeps content on timeout: the selected options and the typed content are kept in memory and recorded in that question's bubble for read-only viewing
 - Injects the timed-out draft when configured: the draft itself enters the context as a regular per-question answer with no extra text attached; the timeout notice lives only in the tool's pending result and the model decides whether to ask again
 
@@ -45,7 +45,7 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 - It does not answer for the user: a timeout never ticks any option and never submits the draft as a formal answer
 - It does not decide for the model: whether to ask again or handle the draft otherwise is the model's call; the plugin only delivers the information
 - It does not fall back to continued answering: a timed-out question that carries a draft is withdrawn and the host "Answer" entry is hidden; with an empty draft the plugin leaves the host behaviour untouched
-- It does not persist anything: the draft lives only in client memory. After a refresh the bubble is rebuilt from the host draft only while that question is still waiting and this page took over its countdown; settled rows are not restored
+- It does not persist anything: the draft lives only in client memory. After a refresh both the bubble and its record are lost; a still-waiting question is re-evaluated and handled when the takeover conditions hold, and settled rows are not restored
 - It adds no custom RPC or storage: injection reuses the host's existing late-reply channel and state sync uses one loopback HTTP endpoint
 
 ## How it works
@@ -83,9 +83,9 @@ The config page sits in the plugin-level config block at the **top of the plugin
 | `infiniteWait` | boolean | `true` | Fixed | The "Wait indefinitely" button next to the countdown that pauses this countdown until the user submits |
 | `draftFallback` | boolean | `true` | Fixed | Master switch for the timeout takeover: off leaves the host's own path untouched; on submits the draft or withdraws the card by the fallback scope |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts |
-| `timeoutSeconds` | number | 120 | Not exposed | Question wait time in seconds, decided by the `timeout` argument of each tool call; this value is only the default when the argument is omitted |
+| `timeoutSeconds` | number | 120 | Not exposed | Only the suggested wait seconds shown in the tool parameter description; the real wait is passed explicitly by the model and omitting it fails the call |
 
-> Keeping the draft in the UI is mandatory: at timeout the draft always stays in memory and is recorded in the bubble button of that question tool call, which pops a read-only floating card beside it. With "Inject into the context" checked (the default), the draft is submitted as a regular late reply per question; the question card then disappears as the answer settles. Unchecked, the plugin only withdraws the card and submits nothing. The timeout notice lives only in the tool's pending result: it says the batch expired, the user never submitted, the draft was kept, and the model must report the timeout and its decision about the draft to the user. A timed-out question that carries a draft no longer offers any way to answer; an empty draft, a disabled fallback, or a failed "Wait indefinitely" report leaves the host's original path intact, so the card stays answerable.
+> Keeping the draft in the UI is mandatory: at timeout the draft always stays in memory and is recorded in the bubble button of that question tool call, which pops a read-only floating card beside it. With "Inject into the context" checked (the default), the draft is submitted as a regular late reply per question; the question card then disappears as the answer settles. Unchecked, the plugin only withdraws the card and submits nothing. The timeout notice lives only in the tool's pending result: it says the batch expired, the user never submitted, the draft was kept, and the model must report the timeout and its decision about the draft to the user. A timed-out question that carries a draft no longer offers any way to answer; with an empty draft, a disabled fallback, or a failed "Wait indefinitely" report the plugin submits nothing and keeps the card, the question still settles as timed out, and the card stays answerable.
 
 ## Known limits
 
@@ -94,6 +94,8 @@ The config page sits in the plugin-level config block at the **top of the plugin
 - "Wait indefinitely" relies on a loopback channel: it is unavailable when the browser and the server are on different machines, when the port is taken, or when a second dsh instance runs; the countdown then shows "Infinite wait unavailable" and the question falls back to the host's own behaviour instead of submitting the draft at the timeout
 - Self-timed waits leave a host wait unsettled: every takeover keeps the host wait alive until the request settles or the client disconnects, which accumulates in long sessions
 - With several tabs on the same session, the first submit wins and the others lose their card because the host refuses a duplicate reply
+- Only the latest 200 draft snapshots are kept, so older bubbles can no longer be opened
+- A profile without the web client does not start the state sync endpoint, so "Wait indefinitely" is unavailable in that deployment
 
 ## Development
 
@@ -101,6 +103,7 @@ The config page sits in the plugin-level config block at the **top of the plugin
 pnpm install
 pnpm build
 pnpm typecheck
+pnpm run check:translation
 ```
 
 ## License

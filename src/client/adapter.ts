@@ -369,10 +369,11 @@ function hasItemContent(item: DraftItem): boolean {
 /* 把单题内容拼成一段可读文本, 供只读悬浮卡片展示 */
 function composeItem(item: DraftItem): string {
   const parts: string[] = []
+  /* 标签是带占位符的模板, 选项之间以斜杠分隔, 与翻译规范里约定的连接符一致 */
   if (item.selected.length > 0)
-    parts.push(pick(DRAFT_SELECTED_LABEL_ZH, DRAFT_SELECTED_LABEL_EN) + item.selected.join(' / '))
+    parts.push(pick(DRAFT_SELECTED_LABEL_ZH, DRAFT_SELECTED_LABEL_EN).replace('{items}', item.selected.join(' / ')))
   const custom = item.custom.trim()
-  if (custom !== '') parts.push(pick(DRAFT_CUSTOM_LABEL_ZH, DRAFT_CUSTOM_LABEL_EN) + custom)
+  if (custom !== '') parts.push(pick(DRAFT_CUSTOM_LABEL_ZH, DRAFT_CUSTOM_LABEL_EN).replace('{text}', custom))
   return parts.join('\n\n')
 }
 
@@ -1097,12 +1098,11 @@ function hideHostWaitText(card: HTMLElement): void {
     }
     timedOut.add(row.callId)
     if (card !== undefined) lockCard(card)
-    if (current.draftFallback) {
-      drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
-      pruneDrafts()
-    }
+    /* 走到这里说明已接管, 草稿兜底开关必然为真, 直接记快照即可 */
+    drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
+    pruneDrafts()
     /* 注入开启且至少一题有内容时走宿主官方晚回复通道, 提交成功后卡片随结算被宿主移除 */
-    const shouldInject = current.draftFallback && injectsContext(current.fallback)
+    const shouldInject = injectsContext(current.fallback)
     if (shouldInject) {
       submitting.add(row.callId)
       void injectAnswer(ctx, identity, row.questions, items)

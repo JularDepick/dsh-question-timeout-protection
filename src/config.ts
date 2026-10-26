@@ -30,7 +30,7 @@ export interface Config {
   warningSeconds: Volatile<number>
   /** 提问等待时长(秒),仅在本插件接管提问等待时生效(默认 120) */
   timeoutSeconds: Volatile<number>
-  /** 是否启用卡片增强(倒计时文案、隐藏收起/展开、超时锁定等) */
+  /** 是否启用卡片增强(倒计时文案、无限等待按钮、单选底色、提问气泡、隐藏宿主控件) */
   cardEnhancements: Volatile<boolean>
   /** 是否提供「无限等待」入口与点击后的阻塞行为 */
   infiniteWait: Volatile<boolean>

@@ -48,7 +48,7 @@ function handleStateRequest(request: import('node:http').IncomingMessage, respon
     return
   }
   /* 只读诊断端点: 回环地址上返回已登记过的调用, 便于排查「无限等待」是否真的送达 */
-  if (request.method === 'GET' && request.url === SYNC_PATH + '/state') {
+  if (request.method === 'GET' && request.url === SYNC_PATH + '-state') {
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ calls: [...infiniteCalls] }))
     return

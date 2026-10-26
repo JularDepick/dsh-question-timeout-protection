@@ -54,24 +54,50 @@ function resolvePackageRoot(): string {
 /** 插件包根目录 */
 const PACKAGE_ROOT = resolvePackageRoot()
 
+/* 语言码归一: zh, zh-cn, zh-hans 都归到 zh-CN; en, en-us 归到 en-US; 其余保持原样 */
+function normalizeLocale(locale: string): string {
+  const raw = locale.trim().toLowerCase().replace(/_/g, '-')
+  if (raw === '') return DEFAULT_LANGUAGE
+  const [language, region] = raw.split('-')
+  if (language === 'zh') return region === 'tw' || region === 'hk' || region === 'mo' ? 'zh-TW' : 'zh-CN'
+  if (language === 'en') return 'en-US'
+  return region === undefined ? language : language + '-' + region.toUpperCase()
+}
+
+/* 读取失败后的最短重试间隔, 避免热路径每次翻译都做一次失败的读盘 */
+const RETRY_INTERVAL_MS = 30000
+
 export class TranslationManager {
   private tables: Record<string, TranslationTable> = {}
   private language: string = DEFAULT_LANGUAGE
   private readonly warned = new Set<string>()
+  private readonly failedAt = new Map<string, number>()
+
+  /** 清空已加载的翻译表, 供测试或热更新后强制重读 */
+  reload(): void {
+    this.tables = {}
+    this.failedAt.clear()
+    this.warned.clear()
+  }
 
   /** 加载指定语言的翻译表; 读取失败时返回空表但不缓存, 便于修复后自动恢复 */
   load(locale: string): TranslationTable {
-    const cached = this.tables[locale]
+    const normalized = normalizeLocale(locale)
+    const cached = this.tables[normalized]
     if (cached) return cached
-    const filePath = join(PACKAGE_ROOT, TRANSLATION_DIR, `${locale}.ini`)
+    const failedAt = this.failedAt.get(normalized)
+    if (failedAt !== undefined && Date.now() - failedAt < RETRY_INTERVAL_MS) return {}
+    const filePath = join(PACKAGE_ROOT, TRANSLATION_DIR, `${normalized}.ini`)
     try {
       const table = parseTranslationSection(readFileSync(filePath, 'utf-8'))
-      this.tables[locale] = table
+      this.tables[normalized] = table
+      this.failedAt.delete(normalized)
       return table
     } catch (error) {
       /* 不缓存失败结果: 打包漏发 ini 或路径变化修好后下一次调用即可恢复 */
-      if (!this.warned.has(locale)) {
-        this.warned.add(locale)
+      this.failedAt.set(normalized, Date.now())
+      if (!this.warned.has(normalized)) {
+        this.warned.add(normalized)
         console.warn(
           '[question-timeout-protection] 翻译文件读取失败, 将回退到默认语言:',
           error instanceof Error ? error.message : String(error),
@@ -83,14 +109,14 @@ export class TranslationManager {
 
   /** 切换当前语言 */
   setLanguage(locale: string): void {
-    this.language = locale
-    this.load(locale)
+    this.language = normalizeLocale(locale)
+    this.load(this.language)
   }
 
   /** 取翻译文本,未命中回退默认语言,仍未命中返回键名 */
   translate(key: string): string {
-    const current = this.tables[this.language] ?? this.load(this.language)
-    const fallback = this.tables[FALLBACK_LANGUAGE] ?? this.load(FALLBACK_LANGUAGE)
+    const current = this.load(this.language)
+    const fallback = this.load(FALLBACK_LANGUAGE)
     return current[key] ?? fallback[key] ?? key
   }
 }

@@ -31,7 +31,8 @@
     "cordis.patch.yml",
     "src/translation/*.ini",
     "src/translation/.example_zh-CN.ini",
-    "README*"
+    "README*",
+    "scripts/"
   ],
   "scripts": {
     "build": "tsdown",
