@@ -109,8 +109,6 @@ export const HEADER_ACTIONS_SELECTOR = '[class*="_headerActions"]'
 /** 宿主提问卡片底部按钮区(提交/下一题/跳过) */
 export const CARD_FOOTER_ACTIONS_SELECTOR = '[class*="_footerActions"]'
 
-/** 宿主提问卡片的选项容器 */
-export const CARD_OPTIONS_SELECTOR = '[class*="_options"]'
 
 /** 宿主提问卡片内的输入控件 */
 export const CARD_INPUT_SELECTOR = 'textarea, input'
@@ -132,11 +130,7 @@ export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
   /Paused · (\d+)s remaining/,
 ]
 
-/** 宿主「会一直等你回答」的等待文案, 中文与英文 */
-export const HELD_PATTERN = /会一直等你回答|Waiting until you answer/
 
-/** 宿主「已继续工作, 仍可回答」的晚回复文案, 中文与英文 */
-export const CONTINUED_PATTERN = /已继续工作|Work continued/
 
 /** 宿主「慢慢回答」控件的文案(中文与英文), 用于隐藏该控件 */
 export const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', 'Take time']
@@ -188,8 +182,6 @@ export const INFINITE_BUTTON_CLASS = 'dqtp-infinite-wait'
 /** 插件自绘「提问标识气泡」的类名 */
 export const BUBBLE_BUTTON_CLASS = 'dqtp-question-bubble'
 
-/** 插件自绘「提问标识气泡」的选择器 */
-export const BUBBLE_BUTTON_SELECTOR = 'button.' + BUBBLE_BUTTON_CLASS
 
 /** 「提问标识气泡」的状态属性: 仅在已记录超时草稿时出现 */
 export const BUBBLE_STATE_ATTRIBUTE = 'data-dqtp-bubble'
@@ -245,6 +237,12 @@ export const COUNTDOWN_PAUSED_TEXT_EN = 'Paused'
 
 /** 「无限等待」按钮文案(中文) */
 export const INFINITE_WAIT_LABEL_ZH = '无限等待'
+
+/** 状态同步通道不可达时替代倒计时的提示文案(中文) */
+export const SYNC_UNAVAILABLE_TEXT_ZH = '无法无限等待'
+
+/** 状态同步通道不可达时替代倒计时的提示文案(英文) */
+export const SYNC_UNAVAILABLE_TEXT_EN = 'Infinite wait unavailable'
 
 /** 「无限等待」按钮文案(英文) */
 export const INFINITE_WAIT_LABEL_EN = 'Wait indefinitely'

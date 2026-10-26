@@ -55,6 +55,8 @@ import {
   INFINITE_BUTTON_CLASS,
   INFINITE_WAIT_LABEL_EN,
   INFINITE_WAIT_LABEL_ZH,
+  SYNC_UNAVAILABLE_TEXT_EN,
+  SYNC_UNAVAILABLE_TEXT_ZH,
   NEXT_QUESTION_TEXTS,
   PANEL_BUTTON_SELECTOR,
   QUESTION_CARD_KEY_PREFIX,
@@ -149,11 +151,6 @@ interface CardIdentity {
 }
 
 /** 卡片里当前的作答内容 */
-interface CardAnswer {
-  selected: string[]
-  custom: string
-}
-
 /** 单题的草稿内容 */
 interface DraftItem {
   selected: string[]
@@ -364,9 +361,14 @@ function readCustom(card: HTMLElement): string {
   return ''
 }
 
-/* 读取卡片里当前的作答内容 */
-function readAnswer(card: HTMLElement): CardAnswer {
-  return { selected: readSelected(card), custom: readCustom(card) }
+/* 卡片当前是否仍在宿主倒计时中, 用于判断本页是否真正接管过这次等待 */
+function hostShowsCountdown(card: HTMLElement | undefined): boolean {
+  if (card === undefined) return false
+  for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
+    if (!(element instanceof HTMLElement)) continue
+    if (parseRemainingSeconds(element.textContent?.trim() ?? '') !== undefined) return true
+  }
+  return false
 }
 
 /* 单题空草稿 */
@@ -450,12 +452,25 @@ function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem
   return items
 }
 
-/* 合并两批分题草稿: 前一批(宿主持久化)优先, 缺的用后一批补齐 */
-function mergeDrafts(primary: DraftItem[] | undefined, fallback: DraftItem[] | undefined, count: number): DraftItem[] {
+/*
+ * 合并两批分题草稿: 默认前一批优先, 缺的用后一批补齐。
+ * liveIndex 指向卡片当前显示的那一题, 该题一律以实时值为准 ——
+ * 否则用户把手里的输入清空后, 旧值会被补回来并可能被当作草稿注入。
+ */
+function mergeDrafts(
+  primary: DraftItem[] | undefined,
+  fallback: DraftItem[] | undefined,
+  count: number,
+  liveIndex?: number,
+): DraftItem[] {
   const merged: DraftItem[] = []
   for (let i = 0; i < count; i += 1) {
     const first = primary?.[i] ?? emptyItem()
     const second = fallback?.[i] ?? emptyItem()
+    if (i === liveIndex) {
+      merged.push({ selected: [...second.selected], custom: second.custom, skipped: second.skipped })
+      continue
+    }
     merged.push({
       selected: [...(first.selected.length > 0 ? first.selected : second.selected)],
       custom: first.custom.trim() !== '' ? first.custom : second.custom,
@@ -533,13 +548,18 @@ async function injectAnswer(
   }
 }
 
-/* 把「无限等待」的点击状态同步给服务端, 使工具到期后继续阻塞 */
-function reportInfiniteWait(identity: CardIdentity): void {
-  void fetch('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, {
+/*
+ * 把「无限等待」的点击状态同步给服务端, 使工具到期后继续阻塞。
+ * 失败必须让调用方知道: 通道不可达时无限等待无法生效, 不能静默按超时提交草稿。
+ */
+function reportInfiniteWait(identity: CardIdentity): Promise<boolean> {
+  return fetch('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ callId: identity.callId, infinite: true }),
-  }).catch(() => {})
+  })
+    .then((response) => response.ok)
+    .catch(() => false)
 }
 
 /**
@@ -558,6 +578,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const timedOut = new Set<string>()
   /* 超时时草稿为空的调用, 交还宿主原版超时路径, 插件不再改卡片与工具行 */
   const passive = new Set<string>()
+  /* 「无限等待」上报失败的调用: 通道不可达时同样交还宿主, 绝不能按超时提交草稿 */
+  const syncUnavailable = new Set<string>()
   /* 点击「无限等待」后冻结的剩余毫秒 */
   const paused = new Map<string, number>()
   /* 每个调用的截止时间, 按 callId 记, 卡片重渲染后延续 */
@@ -576,6 +598,36 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const submitting = new Set<string>()
   /* 投影已到达但卡片尚未挂载的调用, 等卡片出现再评估 */
   const deferred = new Map<string, ProjectionRow>()
+
+  /* 所有登记过状态的 callId, 供结算后统一回收 */
+  const knownCallIds = (): string[] => {
+    const ids = new Set<string>()
+    for (const id of handled) ids.add(id)
+    for (const id of timedOut) ids.add(id)
+    for (const id of passive) ids.add(id)
+    for (const id of syncUnavailable) ids.add(id)
+    for (const id of submitting) ids.add(id)
+    for (const id of drafts.keys()) ids.add(id)
+    for (const id of lastDrafts.keys()) ids.add(id)
+    for (const id of deadlines.keys()) ids.add(id)
+    for (const id of paused.keys()) ids.add(id)
+    for (const id of deferred.keys()) ids.add(id)
+    return [...ids]
+  }
+
+  /* 回收一个已结算调用的全部页内状态, 避免长会话里无限累积 */
+  const forgetCall = (callId: string): void => {
+    handled.delete(callId)
+    timedOut.delete(callId)
+    passive.delete(callId)
+    syncUnavailable.delete(callId)
+    submitting.delete(callId)
+    drafts.delete(callId)
+    lastDrafts.delete(callId)
+    deadlines.delete(callId)
+    paused.delete(callId)
+    deferred.delete(callId)
+  }
   /* 当前打开的只读草稿悬浮卡片 */
   let panel: HTMLElement | undefined
   /* 悬浮卡片锚定的气泡按钮 */
@@ -707,35 +759,37 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
         break
       }
     }
-    hideHostWaitStatus(card)
-    hideHostControls(card)
-
     const key = QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId
     const frozen = paused.get(identity.callId)
     const deadline = deadlines.get(identity.callId)
     /*
      * 只有正在进行的提问才挂倒计时与「无限等待」: 历史提问与已结算回答的只读卡片
-     * 没有宿主等待状态, 也就拿不到截止时间, 这时把插件控件一律隐藏。
+     * 没有宿主等待状态, 也就拿不到截止时间, 这时把插件控件一律隐藏, 并把宿主原样还原
+     * (含「已继续工作, 仍可回答」提示与收起/展开控件), 不要连带宿主文案一起藏掉。
      */
     const live = frozen !== undefined || deadline !== undefined
     if (!live) {
-      for (const stale of Array.from(
-        card.querySelectorAll('[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS),
-      )) {
-        if (stale instanceof HTMLElement) stale.classList.add(HIDDEN_CONTROL_CLASS)
-      }
+      restoreCard(card)
       if (timedOut.has(identity.callId) && !submitting.has(identity.callId)) {
         lockCard(card)
         hideCard(card)
       }
       return
     }
+    hideHostWaitStatus(card)
+    hideHostControls(card)
     const countdown = ensureCountdown(card, key)
     if (countdown !== undefined) {
       let remainingMs: number | undefined
       if (frozen !== undefined) remainingMs = frozen
       else if (deadline !== undefined) remainingMs = Math.max(0, deadline - Date.now())
-      if (remainingMs === undefined || timedOut.has(identity.callId)) {
+      if (syncUnavailable.has(identity.callId)) {
+        /* 通道不可达时倒计时位置显示不可用提示, 不给人「已经无限等待」的错觉 */
+        const text = pick(SYNC_UNAVAILABLE_TEXT_ZH, SYNC_UNAVAILABLE_TEXT_EN)
+        if (countdown.textContent !== text) countdown.textContent = text
+        countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
+        countdown.classList.add(COUNTDOWN_WARNING_CLASS)
+      } else if (remainingMs === undefined || timedOut.has(identity.callId)) {
         countdown.textContent = ''
         countdown.classList.add(HIDDEN_CONTROL_CLASS)
         countdown.classList.remove(COUNTDOWN_WARNING_CLASS, COUNTDOWN_PAUSED_CLASS)
@@ -754,7 +808,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
     const button = ensureInfiniteButton(card, countdown)
     if (button !== undefined) {
-      const hidden = !options().infiniteWait || timedOut.has(identity.callId) || frozen !== undefined
+      const hidden =
+        !options().infiniteWait ||
+        timedOut.has(identity.callId) ||
+        frozen !== undefined ||
+        syncUnavailable.has(identity.callId)
       button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
       const label = pick(INFINITE_WAIT_LABEL_ZH, INFINITE_WAIT_LABEL_EN)
       if (button.textContent !== label) button.textContent = label
@@ -778,8 +836,19 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       element.click()
       break
     }
-    reportInfiniteWait(identity)
     decorateCard(card, identity)
+    void reportInfiniteWait(identity).then((accepted) => {
+      if (accepted) return
+      /*
+       * 通道不可达(端口占用, 双实例, 或通过别的机器访问 web)时无限等待根本无法生效,
+       * 这里撤回冻结、把该调用交还宿主, 并在倒计时位置给出可见提示, 避免到期仍提交草稿。
+       */
+      paused.delete(identity.callId)
+      syncUnavailable.add(identity.callId)
+      console.warn('[question-timeout-protection] 「无限等待」状态上报失败, 本次问答改由宿主原版处理')
+      const current = findCard(identity)
+      if (current !== undefined) decorateCard(current, identity)
+    })
   }
 
   /* 把悬浮卡片摆到气泡旁边: 优先下方, 放不下翻到上方, 水平居中并夹在视口内 */
@@ -980,13 +1049,23 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     handled.add(row.callId)
     deferred.delete(row.callId)
     const count = row.questions.length
-    const items = mergeDrafts(readHostDrafts(identity, count) ?? stored, readLiveDrafts(card, count), count)
+    const liveIndex = card === undefined ? undefined : readProgress(card)?.index
+    const items = mergeDrafts(readHostDrafts(identity, count) ?? stored, readLiveDrafts(card, count), count, liveIndex)
     lastDrafts.set(row.callId, items)
+    const current = options()
     /*
-     * 机械校验: 超时那一刻没有任何选择或输入时, 插件不接管, 交还宿主原版超时路径 ——
-     * 卡片保持 continued 原样(可继续作答), 不锁定、不收起、不提交, 也不隐藏宿主「回答」入口。
+     * 接管条件(全满足才动卡片与草稿):
+     * 1. 超时草稿兜底开启, 否则完全交还宿主;
+     * 2. 「无限等待」上报没有失败, 通道不可达时不能按超时提交, 否则违背用户意图;
+     * 3. 本页真正接管过这次等待(有截止时间或卡片仍在宿主倒计时中), 否则刷新后
+     *    宿主重新发布的 continued 卡片会把遗留草稿当成"本次超时草稿"注入;
+     * 4. 草稿非空, 超时那一刻没有任何选择与输入时同样交还宿主原版路径。
+     * 未满足时保持卡片 continued 原样(可继续作答), 不锁定、不收起、不提交, 也不隐藏宿主「回答」。
      */
-    if (!items.some(hasItemContent)) {
+    const live = deadlines.has(row.callId) || paused.has(row.callId) || hostShowsCountdown(card)
+    const takeover =
+      current.draftFallback && !syncUnavailable.has(row.callId) && live && items.some(hasItemContent)
+    if (!takeover) {
       passive.add(row.callId)
       timedOut.delete(row.callId)
       drafts.delete(row.callId)
@@ -995,7 +1074,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     }
     timedOut.add(row.callId)
     if (card !== undefined) lockCard(card)
-    const current = options()
     if (current.draftFallback) drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
     /* 注入开启且至少一题有内容时走宿主官方晚回复通道, 提交成功后卡片随结算被宿主移除 */
     const shouldInject = current.draftFallback && injectsContext(current.fallback)
@@ -1020,10 +1098,22 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     if (typeof snapshot !== 'object' || snapshot === null) return
     const active = (snapshot as { active?: unknown }).active
     if (!Array.isArray(active)) return
+    /* 所有仍在 active 的行都保留状态, 只有真正离开 active 才算结算 */
+    const live = new Set<string>()
     for (const row of active as ProjectionRow[]) {
-      if (row.state !== 'continued' || typeof row.callId !== 'string') continue
+      if (typeof row.callId !== 'string') continue
+      live.add(row.callId)
+      if (row.state !== 'continued') continue
       if (!Array.isArray(row.questions)) continue
       evaluateRow({ sessionId, callId: row.callId }, row)
+    }
+    /*
+     * 该行一旦离开 active 就说明已经结算(无论是插件提交, 用户自己提交, 还是宿主处理),
+     * 这里统一回收状态, 不再依赖"点了提交按钮"这一条路径。
+     */
+    for (const callId of knownCallIds()) {
+      if (live.has(callId)) continue
+      forgetCall(callId)
     }
   }
 
@@ -1031,7 +1121,14 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const ensureSubscription = (sessionId: string): void => {
     if (subscriptions.has(sessionId)) return
     const face = ctx.sessions?.binding?.(sessionId)?.session?.projections?.faceOf?.('userQuestions')
-    if (face === undefined) return
+    if (face === undefined) {
+      /*
+       * 这条链路宿主侧任何一环改名都会让它返回 undefined, 而三条超时分支全靠它驱动,
+       * 静默失效会让整个兜底能力凭空消失, 因此失败必须留下一条可追的日志。
+       */
+      console.warn('[question-timeout-protection] 无法订阅提问投影, 超时兜底不会生效')
+      return
+    }
     const evaluate = (): void => {
       evaluateProjection(sessionId, face.getSnapshot?.())
     }
@@ -1097,7 +1194,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
-        lastDrafts.set(identity.callId, mergeDrafts(readLiveDrafts(element, count), previous, count))
+        lastDrafts.set(identity.callId, mergeDrafts(readLiveDrafts(element, count), previous, count, progress?.index))
         decorateCard(element, identity)
       }
       ensureSubscription(identity.sessionId)
@@ -1109,7 +1206,19 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     repositionPanel()
   }
 
-  const observer = new MutationObserver(scan)
+  /*
+   * 流式输出时 mutation 会按帧触发, 直接全量重扫代价过高:
+   * 用一次 120ms 的延迟合并同一批变更, 定时扫描只作为兜底。
+   */
+  let scanTimer: number | undefined
+  const scheduleScan = (): void => {
+    if (scanTimer !== undefined) return
+    scanTimer = window.setTimeout(() => {
+      scanTimer = undefined
+      scan()
+    }, 120)
+  }
+  const observer = new MutationObserver(scheduleScan)
   observer.observe(document.body, { childList: true, subtree: true, characterData: true })
   const timer = window.setInterval(scan, 1000)
   scan()
@@ -1117,9 +1226,26 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   return () => {
     observer.disconnect()
     window.clearInterval(timer)
+    if (scanTimer !== undefined) window.clearTimeout(scanTimer)
     document.removeEventListener('click', onDocumentClick, true)
     closeDraftPanel()
     for (const off of subscriptions.values()) off()
     subscriptions.clear()
+    /* 卸载时把插件加过的东西全部撤掉, 不让隐藏类与自绘节点留在宿主界面上 */
+    for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
+      if (element instanceof HTMLElement) restoreCard(element)
+    }
+    for (const element of Array.from(
+      document.querySelectorAll(
+        '[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS + ', button.' + BUBBLE_BUTTON_CLASS,
+      ),
+    )) {
+      element.remove()
+    }
+    for (const element of Array.from(document.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
+      element.classList.remove(HIDDEN_CONTROL_CLASS)
+    }
+    document.getElementById(COUNTDOWN_STYLE_ID)?.remove()
+    syncUnavailable.clear()
   }
 }

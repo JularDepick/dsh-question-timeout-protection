@@ -30,8 +30,10 @@ const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'
 
 /* 判定并规范化本次调用的等待秒数;允许 -1 表示必答(回到阻塞等待) */
 function resolveTimeout(requested: number | undefined, fallback: number): number {
-  const value = requested ?? fallback
-  if (value === -1) return -1
+  const raw = requested ?? fallback
+  if (raw === -1) return -1
+  /* 配置里的 timeoutSeconds 允许小数, 这里取整贴合真实等待时长, 不因 90.5 让提问整体报错 */
+  const value = Number.isFinite(raw) ? Math.round(raw) : raw
   if (!Number.isInteger(value) || value < MIN_TIMEOUT_SECONDS || value > MAX_TIMEOUT_SECONDS) {
     throw new Error(
       `timeout must be -1 or an integer between ${String(MIN_TIMEOUT_SECONDS)} and ${String(MAX_TIMEOUT_SECONDS)} seconds`,
