@@ -28,16 +28,15 @@ const TOOL_DESCRIPTION =
 /* 模型侧问题数组说明 */
 const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'
 
-/* 判定并规范化本次调用的等待秒数;允许 -1 表示必答(回到阻塞等待) */
+/*
+ * 判定并规范化本次调用的等待秒数;允许 -1 表示必答(回到阻塞等待)。
+ * 模型漏传时用配置里的等待时长兜底而不是报错: 宿主判定 timed 只看工具 schema 是否声明该参数,
+ * 因此缺省值同样会进入 timed 等待, 插件自己的计时也能照常生效。
+ */
 function resolveTimeout(requested: number | undefined, fallback: number): number {
-  if (requested === undefined) {
-    throw new Error(
-      `timeout is required: pass the wait seconds explicitly (for example ${String(fallback)}), or -1 when an answer must arrive before you continue`,
-    )
-  }
-  const raw = requested
+  const raw = requested ?? fallback
   if (raw === -1) return -1
-  /* 配置里的 timeoutSeconds 允许小数, 这里取整贴合真实等待时长, 不因 90.5 让提问整体报错 */
+  /* 取整贴合真实等待时长, 不因 90.5 让提问整体报错 */
   const value = Number.isFinite(raw) ? Math.round(raw) : raw
   if (!Number.isInteger(value) || value < MIN_TIMEOUT_SECONDS || value > MAX_TIMEOUT_SECONDS) {
     throw new Error(
@@ -52,12 +51,14 @@ function assertQuestionsPresent(questions: ReadonlyArray<unknown>): void {
   if (questions.length === 0) throw new Error('questions must contain at least one question')
 }
 
-/* 同一调用内的问题 id 必须唯一,否则回答无法定位 */
+/* 同一调用内的问题 id 必须唯一且非空,否则回答无法定位 */
 function assertUniqueQuestionIds(questions: ReadonlyArray<{ id: string }>): void {
   const seen = new Set<string>()
   for (const question of questions) {
-    if (seen.has(question.id)) throw new Error(`question id ${JSON.stringify(question.id)} must be unique within this call`)
-    seen.add(question.id)
+    const id = question.id.trim()
+    if (id === '') throw new Error('question id must not be empty')
+    if (seen.has(id)) throw new Error(`question id ${JSON.stringify(id)} must be unique within this call`)
+    seen.add(id)
   }
 }
 
@@ -123,8 +124,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       },
       [TIMED_TIMEOUT_PARAMETER]: {
         type: 'integer',
-        required: true,
-        description: `Required. Wait seconds for the entire question batch; always pass it explicitly (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)} when you have no better value). Pass -1 only when an answer is required before proceeding. Omitting it makes the host treat the batch as a blocking wait and the timeout protection cannot apply.`,
+        description: `Wait seconds for the entire question batch (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)}). Pass -1 only when an answer is required before proceeding.`,
       },
     },
     output: {

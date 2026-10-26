@@ -27,6 +27,8 @@ const LISTEN_RETRIES = 5
 const LISTEN_RETRY_DELAY = 200
 
 let server: Server | undefined
+/* 端口占用重试的定时器句柄, 卸载时必须取消 */
+let retryTimer: NodeJS.Timeout | undefined
 
 /* 登记一个无限等待调用 */
 function rememberInfiniteCall(callId: string): void {
@@ -95,7 +97,11 @@ function attemptListen(retry: number): void {
     server = undefined
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'EADDRINUSE' && retry < LISTEN_RETRIES) {
-      setTimeout(() => attemptListen(retry + 1), LISTEN_RETRY_DELAY)
+      /* 重试句柄要留着: 卸载时若不清掉, 端点会在插件停用之后才起来并一直监听 */
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined
+        attemptListen(retry + 1)
+      }, LISTEN_RETRY_DELAY)
       return
     }
     /*
@@ -134,6 +140,10 @@ export function clearInfiniteWait(callId: string): void {
 
 /** 停止状态同步端点 */
 export function stopQuestionSync(): void {
+  if (retryTimer !== undefined) {
+    clearTimeout(retryTimer)
+    retryTimer = undefined
+  }
   const instance = server
   server = undefined
   infiniteCalls.clear()

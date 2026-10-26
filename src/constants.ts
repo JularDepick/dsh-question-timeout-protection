@@ -136,7 +136,23 @@ export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
   /Paused · (\d+)s remaining/,
 ]
 
+/** 判定宿主是否停在暂停态的文案特征: 暂停态下的剩余秒数不是真实到期时间 */
+export const PAUSED_TEXT_PATTERNS: readonly RegExp[] = [/已暂停/, /Paused/]
 
+/** 草稿快照保留上限, 超出后丢弃最早的一条 */
+export const MAX_KEPT_DRAFTS = 200
+
+/** 扫描去抖时长(毫秒): 流式输出时 mutation 会按帧触发, 合并同一批变更 */
+export const SCAN_DEBOUNCE_MS = 120
+
+/** 兜底扫描间隔(毫秒), 防止漏掉宿主未触发 mutation 的更新 */
+export const SCAN_INTERVAL_MS = 1000
+
+/** 注入后观察窗口(毫秒): 超过该时长该行仍在等待, 说明注入被丢弃, 需要把卡片还给用户 */
+export const INJECTION_WATCH_MS = 10000
+
+/** 单次注入的超时(毫秒), 防止宿主侧挂起时状态长期占位 */
+export const INJECTION_TIMEOUT_MS = 15000
 
 /** 宿主「慢慢回答」控件的文案(中文与英文), 用于隐藏该控件 */
 export const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', 'Take time']

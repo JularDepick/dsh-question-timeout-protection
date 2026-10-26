@@ -26,11 +26,11 @@ import type { ConfigFormLike, FormsLike, SettingsContext } from './settings'
 export const name = 'dsh-question-timeout-protection/client'
 
 /**
- * 需要的客户端服务: 会话绑定、提问晚回复通道、插槽与文案。
- * 配置表单走软取(宿主可能晚于本插件就绪, 也可能不提供),
- * 硬注入缺失会让整个客户端 apply 不执行, 连卡片适配器一并失效。
+ * 只硬注入插槽: 适配器真正需要的是插槽能否注册, 会话绑定、晚回复通道、文案与配置表单
+ * 一律软取。硬注入任何一项缺失都会让整个客户端 apply 不执行, 连倒计时都会一起消失,
+ * 而这些能力缺失时插件本可以降级工作。
  */
-export const inject = ['sessions', 'remote', 'slots', 'locale']
+export const inject = ['slots']
 
 /* 客户端上下文除适配器需要的面以外,只要求 effect 生命周期钩子与配置页服务 */
 type ClientContext = AdapterContext & SettingsContext & {

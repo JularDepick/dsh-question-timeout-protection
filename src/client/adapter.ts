@@ -21,6 +21,12 @@ import {
   CARD_BUTTON_SELECTOR,
   CARD_OPTIONS_SELECTOR,
   HOST_WAIT_PATTERNS,
+  INJECTION_TIMEOUT_MS,
+  INJECTION_WATCH_MS,
+  MAX_KEPT_DRAFTS,
+  PAUSED_TEXT_PATTERNS,
+  SCAN_DEBOUNCE_MS,
+  SCAN_INTERVAL_MS,
   CARD_FOOTER_ACTIONS_SELECTOR,
   CARD_INPUT_SELECTOR,
   CARD_LOCKED_CLASS,
@@ -481,6 +487,29 @@ type RemoteAnswer = (sessionId: string, callId: string, answer: { answers: Answe
  * 客户端上下文按服务声明可能只暴露 remote 或 remote.userQuestions, 未注入时直接读属性会抛错,
  * 因此先按属性读、再退回服务查找, 两条都失败就按缺失处理。
  */
+/* 取提问投影面: 先按属性读, 未注入时退回 ctx.get, 两者都拿不到就返回 undefined */
+function resolveProjectionFace(ctx: AdapterContext, sessionId: string): ProjectionFace | undefined {
+  const pick = (sessions: unknown): ProjectionFace | undefined => {
+    const binding = (sessions as { binding?: (id: string) => unknown } | undefined)?.binding?.(sessionId)
+    const face = (binding as { session?: { projections?: { faceOf?: (key: string) => unknown } } } | undefined)?.session
+      ?.projections?.faceOf?.('userQuestions')
+    return typeof face === 'object' && face !== null ? (face as ProjectionFace) : undefined
+  }
+  try {
+    const direct = pick((ctx as { sessions?: unknown }).sessions)
+    if (direct !== undefined) return direct
+  } catch {
+    /* 未注入 sessions 时按缺失处理 */
+  }
+  try {
+    const getter = (ctx as { get?: (name: string) => unknown }).get
+    const sessions = typeof getter === 'function' ? getter.call(ctx, 'sessions') : undefined
+    return pick(sessions)
+  } catch {
+    return undefined
+  }
+}
+
 function resolveRemoteAnswer(ctx: AdapterContext): RemoteAnswer | undefined {
   try {
     const remote = (ctx as { remote?: { userQuestions?: { answer?: RemoteAnswer } } }).remote
@@ -529,7 +558,11 @@ async function injectAnswer(
   )
   if (lastFilled < 0) return false
   try {
-    const result = await answer(identity.sessionId, identity.callId, { answers })
+    /* 宿主侧偶尔会挂起, 这里加超时, 让调用方按失败处理而不是永远占着 submitting */
+    const result = await Promise.race([
+      answer(identity.sessionId, identity.callId, { answers }),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), INJECTION_TIMEOUT_MS)),
+    ])
     if (result !== undefined && (result.ok === false || result.value === false)) {
       console.warn('[question-timeout-protection] 超时草稿注入被宿主拒绝', JSON.stringify(result))
       return false
@@ -567,6 +600,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /* 已处理过超时流程的调用 */
   const handled = new Set<string>()
+  /* 最近一次成功提交的时间, 用于观察宿主是否真的让该行离开等待 */
+  const recentInjections = new Map<string, number>()
   /* 已超时的调用, 卡片一律锁定并收起 */
   const timedOut = new Set<string>()
   /* 超时时草稿为空的调用, 交还宿主原版超时路径, 插件不再改卡片与工具行 */
@@ -624,7 +659,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   }
 
   /* 草稿快照只保留最近若干条, 防止长时间使用后无限增长 */
-  const MAX_KEPT_DRAFTS = 200
   const pruneDrafts = (): void => {
     while (drafts.size > MAX_KEPT_DRAFTS) {
       const oldest = drafts.keys().next()
@@ -705,18 +739,41 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     }
   }
 
+  /*
+   * 记录被插件改过的禁用状态。
+   * React 只在自己的 prop 变化时才重写 disabled, 插件直接置真后宿主不会替我们复位,
+   * 因此还原时必须把原值写回去, 否则卸载或退回宿主路径后会留下点不动的死卡片。
+   */
+  const disabledOriginals = new WeakMap<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement, boolean>()
+  const disableControl = (element: HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement): void => {
+    if (!disabledOriginals.has(element)) disabledOriginals.set(element, element.disabled)
+    element.disabled = true
+  }
+  const restoreDisabled = (root: HTMLElement): void => {
+    const controls = root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement>(
+      CARD_INPUT_SELECTOR + ', ' + CARD_BUTTON_SELECTOR,
+    )
+    for (const control of Array.from(controls)) {
+      const previous = disabledOriginals.get(control)
+      if (previous === undefined) continue
+      control.disabled = previous
+      disabledOriginals.delete(control)
+    }
+  }
+
   /* 超时后禁止继续在卡片里回答 */
   const lockCard = (card: HTMLElement): void => {
     if (lockedCards.has(card)) return
     lockedCards.add(card)
     card.classList.add(CARD_LOCKED_CLASS)
     for (const field of Array.from(card.querySelectorAll(CARD_INPUT_SELECTOR))) {
-      if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) field.disabled = true
+      if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) disableControl(field)
     }
     for (const button of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
+      if (!(button instanceof HTMLButtonElement)) continue
       const text = button.textContent?.trim() ?? ''
       if (SUBMIT_TEXTS.includes(text) || NEXT_QUESTION_TEXTS.includes(text) || SKIP_QUESTION_TEXTS.includes(text)) {
-        button.disabled = true
+        disableControl(button)
       }
     }
   }
@@ -751,7 +808,10 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     )) {
       element.remove()
     }
+    restoreDisabled(card)
     card.classList.remove(CARD_LOCKED_CLASS)
+    lockedCards.delete(card)
+    hiddenCards.delete(card)
   }
 
   /*
@@ -777,7 +837,16 @@ function hideHostWaitText(card: HTMLElement): void {
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
       for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
         if (!(element instanceof HTMLElement)) continue
-        const total = parseRemainingSeconds(element.textContent?.trim() ?? '')
+        const statusText = element.textContent?.trim() ?? ''
+        /*
+         * 暂停态下的剩余秒数不是真实到期时间, 拿它当截止时间会让自绘倒计时从暂停值开始走,
+         * 因此这里按暂停态处理, 不登记截止时间。
+         */
+        if (PAUSED_TEXT_PATTERNS.some((pattern) => pattern.test(statusText))) {
+          paused.set(identity.callId, Date.now())
+          break
+        }
+        const total = parseRemainingSeconds(statusText)
         if (total === undefined) continue
         deadlines.set(identity.callId, Date.now() + total * 1000)
         break
@@ -1065,6 +1134,20 @@ function hideHostWaitText(card: HTMLElement): void {
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
     if (handled.has(row.callId)) return
     const card = findCard(identity)
+    /*
+     * 已经提交过草稿的行: 观察窗口内等宿主结算, 不重复注入也不锁卡;
+     * 超过窗口仍在等待说明回复被丢弃或没送到模型, 必须把卡片还给用户并留下日志。
+     */
+    const injectedAt = recentInjections.get(row.callId)
+    if (injectedAt !== undefined) {
+      if (Date.now() - injectedAt < INJECTION_WATCH_MS) return
+      recentInjections.delete(row.callId)
+      passive.add(row.callId)
+      timedOut.delete(row.callId)
+      if (card !== undefined) restoreCard(card)
+      console.warn('[question-timeout-protection] 超时草稿提交后该提问仍在等待, 已恢复卡片交给用户处理')
+      return
+    }
     const stored = lastDrafts.get(row.callId)
     /* 卡片还没挂载也没有历史记录时先挂起, 等扫描到卡片再评估, 避免丢失卡里已填内容 */
     if (card === undefined && stored === undefined) {
@@ -1108,7 +1191,11 @@ function hideHostWaitText(card: HTMLElement): void {
       void injectAnswer(ctx, identity, row.questions, items)
         .then((accepted) => {
           submitting.delete(row.callId)
-          if (!accepted) closeCardAfterTimeout(identity)
+          if (accepted) {
+            recentInjections.set(row.callId, Date.now())
+            return
+          }
+          closeCardAfterTimeout(identity)
         })
         .catch(() => {
           submitting.delete(row.callId)
@@ -1143,23 +1230,45 @@ function hideHostWaitText(card: HTMLElement): void {
     }
   }
 
+  /*
+   * 订阅失败按会话去重告警, 避免每次扫描都刷一条同样的 warn;
+   * 宿主若只给快照不给订阅, 就登记进轮询兜底, 否则投影停在 open 就再也不会触发超时分支。
+   */
+  const subscribeWarned = new Set<string>()
+  const polledSessions = new Map<string, () => void>()
+
   /* 为会话订阅提问投影 */
   const ensureSubscription = (sessionId: string): void => {
-    if (subscriptions.has(sessionId)) return
-    const face = ctx.sessions?.binding?.(sessionId)?.session?.projections?.faceOf?.('userQuestions')
+    if (subscriptions.has(sessionId) || polledSessions.has(sessionId)) return
+    /*
+     * 直接读 ctx.sessions 在未注入时会被框架抛错(cannot get property without inject),
+     * 因此这里先读属性再退回 ctx.get, 缺该服务时只失去投影订阅而不是整个适配器。
+     */
+    const face = resolveProjectionFace(ctx, sessionId)
     if (face === undefined) {
       /*
        * 这条链路宿主侧任何一环改名都会让它返回 undefined, 而三条超时分支全靠它驱动,
        * 静默失效会让整个兜底能力凭空消失, 因此失败必须留下一条可追的日志。
        */
-      console.warn('[question-timeout-protection] 无法订阅提问投影, 超时兜底不会生效')
+      if (!subscribeWarned.has(sessionId)) {
+        subscribeWarned.add(sessionId)
+        console.warn('[question-timeout-protection] 无法订阅提问投影, 该会话的超时兜底不会生效')
+      }
       return
     }
     const evaluate = (): void => {
       evaluateProjection(sessionId, face.getSnapshot?.())
     }
-    const off = face.subscribe?.(evaluate) ?? (() => {})
-    subscriptions.set(sessionId, off)
+    if (typeof face.subscribe !== 'function') {
+      polledSessions.set(sessionId, evaluate)
+      if (!subscribeWarned.has(sessionId)) {
+        subscribeWarned.add(sessionId)
+        console.warn('[question-timeout-protection] 提问投影不支持订阅, 改用轮询兜底')
+      }
+      evaluate()
+      return
+    }
+    subscriptions.set(sessionId, face.subscribe(evaluate))
     evaluate()
   }
 
@@ -1210,17 +1319,23 @@ function hideHostWaitText(card: HTMLElement): void {
 
   /* 扫描受管卡片与提问工具行 */
   const scan = (): void => {
+    for (const evaluate of polledSessions.values()) evaluate()
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
       if (!(element instanceof HTMLElement)) continue
       const identity = parseCardKey(element.getAttribute('data-question-key'))
       if (identity === undefined) continue
+      /* 超时兜底不依赖界面开关, 因此延迟评估必须在开关之外执行 */
+      const pending = deferred.get(identity.callId)
+      if (pending !== undefined) {
+        deferred.delete(identity.callId)
+        evaluateRow(identity, pending)
+      }
       if (options().cardEnhancements) {
-        const pending = deferred.get(identity.callId)
-        if (pending !== undefined) evaluateRow(identity, pending)
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
-        lastDrafts.set(identity.callId, mergeDrafts(readLiveDrafts(element, count), previous, count, progress?.index))
+        /* 参数顺序必须与 evaluateRow 一致: 前者是更可信的来源, 后者只做兜底 */
+        lastDrafts.set(identity.callId, mergeDrafts(previous, readLiveDrafts(element, count), count, progress?.index))
         decorateCard(element, identity)
       }
       ensureSubscription(identity.sessionId)
@@ -1242,11 +1357,11 @@ function hideHostWaitText(card: HTMLElement): void {
     scanTimer = window.setTimeout(() => {
       scanTimer = undefined
       scan()
-    }, 120)
+    }, SCAN_DEBOUNCE_MS)
   }
   const observer = new MutationObserver(scheduleScan)
   observer.observe(document.body, { childList: true, subtree: true, characterData: true })
-  const timer = window.setInterval(scan, 1000)
+  const timer = window.setInterval(scan, SCAN_INTERVAL_MS)
   scan()
 
   return () => {

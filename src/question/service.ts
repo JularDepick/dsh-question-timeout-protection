@@ -33,9 +33,19 @@ export class QuestionTimeoutService {
         },
         { global: true },
       )
+      /* 会话结束的 agent 要把注册闭包一起丢掉, 否则长进程里会一直累积已销毁的 agent */
+      const offDisposed = this.ctx.on(
+        'agent/disposed',
+        ({ agent }) => {
+          this.forget(String(agent.id))
+          return undefined
+        },
+        { global: true },
+      )
       for (const agent of this.ctx.agents.list()) this.registerFor(agent)
       return () => {
         offCreated()
+        offDisposed()
         this.dispose()
       }
     }, 'question-timeout-protection: per-agent tool')
@@ -51,6 +61,18 @@ export class QuestionTimeoutService {
       }
     }
     this.perAgent.clear()
+  }
+
+  /** 释放并忘掉一个 agent 的工具注册 */
+  private forget(key: string): void {
+    const dispose = this.perAgent.get(key)
+    if (dispose === undefined) return
+    this.perAgent.delete(key)
+    try {
+      dispose()
+    } catch {
+      /* 作用域可能已被宿主先行释放 */
+    }
   }
 
   /** 在一个 agent 的作用域注册同名提问工具, 同一 agent 只注册一次 */
