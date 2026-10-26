@@ -90,7 +90,7 @@ The config page sits in the plugin-level config block at the **top of the plugin
 ## Known limits
 
 - Depends on host UI structure: cards and tool rows are located through host class-name suffixes, `data-question-key`, `data-chat-call-id`, and `aria-checked`, and host controls are recognized by their Chinese or English labels; if the host changes those, the matching enhancement silently stops working and `src/constants.ts` has to follow
-- No persistence: the draft lives only in client memory; after a refresh the bubble is rebuilt from the host draft only while the question is still waiting and this page took over its countdown, and settled rows are not restored
+- No persistence: the draft lives only in client memory; after a refresh both the bubble and its record are lost, a still-waiting question is re-evaluated and taken over from the host draft, and settled rows are not restored
 - "Wait indefinitely" relies on a loopback channel: it is unavailable when the browser and the server are on different machines, when the port is taken, or when a second dsh instance runs; the countdown then shows "Infinite wait unavailable" and the question falls back to the host's own behaviour instead of submitting the draft at the timeout
 - Self-timed waits leave a host wait unsettled: every takeover keeps the host wait alive until the request settles or the client disconnects, which accumulates in long sessions
 - With several tabs on the same session, the first submit wins and the others lose their card because the host refuses a duplicate reply
