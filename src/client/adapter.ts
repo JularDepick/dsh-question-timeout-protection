@@ -1085,21 +1085,32 @@ function hideHostWaitText(card: HTMLElement): void {
     return button
   }
 
-  /* 超时后隐藏宿主「回答」按钮, 去掉重新打开问答框的入口 */
-  const hideHostReopen = (row: HTMLElement): void => {
+  /*
+   * 定位宿主那枚「回答」按钮: 它是宿主提供的重新打开问答卡片的入口,
+   * 与插件自绘的提问气泡功能冲突, 取缔后由插件气泡承接。
+   */
+  const findHostReopen = (row: HTMLElement): HTMLElement | undefined => {
     for (const button of Array.from(row.querySelectorAll(CARD_BUTTON_SELECTOR))) {
       if (button.classList.contains(BUBBLE_BUTTON_CLASS)) continue
       const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '').trim()
       const text = (button.textContent ?? '').trim()
       if (ASK_REOPEN_LABELS.includes(label) || ASK_REOPEN_LABELS.includes(text)) {
-        button.classList.add(HIDDEN_CONTROL_CLASS)
+        return button
       }
     }
+    return undefined
+  }
+
+  /* 隐藏宿主「回答」按钮, 去掉原版问答气泡 */
+  const hideHostReopen = (row: HTMLElement): void => {
+    const button = findHostReopen(row)
+    if (button !== undefined) button.classList.add(HIDDEN_CONTROL_CLASS)
   }
 
   /*
-   * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡, 未超时或已正常作答的行
-   * 交给宿主自己的「回答 / 查看回答」入口, 避免两个功能重复的气泡并存。
+   * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡。
+   * 宿主自己那枚「回答」气泡与插件气泡功能冲突, 取缔掉它 —— 需要看回答草稿时用插件气泡,
+   * 未超时且正常作答的行则由宿主的问答卡片本身承接, 不再额外提供重新打开的入口。
    */
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
@@ -1180,6 +1191,22 @@ function hideHostWaitText(card: HTMLElement): void {
     const takeover =
       current.draftFallback && !syncUnavailable.has(row.callId) && items.some(hasItemContent)
     if (!takeover) {
+      /*
+       * 兜底关闭或「无限等待」通道不可用时交还宿主原版路径, 卡片保持可继续作答。
+       * 草稿为空时不同: 这轮提问已经超时结束, 宿主不会自己收起卡片, 插件必须把卡片关掉,
+       * 否则会留下一张点不动也答不了的对话框; 同时隐藏宿主「回答」入口, 不给重新打开的余地。
+       */
+      const emptyDraftTimeout =
+        current.draftFallback && !syncUnavailable.has(row.callId) && !items.some(hasItemContent)
+      if (emptyDraftTimeout) {
+        timedOut.add(row.callId)
+        drafts.delete(row.callId)
+        if (card !== undefined) {
+          lockCard(card)
+          hideCard(card)
+        }
+        return
+      }
       passive.add(row.callId)
       timedOut.delete(row.callId)
       drafts.delete(row.callId)
