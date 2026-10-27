@@ -21,8 +21,6 @@ import {
   CARD_BUTTON_SELECTOR,
   CARD_OPTIONS_SELECTOR,
   HOST_WAIT_PATTERNS,
-  INJECTION_TIMEOUT_MS,
-  INJECTION_WATCH_MS,
   MAX_KEPT_DRAFTS,
   MAX_SESSION_SUBSCRIPTIONS,
   PAUSED_TEXT_PATTERNS,
@@ -100,13 +98,6 @@ export interface AdapterOptionsSource {
   getOptions(): AdapterOptions
 }
 
-/** 一条晚回复答案 */
-interface AnswerItem {
-  id: string
-  selected: string[]
-  custom?: string
-}
-
 /** 会话提问投影中的一行 */
 interface ProjectionRow {
   callId: string
@@ -136,20 +127,9 @@ interface SessionBinding {
   }
 }
 
-/** 晚回复调用结果(宿主 Remote 使用 { ok, value } 包裹) */
-interface RemoteResult {
-  ok?: boolean
-  value?: boolean
-}
-
 /** 适配器使用的客户端最小上下文面 */
 export interface AdapterContext {
   sessions?: { binding?: (sessionId: string) => SessionBinding | undefined }
-  remote?: {
-    userQuestions?: {
-      answer?: (sessionId: string, callId: string, answer: { answers: AnswerItem[] }) => Promise<RemoteResult>
-    }
-  }
 }
 
 /** 提问卡片标识(key 形如 question:<sessionId>:<callId>) */
@@ -464,14 +444,6 @@ function mergeDrafts(
   return merged
 }
 
-/** 宿主晚回复调用签名 */
-type RemoteAnswer = (sessionId: string, callId: string, answer: { answers: AnswerItem[] }) => Promise<RemoteResult>
-
-/*
- * 解析宿主晚回复通道。
- * 客户端上下文按服务声明可能只暴露 remote 或 remote.userQuestions, 未注入时直接读属性会抛错,
- * 因此先按属性读、再退回服务查找, 两条都失败就按缺失处理。
- */
 /* 取提问投影面: 先按属性读, 未注入时退回 ctx.get, 两者都拿不到就返回 undefined */
 function resolveProjectionFace(ctx: AdapterContext, sessionId: string): ProjectionFace | undefined {
   const pick = (sessions: unknown): ProjectionFace | undefined => {
@@ -495,76 +467,6 @@ function resolveProjectionFace(ctx: AdapterContext, sessionId: string): Projecti
   }
 }
 
-function resolveRemoteAnswer(ctx: AdapterContext): RemoteAnswer | undefined {
-  try {
-    const remote = (ctx as { remote?: { userQuestions?: { answer?: RemoteAnswer } } }).remote
-    if (typeof remote?.userQuestions?.answer === 'function') return remote.userQuestions.answer.bind(remote.userQuestions)
-  } catch {
-    /* 未注入 remote 时按缺失处理 */
-  }
-  try {
-    const getter = (ctx as { get?: (name: string) => unknown }).get
-    if (typeof getter === 'function') {
-      const direct = getter.call(ctx, 'remote.userQuestions') as { answer?: RemoteAnswer } | undefined
-      if (typeof direct?.answer === 'function') return direct.answer.bind(direct)
-      const remote = getter.call(ctx, 'remote') as { userQuestions?: { answer?: RemoteAnswer } } | undefined
-      if (typeof remote?.userQuestions?.answer === 'function') return remote.userQuestions.answer.bind(remote.userQuestions)
-    }
-  } catch {
-    /* 服务不可用时按缺失处理 */
-  }
-  return undefined
-}
-
-/*
- * 把各题的超时草稿按题结构化地送回模型: 每题带自己的已选与补充, 不附加任何整批说明文本,
- * 超时语义由工具的 pending 说明承担。宿主会把这条回复 steer 成一条用户消息。
- */
-async function injectAnswer(
-  ctx: AdapterContext,
-  identity: CardIdentity,
-  questions: ReadonlyArray<{ id: string }>,
-  items: DraftItem[],
-): Promise<boolean> {
-  const answer = resolveRemoteAnswer(ctx)
-  if (answer === undefined || questions.length === 0) return false
-  const answers: AnswerItem[] = questions.map((question, index) => {
-    const item = items[index] ?? emptyItem()
-    const custom = item.custom.trim()
-    return {
-      id: question.id,
-      selected: [...item.selected],
-      ...(custom === '' ? {} : { custom }),
-    }
-  })
-  const lastFilled = answers.reduce(
-    (last, item, index) => (item.selected.length > 0 || (item.custom ?? '').trim() !== '' ? index : last),
-    -1,
-  )
-  if (lastFilled < 0) return false
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    /*
-     * 宿主侧偶尔会挂起, 这里加超时。超时要按失败处理: 超时后草稿并没有进入上下文,
-     * 若当成成功就会把卡片收起, 用户看到的就是"草稿没有进入上下文"。
-     */
-    const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('injection timeout')), INJECTION_TIMEOUT_MS)
-    })
-    const result = await Promise.race([answer(identity.sessionId, identity.callId, { answers }), expired])
-    if (result !== undefined && (result.ok === false || result.value === false)) {
-      console.warn('[question-timeout-protection] 超时草稿注入被宿主拒绝', JSON.stringify(result))
-      return false
-    }
-    return true
-  } catch (error) {
-    console.warn('[question-timeout-protection] 超时草稿注入失败', error)
-    return false
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
-}
-
 /*
  * 把「无限等待」的点击状态同步给服务端, 使工具到期后继续阻塞。
  * 失败必须让调用方知道: 通道不可达时无限等待无法生效, 不能静默按超时提交草稿。
@@ -573,11 +475,11 @@ async function injectAnswer(
  * 只认明确的成功应答: 宿主的单页应用兜底路由对未知路径也可能回 200 并给出页面,
  * 只看 response.ok 会把"没人接收"当成"已登记", 于是到期照样按超时提交草稿。
  */
-function postInfiniteWait(url: string, callId: string): Promise<boolean> {
+function postState(url: string, body: unknown): Promise<boolean> {
   return fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ callId, infinite: true }),
+    body: JSON.stringify(body),
   })
     .then(async (response) => {
       if (!response.ok) return false
@@ -596,9 +498,29 @@ function postInfiniteWait(url: string, callId: string): Promise<boolean> {
  * 只有宿主没有注册该路由时才回退到本机回环端口。
  */
 async function reportInfiniteWait(identity: CardIdentity): Promise<boolean> {
-  if (await postInfiniteWait(SYNC_PATH, identity.callId)) return true
-  return postInfiniteWait('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, identity.callId)
+  if (await postState(SYNC_PATH, { callId: identity.callId, infinite: true })) return true
+  return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, {
+    callId: identity.callId,
+    infinite: true,
+  })
 }
+
+/*
+ * 上报当前草稿快照。
+ * 草稿随工具的返回值进入模型上下文, 因此必须在提问还没超时的时候就交给服务端 ——
+ * 宿主是在工具返回 pending 之后才把这一行标记为 continued, 等那时再上报已经来不及。
+ *
+ * 客户端不知道题目的 id(那是工具侧的标识), 只知道草稿落在第几道题,
+ * 因此这里按顺序上报, 由工具侧把顺序对应回自己的题目 id。
+ */
+async function reportDraftSnapshot(identity: CardIdentity, answers: unknown): Promise<boolean> {
+  const body = { callId: identity.callId, answers }
+  if (await postState(SYNC_PATH, body)) return true
+  return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, body)
+}
+
+/* 草稿上报的最小间隔, 避免每次输入都发一次请求 */
+const DRAFT_REPORT_INTERVAL_MS = 800
 
 /**
  * 安装提问超时适配器。
@@ -612,8 +534,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /* 已处理过超时流程的调用 */
   const handled = new Set<string>()
-  /* 最近一次成功提交的时间, 用于观察宿主是否真的让该行离开等待 */
-  const recentInjections = new Map<string, number>()
   /* 已超时的调用, 卡片一律锁定并收起 */
   const timedOut = new Set<string>()
   /* 超时时草稿为空的调用, 交还宿主原版超时路径, 插件不再改卡片与工具行 */
@@ -634,8 +554,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const lockedCards = new WeakSet<HTMLElement>()
   /* 已触发过收起的卡片节点, 避免重复点击宿主的关闭按钮 */
   const hiddenCards = new WeakSet<HTMLElement>()
-  /* 正在提交超时草稿的调用, 提交期间先不隐藏卡片 */
-  const submitting = new Set<string>()
   /* 投影已到达但卡片尚未挂载的调用, 等卡片出现再评估 */
   const deferred = new Map<string, ProjectionRow>()
 
@@ -646,7 +564,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of timedOut) ids.add(id)
     for (const id of passive) ids.add(id)
     for (const id of syncUnavailable) ids.add(id)
-    for (const id of submitting) ids.add(id)
     for (const id of drafts.keys()) ids.add(id)
     for (const id of lastDrafts.keys()) ids.add(id)
     for (const id of deadlines.keys()) ids.add(id)
@@ -664,7 +581,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     timedOut.delete(callId)
     passive.delete(callId)
     syncUnavailable.delete(callId)
-    submitting.delete(callId)
     deadlines.delete(callId)
     paused.delete(callId)
     deferred.delete(callId)
@@ -690,6 +606,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /* 当前生效的插件配置 */
   const options = (): AdapterOptions => source.getOptions()
+
+  /* 每个调用最近一次上报草稿的时间, 避免每次扫描都发一次请求 */
+  const draftReportedAt = new Map<string, number>()
 
   /* 倒计时文案, 暂停态与运行态分开 */
   const countdownText = (remainingMs: number, isPaused: boolean): string => {
@@ -875,7 +794,7 @@ function hideHostWaitText(card: HTMLElement): void {
     const live = frozen !== undefined || deadline !== undefined
     if (!live) {
       restoreCard(card)
-      if (timedOut.has(identity.callId) && !submitting.has(identity.callId)) {
+      if (timedOut.has(identity.callId)) {
         lockCard(card)
         hideCard(card)
       }
@@ -924,8 +843,8 @@ function hideHostWaitText(card: HTMLElement): void {
       if (button.textContent !== label) button.textContent = label
     }
 
-    /* 超时后锁定并收起卡片; 提交进行中先保留, 结算后由宿主移除 */
-    if (timedOut.has(identity.callId) && !submitting.has(identity.callId)) {
+    /* 超时后锁定并收起卡片 */
+    if (timedOut.has(identity.callId)) {
       lockCard(card)
       hideCard(card)
     }
@@ -1144,27 +1063,33 @@ function hideHostWaitText(card: HTMLElement): void {
     hideCard(card)
   }
 
+  /*
+   * 把当前卡片的草稿快照上报给服务端。
+   * 只在"仍可作答"的状态下上报, 已超时或已退让的卡片不再重复发送。
+   */
+  const reportCurrentDraft = (identity: CardIdentity, card: HTMLElement): void => {
+    const current = options()
+    if (!current.draftFallback || !injectsContext(current.fallback)) return
+    if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
+    const progress = readProgress(card)
+    const count = Math.max(progress?.count ?? 1, 1)
+    const items = mergeDrafts(readHostDrafts(identity, count), readLiveDrafts(card, count), count, progress?.index)
+    if (!items.some(hasItemContent)) return
+    const last = draftReportedAt.get(identity.callId)
+    const now = Date.now()
+    if (last !== undefined && now - last < DRAFT_REPORT_INTERVAL_MS) return
+    draftReportedAt.set(identity.callId, now)
+    const answers = items.map((item, index) => ({
+      index,
+      selected: [...item.selected],
+      ...(item.custom.trim() === '' ? {} : { custom: item.custom }),
+    }))
+    void reportDraftSnapshot(identity, answers)
+  }
+
   /* 评估一行 continued 投影: 按题收集草稿, 按兜底范围提交或收起卡片 */
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
     const card = findCard(identity)
-    /*
-     * 已经提交过草稿的行: 观察窗口内等宿主结算, 不重复注入也不锁卡;
-     * 超过窗口仍在等待说明回复被丢弃或没送到模型, 必须把卡片还给用户并留下日志。
-     *
-     * 这段必须排在"已处理"判定之前: 注入成功的调用同时也在已处理集合里,
-     * 若先被已处理判定挡回去, 观察窗口就永远走不到, 卡片会一直被收起而用户看不到提示。
-     */
-    const injectedAt = recentInjections.get(row.callId)
-    if (injectedAt !== undefined) {
-      if (Date.now() - injectedAt < INJECTION_WATCH_MS) return
-      recentInjections.delete(row.callId)
-      handled.delete(row.callId)
-      passive.add(row.callId)
-      timedOut.delete(row.callId)
-      if (card !== undefined) restoreCard(card)
-      console.warn('[question-timeout-protection] 超时草稿提交后该提问仍在等待, 已恢复卡片交给用户处理')
-      return
-    }
     if (handled.has(row.callId)) return
     const stored = lastDrafts.get(row.callId)
     /* 卡片还没挂载也没有历史记录时先挂起, 等扫描到卡片再评估, 避免丢失卡里已填内容 */
@@ -1218,25 +1143,11 @@ function hideHostWaitText(card: HTMLElement): void {
     /* 走到这里说明已接管, 草稿兜底开关必然为真, 直接记快照即可 */
     drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
     pruneDrafts()
-    /* 注入开启且至少一题有内容时走宿主官方晚回复通道, 提交成功后卡片随结算被宿主移除 */
-    const shouldInject = injectsContext(current.fallback)
-    if (shouldInject) {
-      submitting.add(row.callId)
-      void injectAnswer(ctx, identity, row.questions, items)
-        .then((accepted) => {
-          submitting.delete(row.callId)
-          if (accepted) {
-            recentInjections.set(row.callId, Date.now())
-            return
-          }
-          closeCardAfterTimeout(identity)
-        })
-        .catch(() => {
-          submitting.delete(row.callId)
-          closeCardAfterTimeout(identity)
-        })
-      return
-    }
+    /*
+     * 草稿进上下文的唯一通道是工具的返回值: 超时前客户端已经把草稿快照交给服务端,
+     * 工具到期时取走这份快照, 随 pending 结果一起交给模型。
+     * 这里不再向宿主另开一条晚回复通道, 只负责把卡片收干净, 并留下只读草稿供回看。
+     */
     closeCardAfterTimeout(identity)
   }
 
@@ -1390,6 +1301,11 @@ function hideHostWaitText(card: HTMLElement): void {
         lastDrafts.set(identity.callId, mergeDrafts(previous, readLiveDrafts(element, count), count, progress?.index))
         decorateCard(element, identity)
       }
+      /*
+       * 提问还没超时的时候就把草稿持续交给服务端: 工具到期时直接从服务端取这份快照,
+       * 随 pending 返回值一起交给模型, 不再依赖事后的晚回复通道。
+       */
+      reportCurrentDraft(identity, element)
       subscriptionSeen.set(identity.sessionId, Date.now())
       ensureSubscription(identity.sessionId)
     }

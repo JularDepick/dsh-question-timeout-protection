@@ -10,6 +10,16 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { SYNC_PATH, SYNC_PORT } from '../constants'
 
+/**
+ * 客户端上报的超时草稿条目。
+ * 客户端只知道草稿落在第几道题(卡片按顺序展示), 题目 id 由工具侧按自己的提问顺序对应。
+ */
+export interface DraftAnswer {
+  index: number
+  selected: string[]
+  custom?: string
+}
+
 /* 已声明无限等待的调用 */
 const infiniteCalls = new Set<string>()
 
@@ -21,6 +31,21 @@ const CALL_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/
 
 /* 集合上限: 超出后丢弃最早登记的一项, 防止被撑爆 */
 const MAX_INFINITE_CALLS = 512
+
+/* 已上报的超时草稿(键为 callId), 工具到期时取走 */
+const draftReports = new Map<string, DraftAnswer[]>()
+
+/* 等待草稿上报的等待者 */
+const draftWaiters = new Map<string, Array<(value: DraftAnswer[] | undefined) => void>>()
+
+/* 草稿条目上限: 单次上报最多保留这么多题 */
+const MAX_DRAFT_ANSWERS = 64
+
+/* 收下更晚到达的草稿更新所需的等待时长(毫秒) */
+const SETTLE_MS = 600
+
+/* 等待草稿上报时的轮询间隔(毫秒) */
+const POLL_INTERVAL_MS = 100
 
 /* 端口被占用时的重试次数与间隔(热更新时旧端点可能还没释放) */
 const LISTEN_RETRIES = 5
@@ -37,6 +62,72 @@ function rememberInfiniteCall(callId: string): void {
     if (!oldest.done) infiniteCalls.delete(oldest.value)
   }
   infiniteCalls.add(callId)
+}
+
+/*
+ * 登记客户端上报的超时草稿。
+ * 工具到期时会等一小段时间等这份上报, 拿到后随 pending 结果一起交给模型。
+ */
+export function reportDraft(callId: string, answers: DraftAnswer[]): void {
+  if (draftReports.size >= MAX_INFINITE_CALLS && !draftReports.has(callId)) {
+    const oldest = draftReports.keys().next()
+    if (!oldest.done) draftReports.delete(oldest.value)
+  }
+  draftReports.set(callId, answers)
+  const waiters = draftWaiters.get(callId)
+  if (waiters === undefined) return
+  draftWaiters.delete(callId)
+  for (const waiter of waiters) waiter(answers)
+}
+
+/*
+ * 等待某次调用的草稿上报。
+ * 客户端在用户编辑卡片时就会持续上报草稿快照, 因此到期时通常已经有一份;
+ * 这里再给一段宽限时间, 收下更晚到达的那一份, 取最新值交给工具。
+ */
+export async function awaitDraft(callId: string, timeoutMs: number): Promise<DraftAnswer[] | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const reported = draftReports.get(callId)
+    if (reported !== undefined) {
+      /* 已有一份就再等一小段, 收下更晚到达的更新 */
+      await sleep(SETTLE_MS)
+      const latest = draftReports.get(callId)
+      draftReports.delete(callId)
+      return latest ?? reported
+    }
+    await sleep(POLL_INTERVAL_MS)
+  }
+  draftReports.delete(callId)
+  return undefined
+}
+
+/* 等待一小段时间 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+/* 把客户端上报的草稿整理成可用的条目数组, 脏数据一律丢弃 */
+function normalizeAnswers(value: unknown): DraftAnswer[] {
+  if (!Array.isArray(value)) return []
+  const answers: DraftAnswer[] = []
+  for (const entry of value.slice(0, MAX_DRAFT_ANSWERS)) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const item = entry as { index?: unknown; selected?: unknown; custom?: unknown }
+    if (typeof item.index !== 'number' || !Number.isInteger(item.index) || item.index < 0) continue
+    const selected = Array.isArray(item.selected)
+      ? item.selected.filter((label): label is string => typeof label === 'string')
+      : []
+    const custom = typeof item.custom === 'string' ? item.custom : undefined
+    answers.push({
+      index: item.index,
+      selected,
+      ...(custom === undefined || custom.trim() === '' ? {} : { custom }),
+    })
+  }
+  return answers
 }
 
 /* 处理一次上报请求 */
@@ -74,13 +165,21 @@ function handleStateRequest(request: import('node:http').IncomingMessage, respon
   request.on('end', () => {
     if (oversized) return
     try {
-      const parsed = JSON.parse(body) as { callId?: unknown; infinite?: unknown }
-      if (typeof parsed.callId !== 'string' || parsed.infinite !== true || !CALL_ID_PATTERN.test(parsed.callId)) {
+      const parsed = JSON.parse(body) as { callId?: unknown; infinite?: unknown; answers?: unknown }
+      if (typeof parsed.callId !== 'string' || !CALL_ID_PATTERN.test(parsed.callId)) {
         response.writeHead(400)
         response.end()
         return
       }
-      rememberInfiniteCall(parsed.callId)
+      if (parsed.infinite === true) {
+        rememberInfiniteCall(parsed.callId)
+      } else if (Array.isArray(parsed.answers)) {
+        reportDraft(parsed.callId, normalizeAnswers(parsed.answers))
+      } else {
+        response.writeHead(400)
+        response.end()
+        return
+      }
       response.writeHead(200, { 'content-type': 'application/json' })
       response.end('{"ok":true}')
     } catch {
@@ -162,4 +261,6 @@ export function stopQuestionSync(): void {
   server = undefined
   infiniteCalls.clear()
   instance?.close()
+  draftReports.clear()
+  draftWaiters.clear()
 }

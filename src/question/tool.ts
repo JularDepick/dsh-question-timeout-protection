@@ -11,13 +11,15 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { Config } from '../config'
 import { configValue } from '../config-value'
-import { clearInfiniteWait, isInfiniteWait } from '../sync/server'
+import { awaitDraft, clearInfiniteWait, isInfiniteWait } from '../sync/server'
 import {
   ASK_USER_TOOL_NAME,
   DEFAULT_TIMEOUT_SECONDS,
+  DRAFT_GRACE_MS,
   MAX_TIMEOUT_SECONDS,
   MIN_TIMEOUT_SECONDS,
   TIMED_TIMEOUT_PARAMETER,
+  TIMEOUT_PENDING_DRAFT_NOTICE,
   TIMEOUT_PENDING_NOTICE,
 } from '../constants'
 
@@ -150,6 +152,32 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
                 required: true,
                 description: 'How to continue while the questions stay answerable.',
               },
+              draft: {
+                type: 'array',
+                description:
+                  'Unsubmitted draft the user had entered when the wait expired; one item per question, empty when there was no draft.',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    id: {
+                      type: 'string',
+                      required: true,
+                      description: 'Stable question id echoed from the request.',
+                    },
+                    selected: {
+                      type: 'array',
+                      required: true,
+                      items: { type: 'string' },
+                      description: 'Option labels the user had selected; empty with no custom means the question was left blank.',
+                    },
+                    custom: {
+                      type: 'string',
+                      description: 'Free-form text the user had typed for this question.',
+                    },
+                  },
+                },
+              },
             },
           },
           {
@@ -243,6 +271,43 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           ...(answer.custom === undefined ? {} : { custom: answer.custom }),
         })),
       })
+      /*
+       * 超时结果: 客户端在用户编辑卡片时就把草稿快照持续上报到状态通道,
+       * 到期时在这里取回最新的一份, 随 pending 结果一起交给模型 ——
+       * 草稿因此走的是工具返回值这条通道, 不再依赖事后的晚回复注入。
+       */
+      const pendingResult = async (callId: string): Promise<{
+        pending: true
+        callId: string
+        message: string
+        draft?: Array<{ id: string; selected: string[]; custom?: string }>
+      }> => {
+        const draft = await awaitDraft(callId, DRAFT_GRACE_MS)
+        if (draft === undefined || draft.length === 0) {
+          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+        }
+        /*
+         * 客户端按顺序上报草稿(它不知道题目的 id), 这里按提问顺序把序号对应回 id,
+         * 顺序之外的条目直接丢弃, 免得给模型一份对不上的草稿。
+         */
+        const mapped: Array<{ id: string; selected: string[]; custom?: string }> = []
+        for (const item of draft) {
+          const question = questions[item.index]
+          if (question === undefined) continue
+          mapped.push({
+            id: question.id,
+            selected: [...item.selected],
+            ...(item.custom === undefined ? {} : { custom: item.custom }),
+          })
+        }
+        if (mapped.length === 0) return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+        return {
+          pending: true,
+          callId,
+          message: TIMEOUT_PENDING_DRAFT_NOTICE,
+          draft: mapped,
+        }
+      }
       try {
         const result = await Promise.race([wait, expired])
         if ('pending' in result) {
@@ -252,12 +317,10 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            */
           if (infiniteEnabled && isInfiniteWait(exec.callId)) {
             const settled = await wait
-            if ('pending' in settled) {
-              return { pending: true as const, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }
-            }
+            if ('pending' in settled) return pendingResult(settled.callId)
             return toAnswers(settled)
           }
-          return { pending: true as const, callId: result.callId, message: TIMEOUT_PENDING_NOTICE }
+          return pendingResult(result.callId)
         }
         return toAnswers(result)
       } finally {

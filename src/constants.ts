@@ -79,9 +79,17 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
 /**
  * 超时后随 pending 结果返回给模型的说明。
  * 语义要点: 只说明本轮提问已超时、用户没有正式提交, 不对草稿做任何断言 ——
- * 草稿为空时不该告诉模型"草稿保留了下来", 有草稿时草稿本身会作为晚回复单独进入对话。
+ * 草稿为空时不该告诉模型"草稿保留了下来"; 有草稿时草稿走 draft 字段随本结果一起回来。
  */
 export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式提交。'
+
+/**
+ * 有草稿时随 pending 结果返回给模型的说明。
+ * 草稿本身放在 pending 结果的 draft 字段里, 这里只说明它的存在与用法,
+ * 避免模型把整段说明当成草稿内容。
+ */
+export const TIMEOUT_PENDING_DRAFT_NOTICE =
+  '该轮提问已超时,用户没有正式提交; 超时前留下的草稿已随本结果带回, 内容见 draft 字段, 请据此继续任务, 并在最后告知用户这次超时以及你对草稿的处理决策。'
 
 /** 草稿文本里已选选项行的前缀 */
 export const DRAFT_SELECTED_LABEL_ZH = '已选: {items}'
@@ -150,11 +158,8 @@ export const SCAN_INTERVAL_MS = 1000
 /** 同时保持的会话投影订阅上限, 超出后淘汰最久没在界面上出现的会话 */
 export const MAX_SESSION_SUBSCRIPTIONS = 8
 
-/** 注入后观察窗口(毫秒): 超过该时长该行仍在等待, 说明注入被丢弃, 需要把卡片还给用户 */
-export const INJECTION_WATCH_MS = 10000
-
-/** 单次注入的超时(毫秒), 防止宿主侧挂起时状态长期占位 */
-export const INJECTION_TIMEOUT_MS = 15000
+/** 工具到期后等待客户端上报草稿的宽限时长(毫秒) */
+export const DRAFT_GRACE_MS = 3000
 
 /** 宿主「慢慢回答」控件的文案(中文与英文), 用于隐藏该控件 */
 export const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', 'Take time']
