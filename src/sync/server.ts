@@ -7,7 +7,7 @@
  * 作者: JularDepick
  */
 
-import { createServer, type Server } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { SYNC_PATH, SYNC_PORT } from '../constants'
 
 /* 已声明无限等待的调用 */
@@ -120,6 +120,20 @@ function attemptListen(retry: number): void {
     console.info('[question-timeout-protection] 状态同步端点已监听 127.0.0.1:' + String(port))
   })
   instance.listen(SYNC_PORT, '127.0.0.1')
+}
+
+/**
+ * 把状态端点挂到宿主自带的 HTTP 服务上。
+ * 同源注册后不需要 CORS, 也不会与另一个 dsh 实例的固定端口互相抢请求。
+ * @param webServer 宿主 WebServer 服务, 提供 register 与 getOrigin
+ * @returns 注销函数
+ */
+export function registerQuestionSyncRoute(webServer: {
+  register: (route: { kind: 'exact'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }) => () => void
+}): () => void {
+  const off = webServer.register({ kind: 'exact', path: SYNC_PATH, handler: handleStateRequest })
+  console.info('[question-timeout-protection] 状态同步路由已挂在宿主 HTTP 服务上: ' + SYNC_PATH)
+  return off
 }
 
 /** 启动状态同步端点; 重复调用只启动一次 */

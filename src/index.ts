@@ -10,7 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config } from './config'
 import { PLUGIN_NAME } from './constants'
 import { QuestionTimeoutService } from './question/service'
-import { startQuestionSync, stopQuestionSync } from './sync/server'
+import { registerQuestionSyncRoute, startQuestionSync, stopQuestionSync } from './sync/server'
 
 export const name = PLUGIN_NAME
 
@@ -30,7 +30,24 @@ export function apply(ctx: Context, config: Config): void {
    * 在那里开端口纯属占用, 因此等该服务就绪后再启动, 等不到就不启动。
    */
   let syncStarted = false
+  /* 优先挂到宿主自带的 HTTP 服务上: 同源、免 CORS, 也不会与另一个实例抢固定端口 */
+  ctx.inject(['webServer'], (scoped?: Context) => {
+    /* 回调的入参在不同宿主版本里可能为空, 因此以回调上下文优先、外层 ctx 兜底 */
+    const holder = (scoped ?? ctx) as unknown as {
+      webServer?: Parameters<typeof registerQuestionSyncRoute>[0]
+      effect?: (install: () => () => void) => void
+    }
+    const webServer = holder.webServer
+    if (webServer === undefined) return
+    syncStarted = true
+    /* 同源路由就绪后就不必再占一个本机端口, 把可能已启动的回环端点收掉 */
+    stopQuestionSync()
+    const off = registerQuestionSyncRoute(webServer)
+    holder.effect?.(() => off)
+  })
+  /* 宿主没有 HTTP 服务时回退到本机回环端口 */
   ctx.inject(['clientModules'], () => {
+    if (syncStarted) return
     syncStarted = true
     startQuestionSync()
   })

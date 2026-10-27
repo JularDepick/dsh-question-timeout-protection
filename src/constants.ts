@@ -148,6 +148,9 @@ export const SCAN_DEBOUNCE_MS = 120
 /** 兜底扫描间隔(毫秒), 防止漏掉宿主未触发 mutation 的更新 */
 export const SCAN_INTERVAL_MS = 1000
 
+/** 同时保持的会话投影订阅上限, 超出后淘汰最久没在界面上出现的会话 */
+export const MAX_SESSION_SUBSCRIPTIONS = 8
+
 /** 注入后观察窗口(毫秒): 超过该时长该行仍在等待, 说明注入被丢弃, 需要把卡片还给用户 */
 export const INJECTION_WATCH_MS = 10000
 

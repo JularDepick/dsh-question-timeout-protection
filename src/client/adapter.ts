@@ -24,6 +24,7 @@ import {
   INJECTION_TIMEOUT_MS,
   INJECTION_WATCH_MS,
   MAX_KEPT_DRAFTS,
+  MAX_SESSION_SUBSCRIPTIONS,
   PAUSED_TEXT_PATTERNS,
   SCAN_DEBOUNCE_MS,
   SCAN_INTERVAL_MS,
@@ -578,14 +579,35 @@ async function injectAnswer(
  * 把「无限等待」的点击状态同步给服务端, 使工具到期后继续阻塞。
  * 失败必须让调用方知道: 通道不可达时无限等待无法生效, 不能静默按超时提交草稿。
  */
-function reportInfiniteWait(identity: CardIdentity): Promise<boolean> {
-  return fetch('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, {
+/*
+ * 只认明确的成功应答: 宿主的单页应用兜底路由对未知路径也可能回 200 并给出页面,
+ * 只看 response.ok 会把"没人接收"当成"已登记", 于是到期照样按超时提交草稿。
+ */
+function postInfiniteWait(url: string, callId: string): Promise<boolean> {
+  return fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ callId: identity.callId, infinite: true }),
+    body: JSON.stringify({ callId, infinite: true }),
   })
-    .then((response) => response.ok)
+    .then(async (response) => {
+      if (!response.ok) return false
+      try {
+        const payload = (await response.json()) as { ok?: unknown }
+        return payload.ok === true
+      } catch {
+        return false
+      }
+    })
     .catch(() => false)
+}
+
+/*
+ * 优先走与界面同源的路由: 同源既不需要 CORS, 也天然排除同名端口的第二个实例;
+ * 只有宿主没有注册该路由时才回退到本机回环端口。
+ */
+async function reportInfiniteWait(identity: CardIdentity): Promise<boolean> {
+  if (await postInfiniteWait(SYNC_PATH, identity.callId)) return true
+  return postInfiniteWait('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, identity.callId)
 }
 
 /**
@@ -1236,6 +1258,8 @@ function hideHostWaitText(card: HTMLElement): void {
    */
   const subscribeWarned = new Set<string>()
   const polledSessions = new Map<string, () => void>()
+  /* 各会话最近一次在界面上出现的时间, 用于限制订阅数量 */
+  const subscriptionSeen = new Map<string, number>()
 
   /* 为会话订阅提问投影 */
   const ensureSubscription = (sessionId: string): void => {
@@ -1269,6 +1293,22 @@ function hideHostWaitText(card: HTMLElement): void {
       return
     }
     subscriptions.set(sessionId, face.subscribe(evaluate))
+    subscriptionSeen.set(sessionId, Date.now())
+    /* 页面里会不断打开新会话, 订阅只增不减会一直累积, 这里按最近出现时间淘汰最旧的一条 */
+    while (subscriptions.size > MAX_SESSION_SUBSCRIPTIONS) {
+      let oldestSession: string | undefined
+      let oldestAt = Number.POSITIVE_INFINITY
+      for (const [id, seenAt] of subscriptionSeen) {
+        if (seenAt < oldestAt) {
+          oldestAt = seenAt
+          oldestSession = id
+        }
+      }
+      if (oldestSession === undefined) break
+      subscriptions.get(oldestSession)?.()
+      subscriptions.delete(oldestSession)
+      subscriptionSeen.delete(oldestSession)
+    }
     evaluate()
   }
 
@@ -1338,6 +1378,7 @@ function hideHostWaitText(card: HTMLElement): void {
         lastDrafts.set(identity.callId, mergeDrafts(previous, readLiveDrafts(element, count), count, progress?.index))
         decorateCard(element, identity)
       }
+      subscriptionSeen.set(identity.sessionId, Date.now())
       ensureSubscription(identity.sessionId)
     }
     if (!options().cardEnhancements) return
