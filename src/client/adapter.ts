@@ -558,12 +558,16 @@ async function injectAnswer(
     -1,
   )
   if (lastFilled < 0) return false
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    /* 宿主侧偶尔会挂起, 这里加超时, 让调用方按失败处理而不是永远占着 submitting */
-    const result = await Promise.race([
-      answer(identity.sessionId, identity.callId, { answers }),
-      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), INJECTION_TIMEOUT_MS)),
-    ])
+    /*
+     * 宿主侧偶尔会挂起, 这里加超时。超时要按失败处理: 超时后草稿并没有进入上下文,
+     * 若当成成功就会把卡片收起, 用户看到的就是"草稿没有进入上下文"。
+     */
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('injection timeout')), INJECTION_TIMEOUT_MS)
+    })
+    const result = await Promise.race([answer(identity.sessionId, identity.callId, { answers }), expired])
     if (result !== undefined && (result.ok === false || result.value === false)) {
       console.warn('[question-timeout-protection] 超时草稿注入被宿主拒绝', JSON.stringify(result))
       return false
@@ -572,6 +576,8 @@ async function injectAnswer(
   } catch (error) {
     console.warn('[question-timeout-protection] 超时草稿注入失败', error)
     return false
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -1154,22 +1160,26 @@ function hideHostWaitText(card: HTMLElement): void {
 
   /* 评估一行 continued 投影: 按题收集草稿, 按兜底范围提交或收起卡片 */
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
-    if (handled.has(row.callId)) return
     const card = findCard(identity)
     /*
      * 已经提交过草稿的行: 观察窗口内等宿主结算, 不重复注入也不锁卡;
      * 超过窗口仍在等待说明回复被丢弃或没送到模型, 必须把卡片还给用户并留下日志。
+     *
+     * 这段必须排在"已处理"判定之前: 注入成功的调用同时也在已处理集合里,
+     * 若先被已处理判定挡回去, 观察窗口就永远走不到, 卡片会一直被收起而用户看不到提示。
      */
     const injectedAt = recentInjections.get(row.callId)
     if (injectedAt !== undefined) {
       if (Date.now() - injectedAt < INJECTION_WATCH_MS) return
       recentInjections.delete(row.callId)
+      handled.delete(row.callId)
       passive.add(row.callId)
       timedOut.delete(row.callId)
       if (card !== undefined) restoreCard(card)
       console.warn('[question-timeout-protection] 超时草稿提交后该提问仍在等待, 已恢复卡片交给用户处理')
       return
     }
+    if (handled.has(row.callId)) return
     const stored = lastDrafts.get(row.callId)
     /* 卡片还没挂载也没有历史记录时先挂起, 等扫描到卡片再评估, 避免丢失卡里已填内容 */
     if (card === undefined && stored === undefined) {
