@@ -281,10 +281,10 @@ export const BUBBLE_DRAFT_LABEL_ZH = '提问·超时草稿'
 export const BUBBLE_DRAFT_LABEL_EN = 'Question · timed-out draft'
 
 /** 只读草稿面板标题(中文) */
-export const DRAFT_PANEL_TITLE_ZH = '超时草稿(只读)'
+export const DRAFT_PANEL_TITLE_ZH = '超时草稿'
 
 /** 只读草稿面板标题(英文) */
-export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft (read only)'
+export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft'
 
 /** 只读草稿面板的说明(中文),提示该次提问已结束 */
 export const DRAFT_PANEL_NOTE_ZH = '该次提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容。'
@@ -298,12 +298,6 @@ export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输�
 
 /** 只读草稿面板没有可展示内容时的提示(英文) */
 export const DRAFT_PANEL_EMPTY_EN = 'No option was selected and no text had been entered at the timeout.'
-
-/** 只读草稿面板的关闭按钮文案(中文) */
-export const DRAFT_PANEL_CLOSE_ZH = '关闭'
-
-/** 只读草稿面板的关闭按钮文案(英文) */
-export const DRAFT_PANEL_CLOSE_EN = 'Close'
 
 /** 只读草稿面板里某题没有作答时的提示(中文) */
 export const DRAFT_PANEL_UNANSWERED_ZH = '未作答'

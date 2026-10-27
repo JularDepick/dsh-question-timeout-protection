@@ -118,7 +118,6 @@ const CONSTANT_KEY_MAP = {
   DRAFT_PANEL_NOTE: 'draftPanel.note',
   DRAFT_PANEL_EMPTY: 'draftPanel.empty',
   DRAFT_PANEL_UNANSWERED: 'draftPanel.unanswered',
-  DRAFT_PANEL_CLOSE: 'draftPanel.close',
 }
 
 const enIni = parseIni(readFileSync(join(ROOT, 'src/translation/en-US.ini'), 'utf8'))

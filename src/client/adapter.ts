@@ -44,8 +44,6 @@ import {
   COUNTDOWN_WARNING_CLASS,
   DRAFT_CUSTOM_LABEL_EN,
   DRAFT_CUSTOM_LABEL_ZH,
-  DRAFT_PANEL_CLOSE_EN,
-  DRAFT_PANEL_CLOSE_ZH,
   DRAFT_PANEL_EMPTY_EN,
   DRAFT_PANEL_EMPTY_ZH,
   DRAFT_PANEL_ID,
@@ -283,20 +281,6 @@ const CARD_STYLE = `
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--dsw-alias-bg-secondary, rgba(0, 0, 0, 0.04));
-}
-#dqtp-draft-panel .dqtp-draft-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-#dqtp-draft-panel .dqtp-draft-close {
-  height: 26px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.16));
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
-  cursor: pointer;
 }
 @media (prefers-reduced-motion: reduce) {
   [data-dqtp-countdown].dqtp-countdown-warning { animation: none; }
@@ -1063,18 +1047,9 @@ function hideHostWaitText(card: HTMLElement): void {
       return (heading === '' ? '' : heading + '\n') + content
     })
     body.textContent = blocks.length === 0 ? pick(DRAFT_PANEL_EMPTY_ZH, DRAFT_PANEL_EMPTY_EN) : blocks.join('\n\n')
-    const actions = document.createElement('div')
-    actions.className = 'dqtp-draft-actions'
-    const close = document.createElement('button')
-    close.type = 'button'
-    close.className = 'dqtp-draft-close'
-    close.textContent = pick(DRAFT_PANEL_CLOSE_ZH, DRAFT_PANEL_CLOSE_EN)
-    close.addEventListener('click', closeDraftPanel)
-    actions.appendChild(close)
     card.appendChild(title)
     card.appendChild(note)
     card.appendChild(body)
-    card.appendChild(actions)
     root.appendChild(card)
     document.body.appendChild(root)
     panel = root
