@@ -11,7 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { Config } from '../config'
 import { configValue } from '../config-value'
-import { awaitDraft, clearInfiniteWait, isInfiniteWait } from '../sync/server'
+import { awaitDraft, clearDraft, clearInfiniteWait, isInfiniteWait } from '../sync/server'
 import {
   ASK_USER_TOOL_NAME,
   DEFAULT_TIMEOUT_SECONDS,
@@ -276,13 +276,27 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 到期时在这里取回最新的一份, 随 pending 结果一起交给模型 ——
        * 草稿因此走的是工具返回值这条通道, 不再依赖事后的晚回复注入。
        */
-      const pendingResult = async (callId: string): Promise<{
+      /*
+       * 到期结果的生成。
+       * 先等一小段宽限时间, 等客户端把草稿快照送上来; 宽限期内如果「无限等待」的
+       * 状态到达了(用户在到期瞬间点了无限等待), 说明这一轮提问其实还想继续等,
+       * 这时不能按超时结算, 返回 null 让调用方继续阻塞等待。
+       */
+      const pendingResult = async (
+        callId: string,
+        checkInfinite: boolean,
+      ): Promise<{
         pending: true
         callId: string
         message: string
         draft?: Array<{ id: string; selected: string[]; custom?: string }>
-      }> => {
+      } | null> => {
         const draft = await awaitDraft(callId, DRAFT_GRACE_MS)
+        if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) return null
+        /*
+         * draft 为 undefined 表示宽限期内没有等到任何上报, 按无草稿结算;
+         * 空数组表示客户端明确上报过"确实没有草稿", 同样按无草稿结算, 但不必再等。
+         */
         if (draft === undefined || draft.length === 0) {
           return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
         }
@@ -310,21 +324,36 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       }
       try {
         const result = await Promise.race([wait, expired])
-        if ('pending' in result) {
+        if (!('pending' in result)) return toAnswers(result)
+        /*
+         * 客户端已点击「无限等待」时, 状态同步通道会先登记该调用;
+         * 此时不返回 pending, 继续等待用户提交, 模型工作被阻塞。
+         */
+        if (infiniteEnabled && isInfiniteWait(exec.callId)) {
+          const settled = await wait
+          if (!('pending' in settled)) return toAnswers(settled)
           /*
-           * 客户端已点击「无限等待」时, 状态同步通道会先登记该调用;
-           * 此时不返回 pending, 继续等待用户提交, 模型工作被阻塞。
+           * 宿主自己也已经把这批问题结算成超时了, 无可再等;
+           * 这时按超时出结果, 不再因为「无限等待」继续挂着。
            */
-          if (infiniteEnabled && isInfiniteWait(exec.callId)) {
-            const settled = await wait
-            if ('pending' in settled) return pendingResult(settled.callId)
-            return toAnswers(settled)
-          }
-          return pendingResult(result.callId)
+          const settledPending = await pendingResult(settled.callId, false)
+          return settledPending ?? { pending: true, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }
         }
-        return toAnswers(result)
+        /*
+         * 到期时先等一小段宽限时间, 等客户端把草稿快照送上来;
+         * 宽限期内若到达「无限等待」, 说明用户是在到期瞬间点的, 这一轮还想继续等,
+         * 这时回到等待里, 不按超时结算, 否则界面显示「已暂停」而模型这边已经超时, 两边对不上。
+         */
+        const pending = await pendingResult(result.callId, true)
+        if (pending !== null) return pending
+        const again = await wait
+        if (!('pending' in again)) return toAnswers(again)
+        const second = await pendingResult(again.callId, false)
+        return second ?? { pending: true, callId: again.callId, message: TIMEOUT_PENDING_NOTICE }
       } finally {
         clearInfiniteWait(exec.callId)
+        /* 草稿快照随这次调用结束而失效, 不留在服务端等下一轮复用 */
+        clearDraft(exec.callId)
         if (timer !== undefined) clearTimeout(timer)
       }
     },

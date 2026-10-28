@@ -3,9 +3,9 @@
  *
  * 不接管宿主提问卡片的渲染, 只在其 DOM 上补齐插件要求的界面能力:
  * 卡片右上角的插件自绘倒计时与「无限等待」按钮、单选选项选中后的方形底色、
- * 工具调用行的提问标识气泡。超时后按兜底范围分流: 开启注入时经宿主官方晚回复
- * 通道按题提交草稿本身, 卡片随结算由宿主移除; 未开启注入时驱动宿主收起卡片,
- * 不做任何提交。草稿存在内存里, 由气泡弹出的锚定悬浮卡片只读查看。
+ * 工具调用行的提问标识气泡。提问进行中把草稿快照上报服务端, 工具到期时随
+ * pending 结果按题交给模型; 超时后由插件收尾卡片: 开启注入时收起卡片并保留
+ * 草稿记录, 未开启注入时只收起卡片。草稿存在内存里, 由气泡弹出的锚定悬浮卡片只读查看。
  * 作者: JularDepick
  */
 
@@ -54,6 +54,9 @@ import {
   DRAFT_PANEL_UNANSWERED_EN,
   DRAFT_PANEL_UNANSWERED_ZH,
   DRAFT_SELECTED_LABEL_EN,
+  DRAFT_SYNC_FAILED_TEXT_EN,
+  DRAFT_SYNC_FAILED_TEXT_ZH,
+  DRAFT_SYNC_FAILURE_THRESHOLD,
   DRAFT_SELECTED_LABEL_ZH,
   HEADER_ACTIONS_SELECTOR,
   HIDDEN_CONTROL_CLASS,
@@ -267,12 +270,22 @@ const CARD_STYLE = `
 }
 `
 
+/* 一次状态上报的回执: ok 为假时 reason 可能是 expired(上报已过截止时刻) */
+interface StateReply {
+  ok: boolean
+  reason?: string
+}
+
 /* 从卡片 key 解析会话与调用标识 */
 function parseCardKey(key: string | null): CardIdentity | undefined {
   if (key === null) return undefined
   if (!key.startsWith(QUESTION_CARD_KEY_PREFIX)) return undefined
   const rest = key.slice(QUESTION_CARD_KEY_PREFIX.length)
-  const split = rest.lastIndexOf(':')
+  /*
+   * 会话 id 里不含冒号, 而 callId 允许含冒号(与服务端的白名单一致),
+   * 所以按第一个冒号切分: 从后往前切会把 callId 的前半段当成会话 id。
+   */
+  const split = rest.indexOf(':')
   if (split <= 0) return undefined
   return { sessionId: rest.slice(0, split), callId: rest.slice(split + 1) }
 }
@@ -411,23 +424,30 @@ function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem
 
 /*
  * 合并两批分题草稿: 默认前一批优先, 缺的用后一批补齐。
- * liveIndex 指向卡片当前显示的那一题, 该题一律以实时值为准 ——
- * 否则用户把手里的输入清空后, 旧值会被补回来并可能被当作草稿注入。
+ * liveIndex 指向卡片当前显示的那一题, 这一题的取舍由 liveWins 决定:
+ * - liveWins 为真(提问还在进行中): 以卡片实时值为准, 用户清空输入后旧值不能被补回来;
+ * - liveWins 为假(提问已经超时, 宿主可能重渲染卡片): 以宿主持久化的值为准,
+ *   否则重渲染把实时值清空时会把已选的选项丢掉。
  */
 function mergeDrafts(
   primary: DraftItem[] | undefined,
   fallback: DraftItem[] | undefined,
   count: number,
   liveIndex?: number,
+  liveWins = false,
 ): DraftItem[] {
   const merged: DraftItem[] = []
   for (let i = 0; i < count; i += 1) {
     const first = primary?.[i] ?? emptyItem()
     const second = fallback?.[i] ?? emptyItem()
     if (i === liveIndex) {
+      if (liveWins) {
+        merged.push({ selected: [...second.selected], custom: second.custom, skipped: second.skipped })
+        continue
+      }
       /*
-       * 当前显示的这一题以卡片实时值为准, 但卡片在超时后可能被宿主重渲染成空,
-       * 所以实时值为空时仍要保留宿主持久化的内容, 不能把已选的选项丢掉。
+       * 超时后卡片可能被宿主重渲染成空, 实时值为空时仍要保留宿主持久化的内容,
+       * 不能把已选的选项丢掉。
        */
       const liveHasContent = second.selected.length > 0 || second.custom.trim() !== ''
       merged.push(liveHasContent
@@ -475,34 +495,43 @@ function resolveProjectionFace(ctx: AdapterContext, sessionId: string): Projecti
  * 只认明确的成功应答: 宿主的单页应用兜底路由对未知路径也可能回 200 并给出页面,
  * 只看 response.ok 会把"没人接收"当成"已登记", 于是到期照样按超时提交草稿。
  */
-function postState(url: string, body: unknown): Promise<boolean> {
+function postState(url: string, body: unknown): Promise<StateReply> {
   return fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-    .then(async (response) => {
-      if (!response.ok) return false
+    .then(async (response): Promise<StateReply> => {
+      if (!response.ok) return { ok: false }
       try {
-        const payload = (await response.json()) as { ok?: unknown }
-        return payload.ok === true
+        const payload = (await response.json()) as { ok?: unknown; reason?: unknown }
+        if (payload.ok !== true) {
+          return { ok: false, reason: typeof payload.reason === 'string' ? payload.reason : undefined }
+        }
+        return { ok: true }
       } catch {
-        return false
+        return { ok: false }
       }
     })
-    .catch(() => false)
+    .catch(() => ({ ok: false }))
 }
 
 /*
  * 优先走与界面同源的路由: 同源既不需要 CORS, 也天然排除同名端口的第二个实例;
  * 只有宿主没有注册该路由时才回退到本机回环端口。
  */
-async function reportInfiniteWait(identity: CardIdentity): Promise<boolean> {
-  if (await postState(SYNC_PATH, { callId: identity.callId, infinite: true })) return true
-  return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, {
+async function reportInfiniteWait(
+  identity: CardIdentity,
+  deadline: number | undefined,
+): Promise<StateReply> {
+  const body = {
     callId: identity.callId,
     infinite: true,
-  })
+    ...(deadline === undefined ? {} : { deadline }),
+  }
+  const sameOrigin = await postState(SYNC_PATH, body)
+  if (sameOrigin.ok || sameOrigin.reason !== undefined) return sameOrigin
+  return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, body)
 }
 
 /*
@@ -513,9 +542,10 @@ async function reportInfiniteWait(identity: CardIdentity): Promise<boolean> {
  * 客户端不知道题目的 id(那是工具侧的标识), 只知道草稿落在第几道题,
  * 因此这里按顺序上报, 由工具侧把顺序对应回自己的题目 id。
  */
-async function reportDraftSnapshot(identity: CardIdentity, answers: unknown): Promise<boolean> {
+async function reportDraftSnapshot(identity: CardIdentity, answers: unknown): Promise<StateReply> {
   const body = { callId: identity.callId, answers }
-  if (await postState(SYNC_PATH, body)) return true
+  const sameOrigin = await postState(SYNC_PATH, body)
+  if (sameOrigin.ok) return sameOrigin
   return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, body)
 }
 
@@ -544,6 +574,10 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const paused = new Map<string, number>()
   /* 每个调用的截止时间, 按 callId 记, 卡片重渲染后延续 */
   const deadlines = new Map<string, number>()
+  /* 草稿通道连续上报失败的调用: 草稿送不到模型, 就不能收走卡片 */
+  const draftSyncFailed = new Set<string>()
+  /* 各调用草稿上报的连续失败次数 */
+  const draftSyncFailures = new Map<string, number>()
   /* 超时草稿(内存), 键为 callId */
   const drafts = new Map<string, StoredDraft>()
   /* 每个调用最近一次的分题草稿, 卡片重渲染后仍可用 */
@@ -584,6 +618,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     deadlines.delete(callId)
     paused.delete(callId)
     deferred.delete(callId)
+    draftSyncFailed.delete(callId)
+    draftSyncFailures.delete(callId)
+    draftReportedAt.delete(callId)
   }
 
   /* 草稿快照只保留最近若干条, 防止长时间使用后无限增长 */
@@ -808,7 +845,13 @@ function hideHostWaitText(card: HTMLElement): void {
       let remainingMs: number | undefined
       if (frozen !== undefined) remainingMs = frozen
       else if (deadline !== undefined) remainingMs = Math.max(0, deadline - Date.now())
-      if (syncUnavailable.has(identity.callId)) {
+      if (draftSyncFailed.has(identity.callId)) {
+        /* 草稿送不到模型时给出可见提示, 用户才知道内容不会被带走 */
+        const text = pick(DRAFT_SYNC_FAILED_TEXT_ZH, DRAFT_SYNC_FAILED_TEXT_EN)
+        if (countdown.textContent !== text) countdown.textContent = text
+        countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
+        countdown.classList.add(COUNTDOWN_WARNING_CLASS)
+      } else if (syncUnavailable.has(identity.callId)) {
         /* 通道不可达时倒计时位置显示不可用提示, 不给人「已经无限等待」的错觉 */
         const text = pick(SYNC_UNAVAILABLE_TEXT_ZH, SYNC_UNAVAILABLE_TEXT_EN)
         if (countdown.textContent !== text) countdown.textContent = text
@@ -862,8 +905,19 @@ function hideHostWaitText(card: HTMLElement): void {
       break
     }
     decorateCard(card, identity)
-    void reportInfiniteWait(identity).then((accepted) => {
-      if (accepted) return
+    void reportInfiniteWait(identity, deadlines.get(identity.callId)).then((reply) => {
+      if (reply.ok) return
+      if (reply.reason === 'expired') {
+        /*
+         * 上报到达时这一轮提问已经过了截止时刻, 工具多半已经按超时结算:
+         * 这时不能继续冻结界面, 否则用户看到的是"已暂停", 模型那边却是超时结果。
+         */
+        paused.delete(identity.callId)
+        console.warn('[question-timeout-protection] 「无限等待」上报时提问已到期, 保持超时结果')
+        const current = findCard(identity)
+        if (current !== undefined) decorateCard(current, identity)
+        return
+      }
       /*
        * 通道不可达(端口占用, 双实例, 或通过别的机器访问 web)时无限等待根本无法生效,
        * 这里撤回冻结、把该调用交还宿主, 并在倒计时位置给出可见提示, 避免到期仍提交草稿。
@@ -1073,8 +1127,18 @@ function hideHostWaitText(card: HTMLElement): void {
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
     const progress = readProgress(card)
     const count = Math.max(progress?.count ?? 1, 1)
-    const items = mergeDrafts(readHostDrafts(identity, count), readLiveDrafts(card, count), count, progress?.index)
-    if (!items.some(hasItemContent)) return
+    const items = mergeDrafts(
+      readHostDrafts(identity, count),
+      readLiveDrafts(card, count),
+      count,
+      progress?.index,
+      true,
+    )
+    /*
+     * 空草稿也要上报: 服务端据此知道"确实没有草稿", 工具到期时不必再空等一段宽限时间,
+     * 用户清空输入后服务端拿到的也是空草稿, 不会把旧值当成用户还留着的内容。
+     * 上报空草稿不等于交出卡片, 卡片怎么处理仍由超时收尾逻辑决定。
+     */
     const last = draftReportedAt.get(identity.callId)
     const now = Date.now()
     if (last !== undefined && now - last < DRAFT_REPORT_INTERVAL_MS) return
@@ -1084,7 +1148,27 @@ function hideHostWaitText(card: HTMLElement): void {
       selected: [...item.selected],
       ...(item.custom.trim() === '' ? {} : { custom: item.custom }),
     }))
-    void reportDraftSnapshot(identity, answers)
+    /*
+     * 上报失败不能默默吞掉: 草稿随工具的返回值进入模型上下文, 通道不通时模型根本拿不到草稿。
+     * 连续失败达到阈值后标记该调用通道不可用, 卡片交还宿主, 并在界面上给出可见提示。
+     */
+    void reportDraftSnapshot(identity, answers).then((reply) => {
+      if (reply.ok) {
+        draftSyncFailures.delete(identity.callId)
+        draftSyncFailed.delete(identity.callId)
+        return
+      }
+      const failures = (draftSyncFailures.get(identity.callId) ?? 0) + 1
+      draftSyncFailures.set(identity.callId, failures)
+      if (failures < DRAFT_SYNC_FAILURE_THRESHOLD) return
+      if (draftSyncFailed.has(identity.callId)) return
+      draftSyncFailed.add(identity.callId)
+      console.warn(
+        '[question-timeout-protection] 草稿快照上报连续失败, 本次问答改由宿主原版处理',
+      )
+      const current = findCard(identity)
+      if (current !== undefined) decorateCard(current, identity)
+    })
   }
 
   /* 评估一行 continued 投影: 按题收集草稿, 按兜底范围提交或收起卡片 */
@@ -1101,7 +1185,14 @@ function hideHostWaitText(card: HTMLElement): void {
     deferred.delete(row.callId)
     const count = row.questions.length
     const liveIndex = card === undefined ? undefined : readProgress(card)?.index
-    const items = mergeDrafts(readHostDrafts(identity, count) ?? stored, readLiveDrafts(card, count), count, liveIndex)
+    /* 超时后卡片可能被宿主重渲染, 这一题以宿主持久化的值为准 */
+    const items = mergeDrafts(
+      readHostDrafts(identity, count) ?? stored,
+      readLiveDrafts(card, count),
+      count,
+      liveIndex,
+      false,
+    )
     lastDrafts.set(row.callId, items)
     const current = options()
     /*
@@ -1114,7 +1205,10 @@ function hideHostWaitText(card: HTMLElement): void {
      * 等于超时了还把问题挂着, 与插件存在的意义相反。
      */
     const takeover =
-      current.draftFallback && !syncUnavailable.has(row.callId) && items.some(hasItemContent)
+      current.draftFallback
+      && !syncUnavailable.has(row.callId)
+      && !draftSyncFailed.has(row.callId)
+      && items.some(hasItemContent)
     if (!takeover) {
       /*
        * 兜底关闭或「无限等待」通道不可用时交还宿主原版路径, 卡片保持可继续作答。
@@ -1122,7 +1216,10 @@ function hideHostWaitText(card: HTMLElement): void {
        * 否则会留下一张点不动也答不了的对话框; 同时隐藏宿主「回答」入口, 不给重新打开的余地。
        */
       const emptyDraftTimeout =
-        current.draftFallback && !syncUnavailable.has(row.callId) && !items.some(hasItemContent)
+        current.draftFallback
+        && !syncUnavailable.has(row.callId)
+        && !draftSyncFailed.has(row.callId)
+        && !items.some(hasItemContent)
       if (emptyDraftTimeout) {
         timedOut.add(row.callId)
         drafts.delete(row.callId)
@@ -1208,9 +1305,24 @@ function hideHostWaitText(card: HTMLElement): void {
     }
     if (typeof face.subscribe !== 'function') {
       polledSessions.set(sessionId, evaluate)
+      subscriptionSeen.set(sessionId, Date.now())
       if (!subscribeWarned.has(sessionId)) {
         subscribeWarned.add(sessionId)
         console.warn('[question-timeout-protection] 提问投影不支持订阅, 改用轮询兜底')
+      }
+      /* 轮询兜底同样有上限, 否则页面里不断打开新会话会让它一直累积 */
+      while (polledSessions.size > MAX_SESSION_SUBSCRIPTIONS) {
+        let oldestSession: string | undefined
+        let oldestAt = Number.POSITIVE_INFINITY
+        for (const [id, seenAt] of subscriptionSeen) {
+          if (seenAt < oldestAt && polledSessions.has(id)) {
+            oldestAt = seenAt
+            oldestSession = id
+          }
+        }
+        if (oldestSession === undefined) break
+        polledSessions.delete(oldestSession)
+        subscriptionSeen.delete(oldestSession)
       }
       evaluate()
       return
@@ -1298,7 +1410,10 @@ function hideHostWaitText(card: HTMLElement): void {
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
         /* 参数顺序必须与 evaluateRow 一致: 前者是更可信的来源, 后者只做兜底 */
-        lastDrafts.set(identity.callId, mergeDrafts(previous, readLiveDrafts(element, count), count, progress?.index))
+        lastDrafts.set(
+          identity.callId,
+          mergeDrafts(previous, readLiveDrafts(element, count), count, progress?.index, true),
+        )
         decorateCard(element, identity)
       }
       /*

@@ -26,7 +26,7 @@ import type { ConfigFormLike, FormsLike, SettingsContext } from './settings'
 export const name = 'dsh-question-timeout-protection/client'
 
 /**
- * 只硬注入插槽: 适配器真正需要的是插槽能否注册, 会话绑定、晚回复通道、文案与配置表单
+ * 只硬注入插槽: 适配器真正需要的是插槽能否注册, 会话绑定、状态上报通道、文案与配置表单
  * 一律软取。硬注入任何一项缺失都会让整个客户端 apply 不执行, 连倒计时都会一起消失,
  * 而这些能力缺失时插件本可以降级工作。
  */

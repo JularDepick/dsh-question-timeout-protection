@@ -3,7 +3,8 @@
  *
  * 宿主的「无限等待」只是浏览器本地状态, 服务端拿不到点击事件。这里在回环地址
  * 上开一个只接收状态上报的小 HTTP 端点, 客户端点击「无限等待」时上报 callId,
- * 工具侧到期时据此改为继续阻塞等待。
+ * 工具侧到期时据此改为继续阻塞等待; 客户端也会在提问进行中上报草稿快照,
+ * 工具到期时取走这份快照随 pending 结果交给模型。
  * 作者: JularDepick
  */
 
@@ -23,7 +24,7 @@ export interface DraftAnswer {
 /* 已声明无限等待的调用 */
 const infiniteCalls = new Set<string>()
 
-/* 请求体上限: 正常负载只有一个 callId */
+/* 请求体上限: 正常负载只有一个 callId 与少量草稿条目 */
 const MAX_BODY_LENGTH = 4096
 
 /* callId 形态白名单, 避免任意字符串灌进集合 */
@@ -35,9 +36,6 @@ const MAX_INFINITE_CALLS = 512
 /* 已上报的超时草稿(键为 callId), 工具到期时取走 */
 const draftReports = new Map<string, DraftAnswer[]>()
 
-/* 等待草稿上报的等待者 */
-const draftWaiters = new Map<string, Array<(value: DraftAnswer[] | undefined) => void>>()
-
 /* 草稿条目上限: 单次上报最多保留这么多题 */
 const MAX_DRAFT_ANSWERS = 64
 
@@ -48,12 +46,20 @@ const SETTLE_MS = 600
 const POLL_INTERVAL_MS = 100
 
 /* 端口被占用时的重试次数与间隔(热更新时旧端点可能还没释放) */
-const LISTEN_RETRIES = 5
-const LISTEN_RETRY_DELAY = 200
+const LISTEN_RETRIES = 10
+const LISTEN_RETRY_DELAY = 300
+
+/*
+ * 只接受回环来源: 同源路由不需要 CORS, 这条限制只作用于回环兜底端点,
+ * 避免本机任意网页都能伪造草稿或「无限等待」状态。
+ */
+const LOOPBACK_ORIGIN_PATTERN = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/
 
 let server: Server | undefined
 /* 端口占用重试的定时器句柄, 卸载时必须取消 */
 let retryTimer: NodeJS.Timeout | undefined
+/* 端点正在关闭: 关闭期间到达的 listening 回调要立刻把实例收掉 */
+let stopping = false
 
 /* 登记一个无限等待调用 */
 function rememberInfiniteCall(callId: string): void {
@@ -74,10 +80,6 @@ export function reportDraft(callId: string, answers: DraftAnswer[]): void {
     if (!oldest.done) draftReports.delete(oldest.value)
   }
   draftReports.set(callId, answers)
-  const waiters = draftWaiters.get(callId)
-  if (waiters === undefined) return
-  draftWaiters.delete(callId)
-  for (const waiter of waiters) waiter(answers)
 }
 
 /*
@@ -100,6 +102,11 @@ export async function awaitDraft(callId: string, timeoutMs: number): Promise<Dra
   }
   draftReports.delete(callId)
   return undefined
+}
+
+/* 丢弃某次调用残留的草稿快照 */
+export function clearDraft(callId: string): void {
+  draftReports.delete(callId)
 }
 
 /* 等待一小段时间 */
@@ -131,8 +138,12 @@ function normalizeAnswers(value: unknown): DraftAnswer[] {
 }
 
 /* 处理一次上报请求 */
-function handleStateRequest(request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse): void {
-  response.setHeader('Access-Control-Allow-Origin', '*')
+function handleStateRequest(request: IncomingMessage, response: ServerResponse): void {
+  const origin = request.headers.origin
+  if (typeof origin === 'string' && LOOPBACK_ORIGIN_PATTERN.test(origin)) {
+    response.setHeader('Access-Control-Allow-Origin', origin)
+    response.setHeader('Vary', 'Origin')
+  }
   response.setHeader('Access-Control-Allow-Headers', 'content-type')
   response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
   if (request.method === 'OPTIONS') {
@@ -165,13 +176,28 @@ function handleStateRequest(request: import('node:http').IncomingMessage, respon
   request.on('end', () => {
     if (oversized) return
     try {
-      const parsed = JSON.parse(body) as { callId?: unknown; infinite?: unknown; answers?: unknown }
+      const parsed = JSON.parse(body) as {
+        callId?: unknown
+        infinite?: unknown
+        answers?: unknown
+        deadline?: unknown
+      }
       if (typeof parsed.callId !== 'string' || !CALL_ID_PATTERN.test(parsed.callId)) {
         response.writeHead(400)
         response.end()
         return
       }
       if (parsed.infinite === true) {
+        /*
+         * 客户端带上本轮提问的截止时刻: 截止之后才到达的「无限等待」已经晚了,
+         * 工具可能已经按超时结算, 这时不能再登记成无限等待。
+         */
+        if (typeof parsed.deadline === 'number' && Number.isFinite(parsed.deadline)
+          && Date.now() > parsed.deadline) {
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ ok: false, reason: 'expired' }))
+          return
+        }
         rememberInfiniteCall(parsed.callId)
       } else if (Array.isArray(parsed.answers)) {
         reportDraft(parsed.callId, normalizeAnswers(parsed.answers))
@@ -195,7 +221,7 @@ function attemptListen(retry: number): void {
   instance.on('error', (error) => {
     server = undefined
     const code = (error as NodeJS.ErrnoException).code
-    if (code === 'EADDRINUSE' && retry < LISTEN_RETRIES) {
+    if (code === 'EADDRINUSE' && retry < LISTEN_RETRIES && !stopping) {
       /* 重试句柄要留着: 卸载时若不清掉, 端点会在插件停用之后才起来并一直监听 */
       retryTimer = setTimeout(() => {
         retryTimer = undefined
@@ -213,6 +239,14 @@ function attemptListen(retry: number): void {
     )
   })
   instance.on('listening', () => {
+    /*
+     * 关闭期间才到达的 listening 回调要立刻把实例收掉:
+     * 否则端点会在插件停用之后继续监听, 端口一直被占着。
+     */
+    if (stopping) {
+      instance.close()
+      return
+    }
     server = instance
     const address = instance.address()
     const port = typeof address === 'object' && address !== null ? address.port : SYNC_PORT
@@ -238,6 +272,7 @@ export function registerQuestionSyncRoute(webServer: {
 /** 启动状态同步端点; 重复调用只启动一次 */
 export function startQuestionSync(): void {
   if (server !== undefined) return
+  stopping = false
   attemptListen(0)
 }
 
@@ -253,6 +288,7 @@ export function clearInfiniteWait(callId: string): void {
 
 /** 停止状态同步端点 */
 export function stopQuestionSync(): void {
+  stopping = true
   if (retryTimer !== undefined) {
     clearTimeout(retryTimer)
     retryTimer = undefined
@@ -262,5 +298,4 @@ export function stopQuestionSync(): void {
   infiniteCalls.clear()
   instance?.close()
   draftReports.clear()
-  draftWaiters.clear()
 }

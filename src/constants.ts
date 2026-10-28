@@ -97,7 +97,7 @@ export const DRAFT_SELECTED_LABEL_EN = 'Selected: {items}'
 
 /** 草稿文本里自由输入行的前缀 */
 export const DRAFT_CUSTOM_LABEL_ZH = '补充: {text}'
-export const DRAFT_CUSTOM_LABEL_EN = 'Additional: {text}'
+export const DRAFT_CUSTOM_LABEL_EN = 'Note: {text}'
 
 /** 是否把超时草稿注入对话上下文 */
 export function injectsContext(mode: FallbackMode): boolean {
@@ -160,6 +160,16 @@ export const MAX_SESSION_SUBSCRIPTIONS = 8
 
 /** 工具到期后等待客户端上报草稿的宽限时长(毫秒) */
 export const DRAFT_GRACE_MS = 3000
+
+/**
+ * 草稿连续上报失败多少次后判定通道不可用。
+ * 通道不可用时插件不能按超时收走卡片, 必须把卡片交还宿主, 让用户仍能作答。
+ */
+export const DRAFT_SYNC_FAILURE_THRESHOLD = 3
+
+/** 草稿无法送达时在卡片上给出的可见提示 */
+export const DRAFT_SYNC_FAILED_TEXT_ZH = '草稿无法送达'
+export const DRAFT_SYNC_FAILED_TEXT_EN = 'Draft cannot be delivered'
 
 /** 宿主「慢慢回答」控件的文案(中文与英文), 用于隐藏该控件 */
 export const TAKE_TIME_TEXTS: readonly string[] = ['慢慢回答', 'Take time']
@@ -294,8 +304,7 @@ export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft'
 export const DRAFT_PANEL_NOTE_ZH = '该次提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容。'
 
 /** 只读草稿面板的说明(英文) */
-export const DRAFT_PANEL_NOTE_EN =
-  'This question batch expired and can no longer be answered; the content below is only the draft as it stood at the timeout.'
+export const DRAFT_PANEL_NOTE_EN = 'This set of questions timed out and can no longer be answered; the content below is only the draft as it stood at the timeout.'
 
 /** 只读草稿面板没有可展示内容时的提示(中文) */
 export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输入内容。'

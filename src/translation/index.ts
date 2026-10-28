@@ -54,12 +54,19 @@ function resolvePackageRoot(): string {
 /** 插件包根目录 */
 const PACKAGE_ROOT = resolvePackageRoot()
 
-/* 语言码归一: zh, zh-cn, zh-hans 都归到 zh-CN; en, en-us 归到 en-US; 其余保持原样 */
-function normalizeLocale(locale: string): string {
+/*
+ * 语言码归一: zh, zh-cn, zh-hans 归到 zh-CN; zh-tw, zh-hk, zh-mo, zh-hant 归到 zh-TW;
+ * en, en-us 归到 en-US; 其余保持原样。
+ */
+export function normalizeLocale(locale: string): string {
   const raw = locale.trim().toLowerCase().replace(/_/g, '-')
   if (raw === '') return DEFAULT_LANGUAGE
-  const [language, region] = raw.split('-')
-  if (language === 'zh') return region === 'tw' || region === 'hk' || region === 'mo' ? 'zh-TW' : 'zh-CN'
+  const [language, ...rest] = raw.split('-')
+  const region = rest[0]
+  if (language === 'zh') {
+    if (region === 'tw' || region === 'hk' || region === 'mo' || region === 'hant') return 'zh-TW'
+    return 'zh-CN'
+  }
   if (language === 'en') return 'en-US'
   return region === undefined ? language : language + '-' + region.toUpperCase()
 }
@@ -99,7 +106,7 @@ export class TranslationManager {
       if (!this.warned.has(normalized)) {
         this.warned.add(normalized)
         console.warn(
-          '[question-timeout-protection] 翻译文件读取失败, 将回退到默认语言:',
+          '[question-timeout-protection] 翻译文件读取失败, 未命中时回退到兜底语言 ' + FALLBACK_LANGUAGE + ':',
           error instanceof Error ? error.message : String(error),
         )
       }

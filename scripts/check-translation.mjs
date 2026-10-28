@@ -53,17 +53,35 @@ function placeholders(value) {
   return [...value.matchAll(/\{([a-zA-Z0-9_]+)\}/g)].map((m) => m[1]).sort()
 }
 
-/* 从源码里抽 const NAME_ZH = '...' 与对应的 NAME_EN */
+/*
+ * 从源码里抽文案常量。
+ * 标量常量按 NAME_ZH / NAME_EN 成对抽取, 写法可以是单行也可以跨行;
+ * 数组常量按 NAME = ['中文', '英文'] 抽取。
+ */
 function literalPairs() {
   const source = readFileSync(join(ROOT, 'src/constants.ts'), 'utf8')
   const pairs = []
-  for (const match of source.matchAll(/export const ([A-Za-z0-9_]+)_ZH = '((?:[^'\\]|\\.)*)'/g)) {
+  for (const match of source.matchAll(/export const ([A-Za-z0-9_]+)_ZH\s*=\s*'((?:[^'\\]|\\.)*)'/g)) {
     const name = match[1]
     const zh = match[2]
-    const enMatch = source.match(new RegExp('export const ' + name + "_EN = '((?:[^'\\\\]|\\\\.)*)'"))
+    const enMatch = source.match(
+      new RegExp('export const ' + name + "_EN\\s*=\\s*'((?:[^'\\\\]|\\\\.)*)'"),
+    )
     if (enMatch) pairs.push({ name, zh, en: enMatch[1] })
   }
   return pairs
+}
+
+/* 抽取数组型文案常量, 只取形如 [中文, 英文] 的两元素数组 */
+function arrayLiterals() {
+  const source = readFileSync(join(ROOT, 'src/constants.ts'), 'utf8')
+  const out = []
+  for (const match of source.matchAll(
+    /export const ([A-Za-z0-9_]+)\s*:\s*readonly string\[\]\s*=\s*\[\s*'((?:[^'\\]|\\.)*)'\s*,\s*'((?:[^'\\]|\\.)*)'\s*\]/g,
+  )) {
+    out.push({ name: match[1], zh: match[2], en: match[3] })
+  }
+  return out
 }
 
 const problems = []
@@ -118,6 +136,12 @@ const CONSTANT_KEY_MAP = {
   DRAFT_PANEL_NOTE: 'draftPanel.note',
   DRAFT_PANEL_EMPTY: 'draftPanel.empty',
   DRAFT_PANEL_UNANSWERED: 'draftPanel.unanswered',
+  DRAFT_SYNC_FAILED_TEXT: 'draft.deliveryFailed',
+}
+
+/* 数组型文案常量到 ini 键的映射 */
+const ARRAY_KEY_MAP = {
+  TAKE_TIME_TEXTS: 'control.takeTime',
 }
 
 const enIni = parseIni(readFileSync(join(ROOT, 'src/translation/en-US.ini'), 'utf8'))
@@ -133,6 +157,45 @@ for (const pair of literalPairs()) {
   else if (zhExpected !== pair.zh) problems.push('常量 ' + pair.name + '_ZH 与 ini ' + key + ' 取值不一致')
   if (enExpected !== undefined && enExpected !== pair.en) {
     problems.push('常量 ' + pair.name + '_EN 与 en-US.ini ' + key + ' 取值不一致')
+  }
+}
+
+/* 数组型常量与 ini 键的取值比对 */
+for (const item of arrayLiterals()) {
+  const key = ARRAY_KEY_MAP[item.name]
+  if (key === undefined) continue
+  const zhExpected = baseline.entries.get(key)
+  const enExpected = enIni.entries.get(key)
+  if (zhExpected === undefined) problems.push('数组常量 ' + item.name + ' 对应的 ini 键不存在: ' + key)
+  else if (zhExpected !== item.zh) problems.push('数组常量 ' + item.name + ' 的中文取值与 ini ' + key + ' 不一致')
+  if (enExpected !== undefined && enExpected !== item.en) {
+    problems.push('数组常量 ' + item.name + ' 的英文取值与 en-US.ini ' + key + ' 不一致')
+  }
+}
+
+/* 配置页字典的取值必须与 ini 的 settings.* 一致 */
+const dictValues = (block) => {
+  const out = new Map()
+  for (const match of block.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*'((?:[^'\\]|\\.)*)'/gm)) out.set(match[1], match[2])
+  return out
+}
+const zhValues = dictValues(zhBlock)
+const enBlock = i18nSource.split('const EN')[1] ?? ''
+const enValues = dictValues(enBlock)
+for (const key of settingsKeys) {
+  const zhExpected = baseline.entries.get('settings.' + key)
+  const zhActual = zhValues.get(key)
+  if (zhActual === undefined) {
+    problems.push('配置页字典缺少取值: ' + key)
+    continue
+  }
+  if (zhExpected !== undefined && zhExpected !== zhActual) {
+    problems.push('配置页字典的 ' + key + ' 与 ini settings.' + key + ' 取值不一致')
+  }
+  const enExpected = enIni.entries.get('settings.' + key)
+  const enActual = enValues.get(key)
+  if (enActual !== undefined && enExpected !== undefined && enExpected !== enActual) {
+    problems.push('配置页英文字典的 ' + key + ' 与 en-US.ini settings.' + key + ' 取值不一致')
   }
 }
 
