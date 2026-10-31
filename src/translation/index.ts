@@ -61,8 +61,14 @@ const PACKAGE_ROOT = resolvePackageRoot()
 export function normalizeLocale(locale: string): string {
   const raw = locale.trim().toLowerCase().replace(/_/g, '-')
   if (raw === '') return DEFAULT_LANGUAGE
+  /*
+   * 语言码只允许字母、数字与连字符: 归一后的结果会被直接拼成文件路径,
+   * 不做白名单过滤的话, 形如 ../../.. 的输入会越出翻译目录去读别的文件。
+   */
+  if (!/^[a-z0-9-]+$/.test(raw)) return DEFAULT_LANGUAGE
   const [language, ...rest] = raw.split('-')
   const region = rest[0]
+  if (region !== undefined && !/^[a-z0-9]+$/.test(region)) return DEFAULT_LANGUAGE
   if (language === 'zh') {
     if (region === 'tw' || region === 'hk' || region === 'mo' || region === 'hant') return 'zh-TW'
     return 'zh-CN'
@@ -75,14 +81,15 @@ export function normalizeLocale(locale: string): string {
 const RETRY_INTERVAL_MS = 30000
 
 export class TranslationManager {
-  private tables: Record<string, TranslationTable> = {}
+  /* 用 Map 存表: 普通对象的原型上带着 constructor 之类的键, 会被当成已加载的翻译 */
+  private tables = new Map<string, TranslationTable>()
   private language: string = DEFAULT_LANGUAGE
   private readonly warned = new Set<string>()
   private readonly failedAt = new Map<string, number>()
 
   /** 清空已加载的翻译表, 供测试或热更新后强制重读 */
   reload(): void {
-    this.tables = {}
+    this.tables.clear()
     this.failedAt.clear()
     this.warned.clear()
   }
@@ -90,14 +97,14 @@ export class TranslationManager {
   /** 加载指定语言的翻译表; 读取失败时返回空表但不缓存, 便于修复后自动恢复 */
   load(locale: string): TranslationTable {
     const normalized = normalizeLocale(locale)
-    const cached = this.tables[normalized]
-    if (cached) return cached
+    const cached = this.tables.get(normalized)
+    if (cached !== undefined) return cached
     const failedAt = this.failedAt.get(normalized)
     if (failedAt !== undefined && Date.now() - failedAt < RETRY_INTERVAL_MS) return {}
     const filePath = join(PACKAGE_ROOT, TRANSLATION_DIR, `${normalized}.ini`)
     try {
       const table = parseTranslationSection(readFileSync(filePath, 'utf-8'))
-      this.tables[normalized] = table
+      this.tables.set(normalized, table)
       this.failedAt.delete(normalized)
       return table
     } catch (error) {

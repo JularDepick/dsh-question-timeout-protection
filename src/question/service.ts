@@ -80,7 +80,11 @@ export class QuestionTimeoutService {
     const key = String(agent.id)
     if (this.perAgent.has(key)) return
     try {
-      this.perAgent.set(key, agent.ctx.tools.register(createAskUserQuestionTool(this.ctx, this.config)))
+      /*
+       * 工具要在 agent 的作用域里注册: 它用到的提问服务与 agent 绑定,
+       * 用根上下文注册会让宿主把它当成与 agent 无关的调用。
+       */
+      this.perAgent.set(key, agent.ctx.tools.register(createAskUserQuestionTool(agent.ctx, this.config)))
     } catch (error) {
       this.ctx.logger.warn(
         `question-timeout-protection: failed to register the timed ask tool for agent ${key}: ${String(error)}`,

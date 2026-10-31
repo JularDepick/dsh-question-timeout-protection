@@ -244,9 +244,6 @@ export const COUNTDOWN_STYLE_ID = 'dqtp-countdown-warning-style'
 /** 只读草稿面板的元素 id */
 export const DRAFT_PANEL_ID = 'dqtp-draft-panel'
 
-/** 客户端状态同步端点端口(只监听回环地址) */
-export const SYNC_PORT = 47831
-
 /** 客户端状态同步端点路径 */
 export const SYNC_PATH = '/question-timeout-protection/state'
 

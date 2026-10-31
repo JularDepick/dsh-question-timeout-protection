@@ -10,7 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config } from './config'
 import { PLUGIN_NAME } from './constants'
 import { QuestionTimeoutService } from './question/service'
-import { registerQuestionSyncRoute, startQuestionSync, stopQuestionSync } from './sync/server'
+import { registerQuestionSyncRoute, stopQuestionSync } from './sync/server'
 
 export const name = PLUGIN_NAME
 
@@ -25,12 +25,12 @@ export type { FallbackMode } from './constants'
 export function apply(ctx: Context, config: Config): void {
   const service = new QuestionTimeoutService(ctx, config)
   service.start()
-  /*
-   * 状态同步端点只服务网页客户端: 纯命令行或终端界面的 profile 没有客户端模块注册表,
-   * 在那里开端口纯属占用, 因此等该服务就绪后再启动, 等不到就不启动。
-   */
   let syncStarted = false
-  /* 优先挂到宿主自带的 HTTP 服务上: 同源、免 CORS, 也不会与另一个实例抢固定端口 */
+  /*
+   * 状态通道挂在宿主自带的 HTTP 服务上: 同源、免 CORS, 也不会与另一个实例抢端口。
+   * 只有网页客户端的部署才有这个服务 —— 宿主自己的客户端模块服务也依赖它,
+   * 因此拿不到 webServer 就等于没有网页客户端, 通道随即可用。
+   */
   ctx.inject(['webServer'], (scoped?: Context) => {
     /* 回调的入参在不同宿主版本里可能为空, 因此以回调上下文优先、外层 ctx 兜底 */
     const holder = (scoped ?? ctx) as unknown as {
@@ -40,16 +40,8 @@ export function apply(ctx: Context, config: Config): void {
     const webServer = holder.webServer
     if (webServer === undefined) return
     syncStarted = true
-    /* 同源路由就绪后就不必再占一个本机端口, 把可能已启动的回环端点收掉 */
-    stopQuestionSync()
     const off = registerQuestionSyncRoute(webServer)
     holder.effect?.(() => off)
-  })
-  /* 宿主没有 HTTP 服务时回退到本机回环端口 */
-  ctx.inject(['clientModules'], () => {
-    if (syncStarted) return
-    syncStarted = true
-    startQuestionSync()
   })
   /*
    * inject 在依赖缺席时只会让回调永不执行, 本身不留痕迹; 若该服务名与目标构建不符,
@@ -58,7 +50,7 @@ export function apply(ctx: Context, config: Config): void {
   const syncProbe = setTimeout(() => {
     if (syncStarted) return
     console.warn(
-      '[question-timeout-protection] 未检测到客户端模块注册表, 状态同步端点未启动, 「无限等待」在本部署不可用',
+      '[question-timeout-protection] 未检测到宿主 HTTP 服务, 状态同步通道未启动, 「无限等待」与草稿上报在本部署不可用',
     )
   }, 5000)
   syncProbe.unref?.()

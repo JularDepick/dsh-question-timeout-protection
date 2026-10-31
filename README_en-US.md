@@ -6,7 +6,7 @@
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
-[English]
+English
 | [简体中文](./README.md)
 
 </div>
@@ -17,13 +17,13 @@ A plugin for dsh: once ask_user_question times out with a draft, the draft stays
 
 - Top-right countdown: the question dialog shows the remaining wait time at its top right and counts down
 - Near-timeout warning: the last seconds (default 5) flash in red
-- Wait indefinitely: a live question shows this button next to the countdown; clicking it freezes the countdown and shows "Paused" until the user submits. History questions and settled answers' read-only cards show neither the countdown nor this button
+- Wait indefinitely: a live question shows this button next to the countdown; clicking it freezes the countdown and shows "Paused" until the user submits. Historical questions and settled answers' read-only cards show neither the countdown nor this button
 - Selection fill: a chosen single-choice option fills the square marker in front of it
 - Question bubble: it appears at the question tool call only after a timeout has recorded a draft; clicking it opens a read-only floating card next to the bubble. The host's own "Answer" bubble conflicts with it, so the plugin bubble takes over that role
 - Draft kept in memory: at timeout the selected options and the typed content are kept in memory
 - Context injection: on by default, the draft snapshot is handed to the server while the question is still open, and at expiry it comes back to the model per question through the tool's pending result, each question keeping its own selected options and typed text; the timeout semantics live in that same pending result, and the model must tell the user about the timeout and its handling decision at the end of its reply
 - Draft recorded in the bubble: at timeout the draft is recorded in the bubble button of that question tool call, which pops a read-only floating card next to it; that question no longer offers any way to answer
-- Timeout wrap-up: with a draft, injection on hands it to the model through the tool result and the plugin withdraws the card, while injection off only withdraws the card; with an empty draft (no selection and no typed text at the timeout) the plugin closes the card itself instead of leaving an unanswerable dialog behind
+- Timeout wrap-up: with a draft, injection on hands it to the model through the tool result and the plugin withdraws the card, while injection off only withdraws the card; with an empty draft (no selection and no typed text at the timeout) the plugin closes the card itself instead of leaving an unanswerable dialog behind; a disabled draft fallback, a repeatedly failing draft report, or a failed "Wait indefinitely" report hands the question back to the host's own path and the card stays answerable
 - No fallback answering: a timed-out question is never answered on the user's behalf
 
 ## Scope
@@ -44,9 +44,9 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 - It does not edit user presets: it registers an identically named tool in each agent scope and shadows the host tool by scope proximity
 - It does not answer for the user: a timeout never ticks any option and never submits the draft as a formal answer
 - It does not decide for the model: whether to ask again or handle the draft otherwise is the model's call; the plugin only delivers the information
-- It does not fall back to continued answering: a question whose timeout the plugin takes over is always withdrawn and the host "Answer" entry is hidden, whether or not a draft was recorded; with the fallback disabled or a failed "Wait indefinitely" report the question is left to the host's own path
+- It does not fall back to continued answering: a question whose timeout the plugin takes over is always withdrawn and the host "Answer" entry is hidden, whether or not a draft was recorded; with the fallback disabled, a repeatedly failing draft report, or a failed "Wait indefinitely" report the question is left to the host's own path
 - It does not persist anything: the draft lives only in client memory. After a refresh both the bubble and its record are lost; a still-waiting question is re-evaluated and handled when the takeover conditions hold, and settled rows are not restored
-- It adds no custom RPC or storage: the draft reaches the model only through the tool result, and state sync uses one same-origin route plus a loopback HTTP endpoint
+- It adds no custom RPC or storage: the draft reaches the model only through the tool result, and state sync mounts on the host's own HTTP service, same-origin with the UI
 
 ## How it works
 
@@ -58,7 +58,7 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 
 ## Compatibility
 
-- dsh: `>=0.2.1-rc.1 <=0.2.1-rc.3`
+- dsh: `>=0.2.1-rc.1 <=0.2.1-rc.5`
 - Runtime: Node.js >= 20
 
 ## Install
@@ -67,7 +67,7 @@ Not published to npm yet. Build it from this repository, then install the packag
 
 ```
 pnpm pack
-dsh plugin --profile <profile> add release/dsh-question-timeout-protection-<version>.tgz
+dsh plugin --profile <profile> add release/dsh-question-timeout-protection-0.1.0.tgz
 ```
 
 `pnpm pack` builds first and moves the tarball into the `release/` directory.
@@ -81,24 +81,24 @@ The config page sits in the plugin-level config block at the **top of the plugin
 | `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback; the page only offers "Inject into the context", checked by default, writing `both` when checked and `ui` when not. Keeping the draft in the UI is always on, so `context` never appears. A toggle writes immediately |
 | `cardEnhancements` | boolean | `true` | Fixed | UI enhancements: top-right countdown with warning blink, filled radio marker, question bubble; decoration only, while the timeout takeover and injection are governed by `draftFallback` |
 | `infiniteWait` | boolean | `true` | Fixed | The "Wait indefinitely" button next to the countdown that pauses this countdown until the user submits |
-| `draftFallback` | boolean | `true` | Fixed | Master switch for the timeout takeover: off leaves the host's own path untouched; on hands the draft to the tool result or only withdraws the card by the fallback scope, and closes the card when the draft is empty |
+| `draftFallback` | boolean | `true` | Fixed | Master switch for the timeout takeover: off leaves the host's own path untouched and the draft never reaches the model context; on hands the draft to the tool result or only withdraws the card by the fallback scope, and closes the card when the draft is empty |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts |
 | `timeoutSeconds` | number | 120 | Not exposed | Wait seconds used when the model does not pass one explicitly, from 1 to 2147483 |
 
-> Keeping the draft in the UI is mandatory: at timeout the draft always stays in memory and is recorded in the bubble button of that question tool call, which pops a read-only floating card beside it. With "Inject into the context" checked (the default), the plugin reports the draft snapshot to the server while the question is still open; at expiry the draft comes back to the model per question through the tool's pending result, and the plugin withdraws the card. Unchecked, the plugin only withdraws the card and reports nothing. The timeout notice and the draft share that one pending result: it says the batch expired, the user never submitted, and the model must report the timeout and its decision about the draft to the user. A timed-out question is always withdrawn and its host "Answer" entry is hidden, whether or not a draft was recorded; with an empty draft the plugin closes the card itself. With a disabled fallback or a failed "Wait indefinitely" report the plugin hands over no draft and keeps the card, the question still settles as timed out, and the card stays answerable.
+> Keeping the draft in the UI is mandatory: at timeout the draft always stays in memory and is recorded in the bubble button of that question tool call, which pops a read-only floating card beside it. With "Inject into the context" checked (the default), the plugin reports the draft snapshot to the server while the question is still open; at expiry the draft comes back to the model per question through the tool's pending result, and the plugin withdraws the card. Unchecked, the plugin only withdraws the card and reports nothing. The timeout notice and the draft share that one pending result: it says the batch expired, the user never submitted, and the model must report the timeout and its decision about the draft to the user. A timed-out question is always withdrawn and its host "Answer" entry is hidden, whether or not a draft was recorded; with an empty draft the plugin closes the card itself. With a disabled fallback, a repeatedly failing draft report, or a failed "Wait indefinitely" report the plugin hands over no draft and keeps the card, the question still settles as timed out, the card stays answerable, and the countdown shows "Draft cannot be delivered".
 
 ## Known limits
 
-- Depends on host UI structure: cards and tool rows are located through host class-name suffixes, `data-question-key`, `data-chat-call-id`, and `aria-checked`, and host controls are recognized by their Chinese or English labels; if the host changes those, the matching enhancement silently stops working and `src/constants.ts` has to follow
+- Depends on host UI structure: cards and tool rows are located through host class-name suffixes, `data-question-key`, `data-chat-call-id`, and `aria-checked`, and host controls are recognized by their Chinese or English labels; if the host changes those, the matching enhancement silently stops working, and the label constants in `src/constants.ts` plus the selectors in `src/client/adapter.ts` have to follow
 - No persistence: the draft lives only in client memory; after a refresh both the bubble and its record are lost, a still-waiting question is re-evaluated and taken over from the host draft, and settled rows are not restored
-- "Wait indefinitely" prefers a route on the same origin as the UI; without that route it falls back to a loopback port, where a browser and server on different machines, a taken port, or a second dsh instance make it unavailable, the countdown shows "Infinite wait unavailable", and the question falls back to the host's own behaviour instead of submitting the draft at the timeout
-- Self-timed waits leave a host wait unsettled: every takeover keeps the host wait alive until the request settles or the client disconnects, which accumulates in long sessions
-- With several tabs on the same session, the first submit wins and the others lose their card because the host refuses a duplicate reply
+- "Wait indefinitely" and the draft report share one token-protected channel mounted on the host's own HTTP service, same-origin with the UI: the page first fetches the channel token and then reports, and neither capability works when the token cannot be obtained; other pages on the same machine cannot get the token because their origin does not match, so they cannot forge a report; a deployment without the web client has no such service, and both capabilities are unavailable there, the countdown shows "Infinite wait unavailable", and the question falls back to the host's own behaviour instead of submitting the draft at the timeout
+- The plugin times the wait itself: on expiry it settles the timeout and releases the host-side foreground wait; an answer the user actually submitted before that moment still wins
+- With several tabs on the same session, the server keeps one draft snapshot per call id, so a later tab overwrites the one reported earlier
 - Only the latest 200 draft snapshots are kept, so older bubbles can no longer be opened
 - A profile without the web client does not start the state sync endpoint, so "Wait indefinitely" is unavailable in that deployment
 - Skipping every question without any selection or typed text counts as an empty draft, so that timeout closes the card
 - When the host draft cannot be read and only the card is available, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
-- With injection on but the draft snapshot not reaching the server (page closed, state channel unavailable, report failed), the model receives only the timeout notice and no draft content; the draft bubble in the UI is unaffected
+- With injection on but the draft snapshot not reaching the server (page closed, state channel unavailable, token unavailable, report failed), the model receives only the timeout notice and no draft content; the draft bubble in the UI is unaffected, and the card countdown shows "Draft cannot be delivered"; once the draft channel has failed this notice covers "Infinite wait unavailable", only one of them is shown
 
 ## Development
 

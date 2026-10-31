@@ -55,7 +55,8 @@
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
 | `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
-| `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板; 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
+| `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板, 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
+| `draft.deliveryFailed` | `src/constants.ts` 的 `DRAFT_SYNC_FAILED_TEXT_ZH`/`DRAFT_SYNC_FAILED_TEXT_EN` | 草稿快照连续上报失败时显示在提问卡片倒计时位置的提示, 不属于草稿悬浮卡片里的标签 |
 | `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.unanswered` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态与未作答提示 |
 
 ## 语言选择机制
@@ -66,7 +67,8 @@
 
 ## 加载与回退
 
-- 语言码先归一: 语言段小写, 地区段大写, `_` 换成 `-`; `zh` 归到 `zh-CN`, `zh-TW` `zh-HK` `zh-MO` 保留, `en` 归到 `en-US`, 空串归到默认语言.
+- 语言码先归一: 语言段小写, 地区段大写, `_` 换成 `-`; `zh` 归到 `zh-CN`, `zh-TW` `zh-HK` `zh-MO` `zh-Hant` 保留为 `zh-TW`, `en` 归到 `en-US`, 空串归到默认语言; 其余组合按语言段小写加地区段大写拼成 `语言-地区`.
+- 归一后只允许字母, 数字与连字符: 归一结果会被直接拼成文件路径, 不做白名单过滤的话, 形如 `../../..` 的输入会越出翻译目录去读别的文件, 因此不合规的语言码一律按默认语言处理.
 - 归一后的语言码决定读取 `<语言码>.ini`; 文件不存在时返回空表, 由调用方按默认语言兜底, 并只告警一次.
 - 读取失败的表不缓存, 但会在 30 秒内不再重试, 避免热路径反复读盘; 读取成功后清掉失败标记.
 - 已加载的表常驻内存; 需要强制重读时调用加载器的 `reload()`.

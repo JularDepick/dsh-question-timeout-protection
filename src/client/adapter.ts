@@ -73,7 +73,6 @@ import {
   SKIP_QUESTION_TEXTS,
   SUBMIT_TEXTS,
   SYNC_PATH,
-  SYNC_PORT,
   TAKE_TIME_TEXTS,
   TOOL_CALL_ID_ATTRIBUTE,
   TOOL_CALL_ID_SELECTOR,
@@ -426,8 +425,8 @@ function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem
  * 合并两批分题草稿: 默认前一批优先, 缺的用后一批补齐。
  * liveIndex 指向卡片当前显示的那一题, 这一题的取舍由 liveWins 决定:
  * - liveWins 为真(提问还在进行中): 以卡片实时值为准, 用户清空输入后旧值不能被补回来;
- * - liveWins 为假(提问已经超时, 宿主可能重渲染卡片): 以宿主持久化的值为准,
- *   否则重渲染把实时值清空时会把已选的选项丢掉。
+ * - liveWins 为假(提问已经超时, 结算时): 以第一批为准, 第一批该题位为空时才用第二批补,
+ *   这样用户清空输入后不会被宿主持久化里的旧值顶回来, 而客户端没报过的题位仍能补上。
  */
 function mergeDrafts(
   primary: DraftItem[] | undefined,
@@ -446,13 +445,14 @@ function mergeDrafts(
         continue
       }
       /*
-       * 超时后卡片可能被宿主重渲染成空, 实时值为空时仍要保留宿主持久化的内容,
-       * 不能把已选的选项丢掉。
+       * 结算时以第一批为准: 第一批是客户端最后一版上报的快照,
+       * 用户清空输入后它就是空的, 不能被第二批里的旧值顶回来;
+       * 第一批该题位为空(客户端没报过这一题)时才用第二批补。
        */
-      const liveHasContent = second.selected.length > 0 || second.custom.trim() !== ''
-      merged.push(liveHasContent
-        ? { selected: [...second.selected], custom: second.custom, skipped: second.skipped }
-        : { selected: [...first.selected], custom: first.custom, skipped: first.skipped })
+      const primaryHasContent = first.selected.length > 0 || first.custom.trim() !== ''
+      merged.push(primaryHasContent
+        ? { selected: [...first.selected], custom: first.custom, skipped: first.skipped }
+        : { selected: [...second.selected], custom: second.custom, skipped: second.skipped })
       continue
     }
     merged.push({
@@ -495,13 +495,21 @@ function resolveProjectionFace(ctx: AdapterContext, sessionId: string): Projecti
  * 只认明确的成功应答: 宿主的单页应用兜底路由对未知路径也可能回 200 并给出页面,
  * 只看 response.ok 会把"没人接收"当成"已登记", 于是到期照样按超时提交草稿。
  */
-function postState(url: string, body: unknown): Promise<StateReply> {
+function postState(url: string, body: unknown, token: string): Promise<StateReply> {
   return fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-qtp-token': token },
     body: JSON.stringify(body),
   })
     .then(async (response): Promise<StateReply> => {
+      /*
+       * 401 说明令牌已经失效: 插件热更新会换一把新令牌, 而页面里的旧令牌还留着。
+       * 这里让调用方重新取一次令牌再重试, 免得一次热更新就让整条草稿通道报废。
+       */
+      if (response.status === 401) {
+        invalidateToken()
+        return { ok: false, reason: 'token-stale' }
+      }
       if (!response.ok) return { ok: false }
       try {
         const payload = (await response.json()) as { ok?: unknown; reason?: unknown }
@@ -517,8 +525,46 @@ function postState(url: string, body: unknown): Promise<StateReply> {
 }
 
 /*
- * 优先走与界面同源的路由: 同源既不需要 CORS, 也天然排除同名端口的第二个实例;
- * 只有宿主没有注册该路由时才回退到本机回环端口。
+ * 通道令牌: 页面先取一次再上报, 服务端据此拒绝同机其他网页的伪造上报。
+ * 令牌取不到时上报一律失败, 插件会按通道不可达处理, 不会在无鉴权的情况下提交草稿。
+ */
+let tokenPromise: Promise<string | undefined> | undefined
+
+/*
+ * 丢掉已缓存的令牌: 插件热更新会换一把新令牌, 页面必须重新取一次才能继续上报。
+ */
+function invalidateToken(): void {
+  tokenPromise = undefined
+}
+
+async function fetchToken(url: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(url, { headers: { accept: 'application/json' } })
+    if (!response.ok) return undefined
+    const payload = (await response.json()) as { token?: unknown }
+    return typeof payload.token === 'string' && payload.token !== '' ? payload.token : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function resolveToken(): Promise<string | undefined> {
+  const cached = tokenPromise
+  if (cached !== undefined) return cached
+  const pending = fetchToken(SYNC_PATH + '-token')
+  tokenPromise = pending
+  const token = await pending
+  /*
+   * 取不到令牌时不能把失败结果一直缓存着: 通道只是暂时不可用(端点还没起来,
+   * 或插件刚热更新), 缓存下来会让整条通道在本页永远不可用。
+   */
+  if (token === undefined && tokenPromise === pending) tokenPromise = undefined
+  return token
+}
+
+/*
+ * 通道挂在宿主自己的 HTTP 服务上, 与界面同源, 因此不需要 CORS,
+ * 也不会和另一个实例抢端口。
  */
 async function reportInfiniteWait(
   identity: CardIdentity,
@@ -529,9 +575,7 @@ async function reportInfiniteWait(
     infinite: true,
     ...(deadline === undefined ? {} : { deadline }),
   }
-  const sameOrigin = await postState(SYNC_PATH, body)
-  if (sameOrigin.ok || sameOrigin.reason !== undefined) return sameOrigin
-  return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, body)
+  return postStateWithToken(body)
 }
 
 /*
@@ -543,10 +587,24 @@ async function reportInfiniteWait(
  * 因此这里按顺序上报, 由工具侧把顺序对应回自己的题目 id。
  */
 async function reportDraftSnapshot(identity: CardIdentity, answers: unknown): Promise<StateReply> {
-  const body = { callId: identity.callId, answers }
-  const sameOrigin = await postState(SYNC_PATH, body)
-  if (sameOrigin.ok) return sameOrigin
-  return postState('http://127.0.0.1:' + String(SYNC_PORT) + SYNC_PATH, body)
+  return postStateWithToken({ callId: identity.callId, answers })
+}
+
+/*
+ * 带令牌上报一次状态。
+ * 通道挂在宿主自己的 HTTP 服务上, 因此只用同源地址:
+ * 令牌失效时重新取一次再试, 免得插件热更新换令牌后整条通道一直不可用。
+ */
+async function postStateWithToken(body: unknown): Promise<StateReply> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = await resolveToken()
+    if (token === undefined) return { ok: false }
+    const reply = await postState(SYNC_PATH, body, token)
+    if (reply.ok) return reply
+    if (reply.reason === 'token-stale') continue
+    return reply
+  }
+  return { ok: false }
 }
 
 /* 草稿上报的最小间隔, 避免每次输入都发一次请求 */
@@ -590,6 +648,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const hiddenCards = new WeakSet<HTMLElement>()
   /* 投影已到达但卡片尚未挂载的调用, 等卡片出现再评估 */
   const deferred = new Map<string, ProjectionRow>()
+  /* 投影里每个调用的题目数: 上报草稿时用它兜底题数, 避免只报第一题 */
+  const projectedCounts = new Map<string, number>()
 
   /* 所有登记过状态的 callId, 供结算后统一回收 */
   const knownCallIds = (): string[] => {
@@ -621,6 +681,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     draftSyncFailed.delete(callId)
     draftSyncFailures.delete(callId)
     draftReportedAt.delete(callId)
+    projectedCounts.delete(callId)
   }
 
   /* 草稿快照只保留最近若干条, 防止长时间使用后无限增长 */
@@ -876,11 +937,16 @@ function hideHostWaitText(card: HTMLElement): void {
 
     const button = ensureInfiniteButton(card, countdown)
     if (button !== undefined) {
+      /*
+       * 草稿通道已经不可用时, 「无限等待」走的是同一条通道, 点了也必然失败,
+       * 因此这时把它一并隐藏, 不给一个注定无效的按钮.
+       */
       const hidden =
         !options().infiniteWait ||
         timedOut.has(identity.callId) ||
         frozen !== undefined ||
-        syncUnavailable.has(identity.callId)
+        syncUnavailable.has(identity.callId) ||
+        draftSyncFailed.has(identity.callId)
       button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
       const label = pick(INFINITE_WAIT_LABEL_ZH, INFINITE_WAIT_LABEL_EN)
       if (button.textContent !== label) button.textContent = label
@@ -1126,7 +1192,8 @@ function hideHostWaitText(card: HTMLElement): void {
     if (!current.draftFallback || !injectsContext(current.fallback)) return
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
     const progress = readProgress(card)
-    const count = Math.max(progress?.count ?? 1, 1)
+    const projected = projectedCounts.get(identity.callId) ?? 1
+    const count = Math.max(progress?.count ?? 1, projected)
     const items = mergeDrafts(
       readHostDrafts(identity, count),
       readLiveDrafts(card, count),
@@ -1185,10 +1252,14 @@ function hideHostWaitText(card: HTMLElement): void {
     deferred.delete(row.callId)
     const count = row.questions.length
     const liveIndex = card === undefined ? undefined : readProgress(card)?.index
-    /* 超时后卡片可能被宿主重渲染, 这一题以宿主持久化的值为准 */
+    /*
+     * 结算时的草稿以客户端最后一版上报快照为准: 宿主的 localStorage 写入晚于用户输入,
+     * 用户清空输入后持久化里仍是旧值, 以它为主会把用户已经删掉的内容当成草稿带回模型。
+     * 宿主持久化只用来补齐客户端没报过的题位。
+     */
     const items = mergeDrafts(
-      readHostDrafts(identity, count) ?? stored,
-      readLiveDrafts(card, count),
+      stored,
+      readHostDrafts(identity, count) ?? readLiveDrafts(card, count),
       count,
       liveIndex,
       false,
@@ -1260,6 +1331,11 @@ function hideHostWaitText(card: HTMLElement): void {
       live.add(row.callId)
       if (row.state !== 'continued') continue
       if (!Array.isArray(row.questions)) continue
+      /*
+       * 记下投影里的题目数: 卡片上的分页文案有时读不到,
+       * 那时上报草稿按这个题数来, 免得只报第一题而把后面的题丢掉。
+       */
+      projectedCounts.set(row.callId, row.questions.length)
       evaluateRow({ sessionId, callId: row.callId }, row)
     }
     /*
@@ -1323,6 +1399,7 @@ function hideHostWaitText(card: HTMLElement): void {
         if (oldestSession === undefined) break
         polledSessions.delete(oldestSession)
         subscriptionSeen.delete(oldestSession)
+        console.warn('[question-timeout-protection] 会话轮询兜底数量达到上限, 已释放最久未出现的会话, 该会话的超时兜底可能不再生效')
       }
       evaluate()
       return
@@ -1343,6 +1420,17 @@ function hideHostWaitText(card: HTMLElement): void {
       subscriptions.get(oldestSession)?.()
       subscriptions.delete(oldestSession)
       subscriptionSeen.delete(oldestSession)
+      /*
+       * 被淘汰的会话如果还在等待提问, 它的超时兜底会静默失效,
+       * 因此改成轮询兜底: 至少投影还会被求值, 接管与收尾不会完全不发生。
+       */
+      const evictedSession = oldestSession
+      polledSessions.set(evictedSession, () => {
+        const face = resolveProjectionFace(ctx, evictedSession)
+        if (face === undefined) return
+        evaluateProjection(evictedSession, face.getSnapshot?.())
+      })
+      console.warn('[question-timeout-protection] 会话订阅数量达到上限, 已把最久未出现的会话改为轮询兜底, 该会话的超时接管会延后生效')
     }
     evaluate()
   }
@@ -1393,8 +1481,23 @@ function hideHostWaitText(card: HTMLElement): void {
   document.addEventListener('click', onDocumentClick, true)
 
   /* 扫描受管卡片与提问工具行 */
+  /*
+   * 从页面上取当前打开的会话标识: 宿主在对话区域根节点上标了 data-conversation-session。
+   * 订阅不能只靠扫到提问卡片才建立 —— 卡片被收起或页面切换后就没有卡片了,
+   * 那时投影的 continued 行永远不会被评估, 超时接管与收尾都不会发生。
+   */
+  const visibleSessionIds = (): string[] => {
+    const ids: string[] = []
+    for (const element of Array.from(document.querySelectorAll('[data-conversation-session]'))) {
+      const id = element.getAttribute('data-conversation-session')
+      if (typeof id === 'string' && id !== '' && !ids.includes(id)) ids.push(id)
+    }
+    return ids
+  }
+
   const scan = (): void => {
     for (const evaluate of polledSessions.values()) evaluate()
+    for (const sessionId of visibleSessionIds()) ensureSubscription(sessionId)
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
       if (!(element instanceof HTMLElement)) continue
       const identity = parseCardKey(element.getAttribute('data-question-key'))

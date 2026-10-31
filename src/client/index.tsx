@@ -57,6 +57,11 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
   let form: ConfigFormLike | undefined
   let warnedMissing = false
   const startedAt = Date.now()
+  /*
+   * 降级时的选项: 读不到宿主配置就拿不到用户在配置页的选择,
+   * 此时按保守语义处理 —— 不把草稿注入模型上下文, 免得绕过用户明确关掉的开关。
+   */
+  const degraded: AdapterOptions = { ...base, fallback: 'ui' }
   return {
     getOptions(): AdapterOptions {
       try {
@@ -71,9 +76,9 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
            */
           if (!warnedMissing && Date.now() - startedAt > 5000) {
             warnedMissing = true
-            console.warn('[question-timeout-protection] 读不到宿主配置, 本次按 schema 默认值工作')
+            console.warn('[question-timeout-protection] 读不到宿主配置, 本次按保守方式工作: 草稿不注入上下文')
           }
-          return base
+          return degraded
         }
         return {
           fallback: value.fallback ?? base.fallback,
@@ -83,7 +88,7 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
           draftFallback: value.draftFallback ?? base.draftFallback,
         }
       } catch {
-        return base
+        return degraded
       }
     },
   }
