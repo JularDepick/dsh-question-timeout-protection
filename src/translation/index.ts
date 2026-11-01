@@ -19,17 +19,25 @@ interface TranslationTable {
   [key: string]: string
 }
 
-/** 解析 INI 文本,仅返回 [translation] 节键值 */
+/*
+ * 解析 INI 文本,仅返回 [translation] 节键值。
+ *
+ * 节头与键值都先去掉首尾空白, 注释行跳过 —— 检查脚本按这套规则解析,
+ * 两边规则不一致时会出现"检查通过但加载器读出空表"的情况, 英文界面整体退回中文。
+ */
 function parseTranslationSection(text: string): TranslationTable {
   const table: TranslationTable = {}
   let inSection = false
-  for (const line of text.split(/\r?\n/)) {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line === '') continue
     const sectionMatch = line.match(/^\[([^\]]+)\]$/)
     if (sectionMatch) {
       inSection = sectionMatch[1] === 'translation'
       continue
     }
     if (!inSection) continue
+    if (line.startsWith(';') || line.startsWith('#')) continue
     const eq = line.indexOf('=')
     if (eq <= 0) continue
     const key = line.slice(0, eq).trim()

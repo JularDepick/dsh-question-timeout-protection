@@ -13,7 +13,6 @@ import { configValue } from '../config-value'
 import {
   DEFAULT_CARD_ENHANCEMENTS,
   DEFAULT_DRAFT_FALLBACK,
-  DEFAULT_FALLBACK_MODE,
   DEFAULT_INFINITE_WAIT,
   DEFAULT_WARNING_SECONDS,
   SETTINGS_NAMESPACE,
@@ -40,7 +39,6 @@ type ClientContext = AdapterContext & SettingsContext & {
 /* 把配置归一成适配器选项, 缺失时使用 schema 默认值 */
 function resolveOptions(config: Partial<ConfigModel> | undefined): AdapterOptions {
   return {
-    fallback: configValue(config?.fallback) ?? DEFAULT_FALLBACK_MODE,
     warningSeconds: configValue(config?.warningSeconds) ?? DEFAULT_WARNING_SECONDS,
     cardEnhancements: configValue(config?.cardEnhancements) ?? DEFAULT_CARD_ENHANCEMENTS,
     infiniteWait: configValue(config?.infiniteWait) ?? DEFAULT_INFINITE_WAIT,
@@ -58,10 +56,11 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
   let warnedMissing = false
   const startedAt = Date.now()
   /*
-   * 降级时的选项: 读不到宿主配置就拿不到用户在配置页的选择,
-   * 此时按保守语义处理 —— 不把草稿注入模型上下文, 免得绕过用户明确关掉的开关。
+   * 读不到宿主配置时只能退回 schema 默认值。
+   * 草稿是否进上下文由服务端按它自己的配置决定, 客户端不再据此推算,
+   * 因此这里只需保持界面与兜底开关按默认值工作。
    */
-  const degraded: AdapterOptions = { ...base, fallback: 'ui' }
+  const degraded: AdapterOptions = { ...base }
   return {
     getOptions(): AdapterOptions {
       try {
@@ -76,12 +75,11 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
            */
           if (!warnedMissing && Date.now() - startedAt > 5000) {
             warnedMissing = true
-            console.warn('[question-timeout-protection] 读不到宿主配置, 本次按保守方式工作: 草稿不注入上下文')
+            console.warn('[question-timeout-protection] 读不到宿主配置, 本次按 schema 默认值工作')
           }
           return degraded
         }
         return {
-          fallback: value.fallback ?? base.fallback,
           warningSeconds: typeof value.warningSeconds === 'number' ? value.warningSeconds : base.warningSeconds,
           cardEnhancements: value.cardEnhancements ?? base.cardEnhancements,
           infiniteWait: value.infiniteWait ?? base.infiniteWait,

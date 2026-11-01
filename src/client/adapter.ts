@@ -77,16 +77,11 @@ import {
   TOOL_CALL_ID_ATTRIBUTE,
   TOOL_CALL_ID_SELECTOR,
   WAIT_STATUS_SELECTOR,
-  injectsContext,
 } from '../constants'
-import type { FallbackMode } from '../constants'
-
 /** 适配器需要的插件配置 */
 export interface AdapterOptions {
   /** 进入警示态的剩余秒数 */
   warningSeconds: number
-  /** 兜底范围 */
-  fallback: FallbackMode
   /** 是否启用卡片增强 */
   cardEnhancements: boolean
   /** 是否启用「无限等待」 */
@@ -389,8 +384,13 @@ function readHostDrafts(identity: CardIdentity, count: number): DraftItem[] | un
       if (raw === null) continue
       const parsed = JSON.parse(raw) as { progressByRequest?: Record<string, { drafts?: unknown }> }
       const drafts = parsed.progressByRequest?.[cacheKey]?.drafts
-      if (!Array.isArray(drafts) || drafts.length !== count) continue
-      return drafts.map((entry) => {
+      if (!Array.isArray(drafts) || drafts.length === 0) continue
+      /*
+       * 题数对不上时按较短的来, 不整份丢掉:
+       * 宿主换题或投影里题数与卡片分页不一致时, 丢掉会让用户已经写好的内容凭空消失,
+       * 而取前几题至少保住了能对上的部分。
+       */
+      return drafts.slice(0, count).map((entry) => {
         const value = (typeof entry === 'object' && entry !== null ? entry : {}) as {
           selected?: unknown
           custom?: unknown
@@ -422,44 +422,47 @@ function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem
 }
 
 /*
- * 合并两批分题草稿: 默认前一批优先, 缺的用后一批补齐。
- * liveIndex 指向卡片当前显示的那一题, 这一题的取舍由 liveWins 决定:
- * - liveWins 为真(提问还在进行中): 以卡片实时值为准, 用户清空输入后旧值不能被补回来;
- * - liveWins 为假(提问已经超时, 结算时): 以第一批为准, 第一批该题位为空时才用第二批补,
- *   这样用户清空输入后不会被宿主持久化里的旧值顶回来, 而客户端没报过的题位仍能补上。
+ * 合并三批分题草稿来源:
+ * - host: 宿主持久化在 localStorage 里的记录。宿主在用户每次改动时同步写一次,
+ *   内容是用户意图的权威记录, 也带着未经处理前的选项原文。
+ * - live: 卡片当前显示那一题的实时值。只有这一题有值, 而且宿主重渲染后可能短暂为空。
+ * - snapshot: 插件自己记录的草稿, 宿主的记录取不到时用它兜底。
+ *
+ * 取舍规则(每一题独立判断):
+ * 1. 当前显示的题且实时值有内容: 用实时值, 它是用户此刻的状态。
+ * 2. 宿主的记录里有这一题: 用宿主的记录。用户清空输入时宿主同步写下的就是空值,
+ *    因此不会把用户删掉的内容顶回来; 宿主重渲染导致实时值变空时, 记录仍留着内容。
+ * 3. 宿主的记录里没有这一题: 用插件自己的记录, 没有就是空。
+ *
+ * 之所以不按"客户端报过空就当空"来判断: 客户端报空既可能是用户清空了内容,
+ * 也可能是宿主重渲染让实时值读不到, 两者在数据上无法区分;
+ * 而宿主的记录能区分这两种情况, 它是用户每次改动同步写下的。
  */
 function mergeDrafts(
-  primary: DraftItem[] | undefined,
-  fallback: DraftItem[] | undefined,
+  host: DraftItem[] | undefined,
+  live: DraftItem[] | undefined,
+  snapshot: DraftItem[] | undefined,
   count: number,
   liveIndex?: number,
-  liveWins = false,
 ): DraftItem[] {
   const merged: DraftItem[] = []
   for (let i = 0; i < count; i += 1) {
-    const first = primary?.[i] ?? emptyItem()
-    const second = fallback?.[i] ?? emptyItem()
-    if (i === liveIndex) {
-      if (liveWins) {
-        merged.push({ selected: [...second.selected], custom: second.custom, skipped: second.skipped })
-        continue
-      }
-      /*
-       * 结算时以第一批为准: 第一批是客户端最后一版上报的快照,
-       * 用户清空输入后它就是空的, 不能被第二批里的旧值顶回来;
-       * 第一批该题位为空(客户端没报过这一题)时才用第二批补。
-       */
-      const primaryHasContent = first.selected.length > 0 || first.custom.trim() !== ''
-      merged.push(primaryHasContent
-        ? { selected: [...first.selected], custom: first.custom, skipped: first.skipped }
-        : { selected: [...second.selected], custom: second.custom, skipped: second.skipped })
+    const liveItem = live?.[i]
+    if (i === liveIndex && liveItem !== undefined && hasItemContent(liveItem)) {
+      merged.push({ selected: [...liveItem.selected], custom: liveItem.custom, skipped: liveItem.skipped })
       continue
     }
-    merged.push({
-      selected: [...(first.selected.length > 0 ? first.selected : second.selected)],
-      custom: first.custom.trim() !== '' ? first.custom : second.custom,
-      skipped: first.skipped && second.skipped,
-    })
+    const hostItem = host?.[i]
+    if (hostItem !== undefined) {
+      merged.push({ selected: [...hostItem.selected], custom: hostItem.custom, skipped: hostItem.skipped })
+      continue
+    }
+    const snapshotItem = snapshot?.[i]
+    if (snapshotItem !== undefined) {
+      merged.push({ selected: [...snapshotItem.selected], custom: snapshotItem.custom, skipped: snapshotItem.skipped })
+      continue
+    }
+    merged.push(emptyItem())
   }
   return merged
 }
@@ -1189,7 +1192,13 @@ function hideHostWaitText(card: HTMLElement): void {
    */
   const reportCurrentDraft = (identity: CardIdentity, card: HTMLElement): void => {
     const current = options()
-    if (!current.draftFallback || !injectsContext(current.fallback)) return
+    /*
+     * 只要兜底开着就上报, 是否真的注入由服务端按它自己的配置决定。
+     * 客户端读不到宿主配置时会退回一套保守取值, 与服务端的实际配置可能不一致;
+     * 如果这里按客户端的猜测决定不上报, 服务端就会等满宽限期拿到空草稿,
+     * 模型只收到超时说明, 而界面上却显示草稿已保留 —— 用户输入就这样静默丢了。
+     */
+    if (!current.draftFallback) return
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
@@ -1197,9 +1206,9 @@ function hideHostWaitText(card: HTMLElement): void {
     const items = mergeDrafts(
       readHostDrafts(identity, count),
       readLiveDrafts(card, count),
+      lastDrafts.get(identity.callId),
       count,
       progress?.index,
-      true,
     )
     /*
      * 空草稿也要上报: 服务端据此知道"确实没有草稿", 工具到期时不必再空等一段宽限时间,
@@ -1253,16 +1262,16 @@ function hideHostWaitText(card: HTMLElement): void {
     const count = row.questions.length
     const liveIndex = card === undefined ? undefined : readProgress(card)?.index
     /*
-     * 结算时的草稿以客户端最后一版上报快照为准: 宿主的 localStorage 写入晚于用户输入,
-     * 用户清空输入后持久化里仍是旧值, 以它为主会把用户已经删掉的内容当成草稿带回模型。
-     * 宿主持久化只用来补齐客户端没报过的题位。
+     * 结算时的草稿以宿主的持久化记录为主: 宿主在用户每次改动时同步写一次,
+     * 用户清空输入后那里写下的就是空值, 不会把用户删掉的内容当成草稿带回模型。
+     * 宿主的记录取不到(存储不可用或题数对不上)时, 用插件自己记录的快照兜底。
      */
     const items = mergeDrafts(
+      readHostDrafts(identity, count),
+      readLiveDrafts(card, count),
       stored,
-      readHostDrafts(identity, count) ?? readLiveDrafts(card, count),
       count,
       liveIndex,
-      false,
     )
     lastDrafts.set(row.callId, items)
     const current = options()
@@ -1357,9 +1366,38 @@ function hideHostWaitText(card: HTMLElement): void {
   /* 各会话最近一次在界面上出现的时间, 用于限制订阅数量 */
   const subscriptionSeen = new Map<string, number>()
 
+  /*
+   * 限制轮询兜底的数量: 它每次扫描都会求值一次, 数量失控会同时拖慢扫描与占用内存。
+   * 淘汰最久没在界面上出现的会话, 与订阅上限用同一套取向。
+   */
+  const enforcePolledLimit = (): void => {
+    while (polledSessions.size > MAX_SESSION_SUBSCRIPTIONS) {
+      let oldestSession: string | undefined
+      let oldestAt = Number.POSITIVE_INFINITY
+      for (const [id, seenAt] of subscriptionSeen) {
+        if (seenAt >= oldestAt) continue
+        if (!polledSessions.has(id)) continue
+        oldestAt = seenAt
+        oldestSession = id
+      }
+      if (oldestSession === undefined) break
+      polledSessions.delete(oldestSession)
+      subscriptionSeen.delete(oldestSession)
+      console.warn('[question-timeout-protection] 会话轮询兜底数量达到上限, 已释放最久未出现的会话, 该会话的超时兜底可能不再生效')
+    }
+  }
+
   /* 为会话订阅提问投影 */
   const ensureSubscription = (sessionId: string): void => {
-    if (subscriptions.has(sessionId) || polledSessions.has(sessionId)) return
+    if (subscriptions.has(sessionId)) return
+    /*
+     * 被上限淘汰过的会话会停在轮询兜底里, 若这里直接返回, 它永远升不回真实订阅,
+     * 之后每次投影变化都要等下一轮扫描才被发现。名额有空时把它接回订阅。
+     */
+    if (polledSessions.has(sessionId)) {
+      if (subscriptions.size >= MAX_SESSION_SUBSCRIPTIONS) return
+      polledSessions.delete(sessionId)
+    }
     /*
      * 直接读 ctx.sessions 在未注入时会被框架抛错(cannot get property without inject),
      * 因此这里先读属性再退回 ctx.get, 缺该服务时只失去投影订阅而不是整个适配器。
@@ -1386,21 +1424,7 @@ function hideHostWaitText(card: HTMLElement): void {
         subscribeWarned.add(sessionId)
         console.warn('[question-timeout-protection] 提问投影不支持订阅, 改用轮询兜底')
       }
-      /* 轮询兜底同样有上限, 否则页面里不断打开新会话会让它一直累积 */
-      while (polledSessions.size > MAX_SESSION_SUBSCRIPTIONS) {
-        let oldestSession: string | undefined
-        let oldestAt = Number.POSITIVE_INFINITY
-        for (const [id, seenAt] of subscriptionSeen) {
-          if (seenAt < oldestAt && polledSessions.has(id)) {
-            oldestAt = seenAt
-            oldestSession = id
-          }
-        }
-        if (oldestSession === undefined) break
-        polledSessions.delete(oldestSession)
-        subscriptionSeen.delete(oldestSession)
-        console.warn('[question-timeout-protection] 会话轮询兜底数量达到上限, 已释放最久未出现的会话, 该会话的超时兜底可能不再生效')
-      }
+      enforcePolledLimit()
       evaluate()
       return
     }
@@ -1430,6 +1454,12 @@ function hideHostWaitText(card: HTMLElement): void {
         if (face === undefined) return
         evaluateProjection(evictedSession, face.getSnapshot?.())
       })
+      /*
+       * 淘汰下来的会话也要进最近出现表, 否则它既不在订阅表也不在最近出现表里,
+       * 下面这轮上限检查根本看不到它, 轮询兜底就会随会话切换无限累积。
+       */
+      subscriptionSeen.set(evictedSession, Date.now())
+      enforcePolledLimit()
       console.warn('[question-timeout-protection] 会话订阅数量达到上限, 已把最久未出现的会话改为轮询兜底, 该会话的超时接管会延后生效')
     }
     evaluate()
@@ -1512,10 +1542,16 @@ function hideHostWaitText(card: HTMLElement): void {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
-        /* 参数顺序必须与 evaluateRow 一致: 前者是更可信的来源, 后者只做兜底 */
+        /* 参数顺序必须与 evaluateRow 一致, 取舍规则也必须一致 */
         lastDrafts.set(
           identity.callId,
-          mergeDrafts(previous, readLiveDrafts(element, count), count, progress?.index, true),
+          mergeDrafts(
+            readHostDrafts(identity, count),
+            readLiveDrafts(element, count),
+            previous,
+            count,
+            progress?.index,
+          ),
         )
         decorateCard(element, identity)
       }

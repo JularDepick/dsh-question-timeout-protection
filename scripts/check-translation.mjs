@@ -3,21 +3,33 @@
  * 翻译文件一致性检查
  *
  * 以中文版为基准做四件事:
- * 1. 三份 ini 的键集, 重复键, 空值, 占位符是否一致;
+ * 1. 全部 ini 的键集, 重复键, 空值, 占位符是否一致;
  * 2. 配置页字典的键与 ini 的 settings.* 是否一一对应;
  * 3. 界面常量里的中英文案是否都有对应 ini 键且取值一致;
- * 4. [meta] 的版本号与语言标识是否与包清单和文件名相符.
+ * 4. [meta] 的版本号与语言标识是否与包清单和文件名相符。
  * 任何不一致都以非零退出。
  * 作者: JularDepick
  */
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const BASELINE = 'src/translation/zh-CN.ini'
-const FILES = ['src/translation/zh-CN.ini', 'src/translation/en-US.ini', 'src/translation/.example_zh-CN.ini']
+const TEMPLATE = 'src/translation/.example_zh-CN.ini'
+const TRANSLATION_DIR = 'src/translation'
+
+/*
+ * 全部翻译文件都纳入检查: 新增语言若不登记, 它的漂移不会有人拦,
+ * 因此这里按目录实际内容枚举, 而不是写死文件名清单。
+ */
+function listIniFiles() {
+  const names = readdirSync(join(ROOT, TRANSLATION_DIR)).filter((name) => name.endsWith('.ini')).sort()
+  return names.map((name) => TRANSLATION_DIR + '/' + name)
+}
+
+const FILES = listIniFiles()
 
 /* 解析 [translation] 节: 同时记录重复键与空值 */
 function parseIni(text) {
@@ -54,37 +66,188 @@ function placeholders(value) {
 }
 
 /*
+ * 源码字面量读取。
+ *
+ * 之前按书写风格抽字面量(只认单引号与固定类型的数组注解), 改一次写法
+ * (换引号、加类型注解、换成 as const)整组常量就脱离校验, 而这类漂移的表现是
+ * 界面文案与 ini 对不上、宿主控件定位失效, 都不会报错。
+ * 因此这里按字面量本身解析取值, 不依赖书写风格。
+ */
+
+/* 读一个字符串字面量, 返回取值与结束位置 */
+function readStringLiteral(source, start) {
+  const quote = source[start]
+  if (quote !== "'" && quote !== '"' && quote !== String.fromCharCode(96)) return undefined
+  let value = ''
+  let i = start + 1
+  while (i < source.length) {
+    const ch = source[i]
+    if (ch === '\\') {
+      value += ch + (source[i + 1] ?? '')
+      i += 2
+      continue
+    }
+    if (ch === quote) return { value, end: i + 1 }
+    value += ch
+    i += 1
+  }
+  return undefined
+}
+
+/*
+ * TypeScript 关键字: 常量声明扫描时必须排除, 否则 "as const" 会被当成常量名登记。
+ */
+const RESERVED_WORDS = new Set(['const', 'let', 'var', 'function', 'class', 'type', 'interface', 'enum', 'namespace', 'declare'])
+
+/*
+ * 收集源码里所有常量声明的位置。
+ * 用一条全局正则扫描, 避免为每个常量名临时拼正则 ——
+ * 拼出来的正则一旦转义写错, 整份检查会静默失效。
+ */
+function constDeclarations(source) {
+  const found = new Map()
+  for (const match of source.matchAll(/(?:export[ \t]+)?const[ \t]+([A-Za-z0-9_]+)\b/g)) {
+    /*
+     * 关键字本身也会被这条正则匹配到: "as const" 后面换行再写一个 const 时,
+     * 贪婪的空白匹配会把下一个 const 吃掉, 于是真正的常量名永远登记不上。
+     * 因此先把关键字排除掉。
+     */
+    if (RESERVED_WORDS.has(match[1])) continue
+    if (!found.has(match[1])) found.set(match[1], match.index + match[0].length)
+  }
+  return found
+}
+
+/* 定位常量取值的起点(等号右侧第一个字符), 跳过类型注解 */
+function constValueStart(source, declarations, name) {
+  const declared = declarations.get(name)
+  if (declared === undefined) return undefined
+  let i = declared
+  while (i < source.length && /\s/.test(source[i])) i += 1
+  if (source[i] === ':') {
+    let depth = 0
+    while (i < source.length) {
+      const ch = source[i]
+      if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1
+      else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1
+      else if (ch === '=' && depth <= 0) break
+      i += 1
+    }
+    while (i < source.length && /\s/.test(source[i])) i += 1
+  }
+  if (source[i] !== '=') return undefined
+  i += 1
+  while (i < source.length && /\s/.test(source[i])) i += 1
+  return i
+}
+
+/* 读数组字面量, 返回元素与"是否全为字符串" */
+function readArrayLiteral(source, start) {
+  if (source[start] !== '[') return undefined
+  let depth = 0
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i]
+    if (ch === "'" || ch === '"' || ch === String.fromCharCode(96)) {
+      const parsed = readStringLiteral(source, i)
+      if (parsed === undefined) return undefined
+      i = parsed.end - 1
+      continue
+    }
+    if (ch === '[') depth += 1
+    else if (ch === ']') {
+      depth -= 1
+      if (depth === 0) {
+        const body = source.slice(start + 1, i)
+        const elements = []
+        const pattern = /'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|\x60((?:[^\x60\\]|\\.)*)\x60/g
+        for (const match of body.matchAll(pattern)) elements.push(match[1] ?? match[2] ?? match[3])
+        const items = body.split(',').filter((part) => part.trim() !== '')
+        return { elements, textual: items.length === elements.length }
+      }
+    }
+  }
+  return undefined
+}
+
+/* 读对象字面量的字符串属性 */
+function readObjectEntries(source, start) {
+  if (source[start] !== '{') return undefined
+  const entries = new Map()
+  let i = start + 1
+  while (i < source.length) {
+    const ch = source[i]
+    if (ch === '}') return entries
+    if (ch === "'" || ch === '"' || ch === String.fromCharCode(96)) {
+      const parsed = readStringLiteral(source, i)
+      if (parsed === undefined) return undefined
+      i = parsed.end
+      continue
+    }
+    if (/[A-Za-z0-9_]/.test(ch)) {
+      let j = i
+      while (j < source.length && /[A-Za-z0-9_]/.test(source[j])) j += 1
+      const key = source.slice(i, j)
+      let k = j
+      while (k < source.length && /\s/.test(source[k])) k += 1
+      if (source[k] !== ':') {
+        i = j
+        continue
+      }
+      k += 1
+      while (k < source.length && /\s/.test(source[k])) k += 1
+      if (source[k] === "'" || source[k] === '"' || source[k] === String.fromCharCode(96)) {
+        const parsed = readStringLiteral(source, k)
+        if (parsed === undefined) return undefined
+        entries.set(key, parsed.value)
+        i = parsed.end
+        continue
+      }
+      i = k
+      continue
+    }
+    i += 1
+  }
+  return entries
+}
+
+/*
  * 从源码里抽文案常量。
- * 标量常量按 NAME_ZH / NAME_EN 成对抽取, 写法可以是单行也可以跨行;
- * 数组常量按 NAME = ['中文', '英文'] 抽取。
+ * 标量常量按 NAME_ZH / NAME_EN 成对抽取; 数组常量按 NAME = [...] 抽取。
  */
 function literalPairs() {
   const source = readFileSync(join(ROOT, 'src/constants.ts'), 'utf8')
+  const declarations = constDeclarations(source)
   const pairs = []
-  for (const match of source.matchAll(/export const ([A-Za-z0-9_]+)_ZH\s*=\s*'((?:[^'\\]|\\.)*)'/g)) {
-    const name = match[1]
-    const zh = match[2]
-    const enMatch = source.match(
-      new RegExp('export const ' + name + "_EN\\s*=\\s*'((?:[^'\\\\]|\\\\.)*)'"),
-    )
-    if (enMatch) pairs.push({ name, zh, en: enMatch[1] })
+  const names = new Set()
+  for (const match of source.matchAll(/export const ([A-Za-z0-9_]+)_ZH\b/g)) names.add(match[1])
+  for (const name of names) {
+    const zhStart = constValueStart(source, declarations, name + '_ZH')
+    if (zhStart === undefined) continue
+    const zhLiteral = readStringLiteral(source, zhStart)
+    if (zhLiteral === undefined) continue
+    const enStart = constValueStart(source, declarations, name + '_EN')
+    if (enStart === undefined) continue
+    const enLiteral = readStringLiteral(source, enStart)
+    if (enLiteral === undefined) continue
+    pairs.push({ name, zh: zhLiteral.value, en: enLiteral.value })
   }
   return pairs
 }
 
 /*
  * 抽取数组型文案常量。
- * 数组可能跨多行书写, 因此整体取出数组字面量再逐个解析元素;
- * 只认单行两元素数组的正则会让跨行书写的常量整组脱离校验, 改动它时检查脚本不会报。
+ * 数组可能跨多行书写, 元素可能带 as const 或 satisfies, 因此按字面量解析取值。
  */
 function arrayLiterals() {
   const source = readFileSync(join(ROOT, 'src/constants.ts'), 'utf8')
+  const declarations = constDeclarations(source)
   const out = []
-  for (const match of source.matchAll(
-    /export const ([A-Za-z0-9_]+)\s*:\s*readonly string\[\]\s*=\s*\[([\s\S]*?)\]/g,
-  )) {
-    const elements = [...match[2].matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((element) => element[1])
-    out.push({ name: match[1], elements })
+  for (const [name, declared] of declarations) {
+    const start = constValueStart(source, declarations, name)
+    if (start === undefined) continue
+    const parsed = readArrayLiteral(source, start)
+    if (parsed === undefined) continue
+    out.push({ name, elements: parsed.elements, textual: parsed.textual })
   }
   return out
 }
@@ -92,6 +255,9 @@ function arrayLiterals() {
 const problems = []
 const baseline = parseIni(readFileSync(join(ROOT, BASELINE), 'utf8'))
 const baseKeys = new Set([...baseline.entries.keys()].filter((key) => !key.startsWith('meta.')))
+
+if (!FILES.includes(BASELINE)) problems.push('基准文件缺失: ' + BASELINE)
+if (!FILES.includes(TEMPLATE)) problems.push('基准模板缺失: ' + TEMPLATE)
 
 for (const file of FILES) {
   const parsed = parseIni(readFileSync(join(ROOT, file), 'utf8'))
@@ -105,7 +271,7 @@ for (const file of FILES) {
 }
 
 /* 取值与占位符: 中文版与模板必须逐字相同, 其余语言占位符必须一致 */
-const template = parseIni(readFileSync(join(ROOT, 'src/translation/.example_zh-CN.ini'), 'utf8'))
+const template = parseIni(readFileSync(join(ROOT, TEMPLATE), 'utf8'))
 for (const key of baseKeys) {
   if (template.entries.get(key) !== baseline.entries.get(key)) problems.push('基准模板与中文版取值不一致: ' + key)
 }
@@ -120,25 +286,64 @@ for (const file of FILES) {
   }
 }
 
+/*
+ * 新增语言必须真的翻译过:
+ * 取值与中文版逐字相同说明没翻译; 与另一种语言逐字相同多半是直接照抄;
+ * 所有取值写成同一个字符串则根本没逐条填。
+ */
+for (const file of FILES) {
+  if (file === BASELINE || file === TEMPLATE) continue
+  const parsed = parseIni(readFileSync(join(ROOT, file), 'utf8'))
+  const values = []
+  let identicalToBaseline = 0
+  for (const key of baseKeys) {
+    const value = parsed.entries.get(key)
+    if (value === undefined) continue
+    values.push(value)
+    if (value === baseline.entries.get(key)) identicalToBaseline += 1
+  }
+  if (values.length === 0) continue
+  if (identicalToBaseline === values.length) problems.push(file + ' 的文案与中文版完全相同, 看起来没有翻译')
+  if (new Set(values).size === 1) problems.push(file + ' 的所有文案都写成同一个字符串, 看起来没有逐条翻译')
+  /*
+   * 与另一种已收录语言逐字相同: 多半是直接复制过去忘了翻译,
+   * 这种文件一旦混进发布包, 界面会显示另一种语言却标着别的语种。
+   */
+  for (const other of FILES) {
+    if (other === file || other === BASELINE || other === TEMPLATE) continue
+    const otherParsed = parseIni(readFileSync(join(ROOT, other), 'utf8'))
+    let identical = 0
+    let compared = 0
+    for (const key of baseKeys) {
+      const value = parsed.entries.get(key)
+      const reference = otherParsed.entries.get(key)
+      if (value === undefined || reference === undefined) continue
+      compared += 1
+      if (value === reference) identical += 1
+    }
+    if (compared > 0 && identical === compared) {
+      problems.push(file + ' 的文案与 ' + other + ' 逐字相同, 看起来没有翻译')
+    }
+  }
+}
+
 /* 配置页字典 <-> ini 的 settings.* */
 const i18nSource = readFileSync(join(ROOT, 'src/client/i18n.ts'), 'utf8')
-/*
- * 取两块字典: 按整行锚定 const ZH = { 与 const EN: ... = { ,
- * 不用 split('const EN') 这种子串切分 —— 源码里出现 const ENTRY 之类的标识符就会切错块,
- * 切错之后英文取值比对会被静默跳过。
- */
-function dictBlock(source, header) {
-  const matched = source.match(new RegExp('const ' + header + '(?::[^=]*)?\\s*=\\s*\\{([\\s\\S]*?)\\n\\}'))
-  return matched === null ? '' : matched[1]
+const i18nDeclarations = constDeclarations(i18nSource)
+
+/* 取两块字典: 按常量定义定位取值起点再读对象字面量, 不用子串切分 */
+function dictBlock(source, declarations, header) {
+  const start = constValueStart(source, declarations, header)
+  if (start === undefined) return undefined
+  return readObjectEntries(source, start)
 }
-const zhBlock = dictBlock(i18nSource, 'ZH')
-const enBlock = dictBlock(i18nSource, 'EN')
-if (zhBlock === '' || enBlock === '') problems.push('没能从 src/client/i18n.ts 里取出中英文案字典')
-const dictKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z0-9_]+):/gm)].map((m) => m[1]))
+const zhBlock = dictBlock(i18nSource, i18nDeclarations, 'ZH')
+const enBlock = dictBlock(i18nSource, i18nDeclarations, 'EN')
+if (zhBlock === undefined || enBlock === undefined) problems.push('没能从 src/client/i18n.ts 里取出中英文案字典')
+const dictKeys = new Set(zhBlock === undefined ? [] : [...zhBlock.keys()])
 const settingsKeys = new Set([...baseKeys].filter((key) => key.startsWith('settings.')).map((key) => key.slice(9)))
 for (const key of dictKeys) if (!settingsKeys.has(key)) problems.push('配置页字典的 ' + key + ' 在 ini 里缺少 settings.' + key)
 for (const key of settingsKeys) if (!dictKeys.has(key)) problems.push('ini 的 settings.' + key + ' 在配置页字典里缺少对应项')
-
 
 const CONSTANT_KEY_MAP = {
   COUNTDOWN_TEXT: 'countdown.remaining',
@@ -186,6 +391,16 @@ const HOST_LABEL_BASELINE = {
 const HOST_LABEL_ARRAYS = new Set(Object.keys(HOST_LABEL_BASELINE))
 
 /*
+ * 不是文案的数组常量: 取值是配置枚举或正则, 不参与镜像比对, 也不需要登记。
+ */
+const IGNORED_ARRAYS = new Set([
+  'FALLBACK_MODES',
+  'HOST_WAIT_PATTERNS',
+  'COUNTDOWN_PATTERNS',
+  'PAUSED_TEXT_PATTERNS',
+])
+
+/*
  * 每个镜像键期望的占位符集合。
  * 只校验"占位符在代码里被替换过"不够: {items} 与 {text} 对调时那一条仍然通过,
  * 界面上的「已选」会显示用户补充的文本, 因此这里按键绑定占位符名。
@@ -194,6 +409,16 @@ const KEY_PLACEHOLDERS = {
   'countdown.remaining': ['seconds'],
   'draft.selected': ['items'],
   'draft.custom': ['text'],
+}
+
+/*
+ * 占位符与数据来源的绑定: 替换目标里必须出现对应的数据来源,
+ * 否则 {items} 与 {text} 对调时两者都还在, 但界面会渲染错位。
+ */
+const PLACEHOLDER_SOURCES = {
+  '{items}': 'selected',
+  '{text}': 'custom',
+  '{seconds}': 'seconds',
 }
 
 /*
@@ -213,7 +438,7 @@ for (const name of Object.keys(CONSTANT_KEY_MAP)) {
  * 源码里出现的中英文文案常量必须成对: 少了英文那一半时, 取值比对会把整条跳过,
  * 界面上的英文就会悄悄退回别的措辞。
  */
-for (const match of constantsSource.matchAll(/export const ([A-Za-z0-9_]+)_ZH\s*=/g)) {
+for (const match of constantsSource.matchAll(/export const ([A-Za-z0-9_]+)_ZH\b/g)) {
   if (!constantsSource.includes('export const ' + match[1] + '_EN')) {
     problems.push('常量 ' + match[1] + '_EN 不存在, 中英文文案没有成对')
   }
@@ -237,14 +462,22 @@ for (const pair of literalPairs()) {
 
 /* 数组型常量与 ini 键的取值比对 */
 for (const item of arrayLiterals()) {
+  if (!item.textual) {
+    if (!IGNORED_ARRAYS.has(item.name)) {
+      problems.push('数组常量 ' + item.name + ' 含非字符串元素, 需要登记进 IGNORED_ARRAYS')
+    }
+    continue
+  }
   const key = ARRAY_KEY_MAP[item.name]
   if (key === undefined) {
     /*
      * 未登记的数组常量不能静默跳过: 它要么该进镜像, 要么该登记成宿主识别文案,
      * 两者都要求有人明确决定一次。
      */
-    if (!HOST_LABEL_ARRAYS.has(item.name)) {
-      problems.push('数组常量 ' + item.name + ' 未登记: 要么登记进 ARRAY_KEY_MAP, 要么登记进 HOST_LABEL_ARRAYS')
+    if (!HOST_LABEL_ARRAYS.has(item.name) && !IGNORED_ARRAYS.has(item.name)) {
+      problems.push(
+        '数组常量 ' + item.name + ' 未登记: 要么登记进 ARRAY_KEY_MAP, 要么登记进 HOST_LABEL_ARRAYS 或 IGNORED_ARRAYS',
+      )
     }
     continue
   }
@@ -266,9 +499,10 @@ for (const item of arrayLiterals()) {
  * 这些文案是插件定位宿主控件的唯一依据, 被误改就会静默失效, 因此逐字比对。
  */
 for (const item of arrayLiterals()) {
+  if (!item.textual) continue
   if (!HOST_LABEL_ARRAYS.has(item.name)) continue
-  const baseline = HOST_LABEL_BASELINE[item.name]
-  if (item.elements.join('\u0000') !== baseline.join('\u0000')) {
+  const expected = HOST_LABEL_BASELINE[item.name]
+  if (item.elements.join('\u0000') !== expected.join('\u0000')) {
     problems.push(
       '宿主识别文案数组 ' + item.name + ' 与基线不一致, 改动时需同步检查脚本里的 HOST_LABEL_BASELINE',
     )
@@ -276,13 +510,8 @@ for (const item of arrayLiterals()) {
 }
 
 /* 配置页字典的取值必须与 ini 的 settings.* 一致 */
-const dictValues = (block) => {
-  const out = new Map()
-  for (const match of block.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*'((?:[^'\\]|\\.)*)'/gm)) out.set(match[1], match[2])
-  return out
-}
-const zhValues = dictValues(zhBlock)
-const enValues = dictValues(enBlock)
+const zhValues = zhBlock ?? new Map()
+const enValues = enBlock ?? new Map()
 for (const key of settingsKeys) {
   const zhExpected = baseline.entries.get('settings.' + key)
   const zhActual = zhValues.get(key)
@@ -295,7 +524,11 @@ for (const key of settingsKeys) {
   }
   const enExpected = enIni.entries.get('settings.' + key)
   const enActual = enValues.get(key)
-  if (enActual !== undefined && enExpected !== undefined && enExpected !== enActual) {
+  if (enActual === undefined) {
+    problems.push('配置页英文字典缺少取值: ' + key)
+    continue
+  }
+  if (enExpected !== undefined && enExpected !== enActual) {
     problems.push('配置页英文字典的 ' + key + ' 与 en-US.ini settings.' + key + ' 取值不一致')
   }
 }
@@ -312,7 +545,10 @@ for (const key of ['meta.for', 'meta.lang', 'meta.name', 'meta.endtime']) {
  * 否则占位符会原样出现在界面上。
  */
 const adapterSource = readFileSync(join(ROOT, 'src/client/adapter.ts'), 'utf8')
-const replaceTargets = new Set([...adapterSource.matchAll(/\.replace\('(\{[a-zA-Z0-9_]+\})'/g)].map((m) => m[1]))
+const replaceTargets = new Map()
+for (const match of adapterSource.matchAll(/\.replace\('(\{[a-zA-Z0-9_]+\})'\s*,\s*([^\n]*)/g)) {
+  replaceTargets.set(match[1], match[2])
+}
 for (const key of baseKeys) {
   for (const name of placeholders(baseline.entries.get(key) ?? '')) {
     const token = '{' + name + '}'
@@ -325,6 +561,18 @@ for (const [key, expected] of Object.entries(KEY_PLACEHOLDERS)) {
   const actual = placeholders(baseline.entries.get(key) ?? '')
   if (actual.join(',') !== expected.join(',')) {
     problems.push('键 ' + key + ' 的占位符应为 ' + expected.join(',') + ', 实际为 ' + (actual.join(',') || '(无)'))
+  }
+}
+
+/*
+ * 占位符与数据来源的绑定: 替换目标里必须出现对应的数据来源。
+ * 只看占位符名出现过是不够的, {items} 与 {text} 对调时两者都还在, 但界面会错位。
+ */
+for (const [token, source] of Object.entries(PLACEHOLDER_SOURCES)) {
+  const expression = replaceTargets.get(token)
+  if (expression === undefined) continue
+  if (!expression.includes(source)) {
+    problems.push('占位符 ' + token + ' 的替换目标里没有 ' + source + ', 与绑定不一致: ' + expression.trim())
   }
 }
 
@@ -351,8 +599,10 @@ for (const file of FILES) {
   const forValue = parsed.entries.get('meta.for')
   if (forValue !== 'v' + pkg.version) problems.push(file + ' 的 meta.for 与包版本不一致: ' + String(forValue))
   const lang = parsed.entries.get('meta.lang')
-  const expectedLang = file.endsWith('en-US.ini') ? 'en-US' : 'zh-CN'
-  if (lang !== expectedLang) problems.push(file + ' 的 meta.lang 应为 ' + expectedLang + ', 实际 ' + String(lang))
+  const fileName = file.slice(TRANSLATION_DIR.length + 1, -'.ini'.length).replace(/^\.example_/, '')
+  if (lang !== fileName) problems.push(file + ' 的 meta.lang 应为 ' + fileName + ', 实际 ' + String(lang))
+  const name = parsed.entries.get('meta.name')
+  if (name === undefined || name === '') problems.push(file + ' 的 meta.name 为空')
   const endtime = parsed.entries.get('meta.endtime') ?? ''
   if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\+\d{2}:\d{2}$/.test(endtime)) {
     problems.push(file + ' 的 meta.endtime 格式不合规: ' + endtime)
@@ -364,4 +614,4 @@ if (problems.length > 0) {
   for (const problem of problems) console.error('  - ' + problem)
   process.exit(1)
 }
-console.log('翻译一致性检查通过, 共 ' + String(baseKeys.size) + ' 个键')
+console.log('翻译一致性检查通过, 共 ' + String(baseKeys.size) + ' 个键, ' + String(FILES.length) + ' 个翻译文件')

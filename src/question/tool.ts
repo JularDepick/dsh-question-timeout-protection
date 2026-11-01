@@ -19,6 +19,7 @@ import {
   clearDraft,
   clearInfiniteWait,
   isInfiniteWait,
+  markCallSettled,
   registerCallDeadline,
   registerCallQuestions,
 } from '../sync/server'
@@ -386,6 +387,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * 每次都白等三秒会让这一轮提问迟迟不返回。
          */
         const draft = skipGrace ? undefined : await awaitDraft(callId, DRAFT_GRACE_MS)
+        /*
+         * 宽限期内到达的「无限等待」也要认: 用户是在到期那一刻点的,
+         * 界面已经冻结成「已暂停」, 这时再按超时结算会让界面与模型状态对不上。
+         * 这里返回 null 表示不结算, 调用方会回到等待里。
+         */
+        if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) return null
         if (draft === undefined || draft.length === 0) {
           return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
         }
@@ -519,6 +526,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         clearCallQuestions(exec.callId)
         /* 草稿快照随这次调用结束而失效, 不留在服务端等下一轮复用 */
         clearDraft(exec.callId)
+        /*
+         * 留一条结算标记: 结算之后到达的「无限等待」要按过期处理。
+         * 没有它的话, 权威到期时刻已经清掉, 晚到的上报会退回客户端自报的时刻并被当成有效,
+         * 结果就是界面显示「已暂停」而模型已经拿到超时结果。
+         */
+        markCallSettled(exec.callId)
         if (timer !== undefined) clearTimeout(timer)
       }
     },

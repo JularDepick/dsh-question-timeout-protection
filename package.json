@@ -31,15 +31,14 @@
     "cordis.patch.yml",
     "src/translation/*.ini",
     "src/translation/.example_zh-CN.ini",
-    "README*",
-    "scripts/"
+    "README*"
   ],
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "pack:release": "tsdown && pnpm pack --ignore-scripts && node scripts/pack-release.mjs --strict",
-    "prepare": "tsdown",
-    "prepack": "tsdown",
+    "pack:release": "node scripts/check-translation.mjs && tsdown && pnpm pack --ignore-scripts && node scripts/pack-release.mjs --strict",
+    "prepare": "node scripts/check-translation.mjs && tsdown",
+    "prepack": "node scripts/check-translation.mjs && tsdown",
     "postpack": "node scripts/pack-release.mjs",
     "typecheck": "tsc --noEmit",
     "check:translation": "node scripts/check-translation.mjs"
@@ -81,8 +80,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-slots"
+        "@deepseek-ai/dsh-client-locale"
       ]
     }
   },

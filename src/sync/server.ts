@@ -41,6 +41,15 @@ const MAX_INFINITE_CALLS = 512
 /* 已上报的超时草稿(键为 callId), 工具到期时取走 */
 const draftReports = new Map<string, DraftAnswer[]>()
 
+/* 草稿上报时间: 客户端在调用结算后仍可能继续上报, 没有时间戳就会一直留在内存里 */
+const draftReportedAt = new Map<string, number>()
+
+/* 草稿上报的存活时长: 超过这个时间还没被取走就按残留清掉 */
+const DRAFT_REPORT_TTL_MS = 5 * 60 * 1000
+
+/* 已结算的调用: 结算之后到达的「无限等待」一律按过期处理, 不能反过来改变结算结果 */
+const settledCalls = new Map<string, number>()
+
 /*
  * 通道令牌: 每次插件加载随机生成, 客户端先取到它再上报。
  * 没有令牌时同机任意网页都能伪造草稿或「无限等待」, 令牌让通道只接受本插件的页面。
@@ -84,36 +93,66 @@ function rememberInfiniteCall(callId: string): void {
 export function reportDraft(callId: string, answers: DraftAnswer[]): void {
   if (draftReports.size >= MAX_INFINITE_CALLS && !draftReports.has(callId)) {
     const oldest = draftReports.keys().next()
-    if (!oldest.done) draftReports.delete(oldest.value)
+    if (!oldest.done) {
+      draftReports.delete(oldest.value)
+      draftReportedAt.delete(oldest.value)
+    }
   }
   draftReports.set(callId, answers)
+  draftReportedAt.set(callId, Date.now())
 }
 
 /*
  * 等待某次调用的草稿上报。
  * 客户端在用户编辑卡片时就会持续上报草稿快照, 因此到期时通常已经有一份;
  * 这里再给一段宽限时间, 收下更晚到达的那一份, 取最新值交给工具。
+ *
+ * 宽限期内若登记了「无限等待」, 立即结束等待并返回 undefined:
+ * 用户是在到期瞬间点的, 这一轮提问还想继续等, 工具据此回到等待里而不是按超时结算。
  */
 export async function awaitDraft(callId: string, timeoutMs: number): Promise<DraftAnswer[] | undefined> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    if (infiniteCalls.has(callId)) {
+      /* 用户刚点了「无限等待」: 这一轮不该按超时结算, 草稿留到之后再取 */
+      return undefined
+    }
     const reported = draftReports.get(callId)
     if (reported !== undefined) {
       /* 已有一份就再等一小段, 收下更晚到达的更新 */
       await sleep(SETTLE_MS)
+      if (infiniteCalls.has(callId)) return undefined
       const latest = draftReports.get(callId)
       draftReports.delete(callId)
+      draftReportedAt.delete(callId)
       return latest ?? reported
     }
     await sleep(POLL_INTERVAL_MS)
   }
   draftReports.delete(callId)
+  draftReportedAt.delete(callId)
   return undefined
 }
 
 /* 丢弃某次调用残留的草稿快照 */
 export function clearDraft(callId: string): void {
   draftReports.delete(callId)
+  draftReportedAt.delete(callId)
+}
+
+/*
+ * 登记调用已结算。
+ * 结算之后才到达的「无限等待」不能反过来改变结算结果,
+ * 而结算时清掉权威到期时刻后, 晚到的上报会退回客户端自报的时刻并被当成有效,
+ * 因此这里留一条有存活期的结算标记。
+ */
+export function markCallSettled(callId: string): void {
+  settledCalls.set(callId, Date.now())
+  while (settledCalls.size > MAX_TRACKED_CALLS) {
+    const oldest = settledCalls.keys().next()
+    if (oldest.done) break
+    settledCalls.delete(oldest.value)
+  }
 }
 
 /* 等待一小段时间 */
@@ -153,6 +192,15 @@ function sweepTrackedCalls(): void {
   const now = Date.now()
   for (const [callId, deadline] of callDeadlines) {
     if (now - deadline > TRACKED_CALL_TTL_MS) callDeadlines.delete(callId)
+  }
+  for (const [callId, settledAt] of settledCalls) {
+    if (now - settledAt > TRACKED_CALL_TTL_MS) settledCalls.delete(callId)
+  }
+  /* 客户端在调用结算后可能还在上报, 没有时间戳这里会一直攒着 */
+  for (const [callId, reportedAt] of draftReportedAt) {
+    if (now - reportedAt <= DRAFT_REPORT_TTL_MS) continue
+    draftReportedAt.delete(callId)
+    draftReports.delete(callId)
   }
   for (const callId of callQuestionOrders.keys()) {
     if (!callDeadlines.has(callId)) callQuestionOrders.delete(callId)
@@ -259,6 +307,16 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
     return
   }
   if (serveToken(request, response)) return
+  /*
+   * 除令牌端点外一律校验令牌, 诊断端点也不例外:
+   * 它虽然只读, 但会把已登记的调用标识暴露给同机任意进程, 与通道其余部分的口径保持一致。
+   */
+  const token = request.headers['x-qtp-token']
+  if (typeof token !== 'string' || token !== syncToken) {
+    response.writeHead(401)
+    response.end()
+    return
+  }
   /* 只读诊断端点: 返回已登记过的调用, 便于排查「无限等待」是否真的送达 */
   if (request.method === 'GET' && request.url === SYNC_PATH + '-state') {
     response.writeHead(200, { 'content-type': 'application/json' })
@@ -270,19 +328,19 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
     response.end()
     return
   }
-  /* 没有正确令牌的请求一律拒绝, 同机其他网页不得伪造草稿或「无限等待」 */
-  const token = request.headers['x-qtp-token']
-  if (typeof token !== 'string' || token !== syncToken) {
-    response.writeHead(401)
-    response.end()
-    return
-  }
-  let body = ''
+  /*
+   * 请求体按字节累积, 收完再统一解码。
+   * 逐块 toString('utf8') 会把落在两个 TCP 块之间的多字节字符解成乱码,
+   * 而草稿的补充内容正是自由文本, 一旦命中就是静默的文本损坏。
+   */
+  const chunks: Buffer[] = []
+  let received = 0
   let oversized = false
   request.on('data', (chunk: Buffer) => {
     if (oversized) return
-    body += chunk.toString('utf8')
-    if (body.length > MAX_BODY_LENGTH) {
+    chunks.push(chunk)
+    received += chunk.length
+    if (received > MAX_BODY_LENGTH) {
       oversized = true
       response.writeHead(413)
       response.end()
@@ -290,6 +348,7 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
   })
   request.on('end', () => {
     if (oversized) return
+    const body = Buffer.concat(chunks).toString('utf8')
     try {
       const parsed = JSON.parse(body) as {
         callId?: unknown
@@ -308,6 +367,12 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
          * 客户端自报的截止时刻只作兜底 —— 它由卡片倒计时反推, 起点比工具计时晚,
          * 拿它当准会放过已经晚到的「无限等待」, 让界面显示「已暂停」而模型已经超时。
          */
+        if (settledCalls.has(parsed.callId)) {
+          /* 这一轮提问已经结算并交给模型, 再登记「无限等待」只会让界面与模型状态对不上 */
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ ok: false, reason: 'expired' }))
+          return
+        }
         const authority = callDeadlines.get(parsed.callId)
         const clientDeadline =
           typeof parsed.deadline === 'number' && Number.isFinite(parsed.deadline) ? parsed.deadline : undefined
@@ -350,10 +415,17 @@ export function registerQuestionSyncRoute(webServer: {
     path: SYNC_PATH + '-token',
     handler: handleStateRequest,
   })
+  /* 只读诊断端点也要单独登记: 宿主按精确路径路由, 不登记就取不到 */
+  const offState = webServer.register({
+    kind: 'exact',
+    path: SYNC_PATH + '-state',
+    handler: handleStateRequest,
+  })
   console.info('[question-timeout-protection] 状态同步路由已挂在宿主 HTTP 服务上: ' + SYNC_PATH)
   return () => {
     off()
     offToken()
+    offState()
   }
 }
 
@@ -407,6 +479,8 @@ export function clearInfiniteWait(callId: string): void {
 export function stopQuestionSync(): void {
   infiniteCalls.clear()
   draftReports.clear()
+  draftReportedAt.clear()
   callDeadlines.clear()
   callQuestionOrders.clear()
+  settledCalls.clear()
 }
