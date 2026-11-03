@@ -419,9 +419,16 @@ function composeItem(item: DraftItem): string {
   const parts: string[] = []
   /* 标签是带占位符的模板, 选项之间以斜杠分隔, 与翻译规范里约定的连接符一致 */
   if (item.selected.length > 0)
-    parts.push(pick(DRAFT_SELECTED_LABEL_ZH, DRAFT_SELECTED_LABEL_EN).replace('{items}', item.selected.join(' / ')))
+    parts.push(
+      pick(DRAFT_SELECTED_LABEL_ZH, DRAFT_SELECTED_LABEL_EN).replace('{items}', () => item.selected.join(' / ')),
+    )
   const custom = item.custom.trim()
-  if (custom !== '') parts.push(pick(DRAFT_CUSTOM_LABEL_ZH, DRAFT_CUSTOM_LABEL_EN).replace('{text}', custom))
+  /*
+   * 用函数式替换: 替换串来自选项文案与用户自由文本, 直接传字符串时那里面以
+   * 美元符号开头的序列会被 replace 当成替换模式, 只读面板显示的内容会与草稿不一致;
+   * 传函数则原样取返回值。
+   */
+  if (custom !== '') parts.push(pick(DRAFT_CUSTOM_LABEL_ZH, DRAFT_CUSTOM_LABEL_EN).replace('{text}', () => custom))
   return parts.join('\n\n')
 }
 
@@ -808,6 +815,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 存在 localStorage 里: 这是用户对后续所有提问的长期选择, 刷新后不该回到默认。
    * 存储不可用时退化为本次页面有效。
    */
+  /*
+   * 卸载标志: 卸载后仍然可能有在途的通道回执, 它们若继续改 DOM 会把自绘控件重新插回宿主界面,
+   * 而那时事件监听已经撤掉, 残留控件点了也没有反应。所有异步回执都先看这个标志。
+   */
+  let disposed = false
   let autoInfinite = readAutoInfinite()
 
   /* 每次调用只尝试自动接管一次, 免得通道报错后每秒重试一次 */
@@ -863,8 +875,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 按钮插在宿主工具栏里的模型选择块之后, 宿主重渲染后被移除时由下一轮扫描补回。
    */
   const ensureAutoInfiniteButton = (): void => {
-    /* 「无限等待」关掉时这个开关没有意义, 一并撤掉按钮 */
-    if (!options().infiniteWait) {
+    /*
+     * 卡片增强关掉时没有倒计时与「无限等待」按钮, 自动冻结又走装饰那条链路,
+     * 留着这个开关只会让人以为已经开启; 「无限等待」本身关掉时同理。
+     */
+    if (!options().infiniteWait || !options().cardEnhancements) {
       for (const element of Array.from(document.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
         element.remove()
       }
@@ -1019,7 +1034,7 @@ function hideHostWaitText(root: HTMLElement): void {
     if (element.hasAttribute(COUNTDOWN_ATTRIBUTE) || element.querySelector('button') !== null) continue
     const text = (element.textContent ?? '').trim()
     if (text === '' || text.length > 40) continue
-    if (!HOST_WAIT_PATTERNS.some((pattern) => pattern.test(text))) continue
+    if (!HOST_WAIT_PATTERNS.some((pattern) => text.includes(pattern))) continue
     element.classList.add(HIDDEN_CONTROL_CLASS)
   }
 }
@@ -1159,7 +1174,7 @@ function hideHostWaitText(root: HTMLElement): void {
     }
     decorateCard(card, identity)
     void reportInfiniteWait(identity, deadlines.get(identity.callId)).then((reply) => {
-      if (reply.ok) return
+      if (disposed || reply.ok) return
       if (reply.reason === 'expired') {
         /*
          * 上报到达时这一轮提问已经过了截止时刻, 工具多半已经按超时结算:
@@ -1426,6 +1441,7 @@ function hideHostWaitText(root: HTMLElement): void {
      * 连续失败达到阈值后标记该调用通道不可用, 卡片交还宿主, 并在界面上给出可见提示。
      */
     void reportDraftSnapshot(identity, answers).then((reply) => {
+      if (disposed) return
       if (reply.ok) {
         draftSyncFailures.delete(identity.callId)
         draftSyncFailed.delete(identity.callId)
@@ -1564,6 +1580,8 @@ function hideHostWaitText(root: HTMLElement): void {
    * 宿主若只给快照不给订阅, 就登记进轮询兜底, 否则投影停在 open 就再也不会触发超时分支。
    */
   const subscribeWarned = new Set<string>()
+  /* 投影评估的异常按会话只报一次, 避免每秒刷一条同样的警告 */
+  const evaluateWarned = new Set<string>()
   const polledSessions = new Map<string, () => void>()
   /* 各会话最近一次在界面上出现的时间, 用于限制订阅数量 */
   const subscriptionSeen = new Map<string, number>()
@@ -1617,7 +1635,19 @@ function hideHostWaitText(root: HTMLElement): void {
       return
     }
     const evaluate = (): void => {
-      evaluateProjection(sessionId, face.getSnapshot?.())
+      if (disposed) return
+      /*
+       * 投影回调与每秒扫描都在守护用户输入: 单次抛错不能让整条链路停摆,
+       * 否则后续的卡片装饰、草稿上报与超时接管会被一并跳过。
+       */
+      try {
+        evaluateProjection(sessionId, face.getSnapshot?.())
+      } catch (error) {
+        if (!evaluateWarned.has(sessionId)) {
+          evaluateWarned.add(sessionId)
+          console.warn('[question-timeout-protection] 评估提问投影时出错, 该会话的兜底可能受影响', error)
+        }
+      }
     }
     if (typeof face.subscribe !== 'function') {
       polledSessions.set(sessionId, evaluate)
@@ -1736,7 +1766,7 @@ function hideHostWaitText(root: HTMLElement): void {
     return ids
   }
 
-  const scan = (): void => {
+  const scanOnce = (): void => {
     ensureAutoInfiniteButton()
     for (const evaluate of polledSessions.values()) evaluate()
     for (const sessionId of visibleSessionIds()) ensureSubscription(sessionId)
@@ -1782,6 +1812,19 @@ function hideHostWaitText(root: HTMLElement): void {
     repositionPanel()
   }
 
+  /* 一轮扫描出错不能中断整个守护: 记录一次, 下一轮继续 */
+  let scanWarned = false
+  const scan = (): void => {
+    if (disposed) return
+    try {
+      scanOnce()
+    } catch (error) {
+      if (scanWarned) return
+      scanWarned = true
+      console.warn('[question-timeout-protection] 扫描界面时出错, 本轮跳过', error)
+    }
+  }
+
   /*
    * 流式输出时 mutation 会按帧触发, 直接全量重扫代价过高:
    * 用一次 120ms 的延迟合并同一批变更, 定时扫描只作为兜底。
@@ -1800,6 +1843,7 @@ function hideHostWaitText(root: HTMLElement): void {
   scan()
 
   return () => {
+    disposed = true
     observer.disconnect()
     window.clearInterval(timer)
     if (scanTimer !== undefined) window.clearTimeout(scanTimer)

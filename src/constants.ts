@@ -129,8 +129,18 @@ export const CARD_BUTTON_SELECTOR = 'button'
 /** 宿主倒计时与等待状态文本所在元素的选择器(类名带构建哈希,按后缀匹配) */
 export const WAIT_STATUS_SELECTOR = '[class*="_waitStatus"]'
 
-/** 宿主等待状态文案的识别模式: 宿主可能把「会一直等你回答」「已继续工作」渲染在别的容器里 */
-export const HOST_WAIT_PATTERNS = [/会一直等你回答/, /已继续工作/, /Waiting until you answer/, /Work continued/]
+/**
+ * 宿主等待状态文案的识别子串: 宿主可能把「会一直等你回答」「已继续工作」渲染在别的容器里。
+ * 卡片侧与工具行侧是两套文案(工具行取自宿主会话包里的 ask.pending), 中英文都要覆盖;
+ * 取值由 scripts/check-translation.mjs 的 HOST_LABEL_BASELINE 逐字核对, 改动时同步那张表。
+ */
+export const HOST_WAIT_PATTERNS: readonly string[] = [
+  '会一直等你回答',
+  '已继续工作',
+  'Waiting until you answer',
+  'Work continued',
+  'continued; answer still available',
+]
 
 /**
  * 宿主倒计时文案的解析规则: 运行态与暂停态并列, 中文与英文并列。

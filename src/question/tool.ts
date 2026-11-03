@@ -77,42 +77,6 @@ function linkSignals(first: AbortSignal | undefined, second: AbortSignal): Abort
   return controller.signal
 }
 
-/*
- * 宿主给出的拒绝是否只是"这次等待被中止"。
- *
- * 宿主 askTimed 在调用方不是 live 的根 agent(CALLER_NOT_LIVE),
- * 或 agent 被另一个 live agent 拥有(DELEGATED_CALLER, 子代理必然命中)时同步拒绝;
- * 这类拒绝与超时无关, 必须原样抛给模型, 不能伪装成"用户看过了但没提交"。
- * 只有 ASK_ABORTED 才是等待确实被中止。
- */
-function isAbortError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false
-  const code = (error as { code?: unknown }).code
-  if (code === 'ASK_ABORTED') return true
-  return (error as { name?: unknown }).name === 'AbortError'
-}
-
-/*
- * 等宿主等待给出结果: 被中止时返回 undefined, 让调用方按超时结算。
- * 其它拒绝(宿主明确报错)原样抛出, 由模型看到真实原因。
- */
-async function settleWait(
-  wait: Promise<
-    { answers: ReadonlyArray<{ id: string; selected: readonly string[]; custom?: string }> } | { pending: true; callId: string }
-  >,
-): Promise<
-  | { answers: ReadonlyArray<{ id: string; selected: readonly string[]; custom?: string }> }
-  | { pending: true; callId: string }
-  | undefined
-> {
-  try {
-    return await wait
-  } catch (error) {
-    if (isAbortError(error)) return undefined
-    throw error
-  }
-}
-
 /* 题目数组不能为空, 空数组没有可等待的内容 */
 function assertQuestionsPresent(questions: ReadonlyArray<unknown>): void {
   if (questions.length === 0) throw new Error('questions must contain at least one question')
@@ -448,7 +412,6 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       const pendingResult = async (
         callId: string,
         checkInfinite: boolean,
-        skipGrace = false,
       ): Promise<{
         pending: true
         callId: string
@@ -477,11 +440,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * draft 为 undefined 表示宽限期内没有等到任何上报, 按无草稿结算;
          * 空数组表示客户端明确上报过"确实没有草稿", 同样按无草稿结算, 但不必再等。
          */
-        /*
-         * 提问已被宿主取消或配置为不注入时, 草稿没有意义, 也不必等宽限期 ——
-         * 每次都白等三秒会让这一轮提问迟迟不返回。
-         */
-        const draft = skipGrace ? undefined : await loadDraft(callId)
+        const draft = await loadDraft(callId)
         /*
          * 宽限期内到达的「无限等待」也要认: 用户是在到期那一刻点的,
          * 界面已经冻结成「已暂停」, 这时再按超时结算会让界面与模型状态对不上。
@@ -553,12 +512,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           expired.then((value) => ({ kind: 'expired' as const, value })),
         ])
         if (first.kind === 'error') {
-          if (!isAbortError(first.error)) throw first.error
           /*
-           * 宿主等待被中止: 这一轮提问已经结束, 按超时结算。
+           * 宿主等待被中止或明确拒绝时原样抛出, 与宿主自带的阻塞提问保持一致:
+           * 这两种都不是"用户超时没提交", 伪装成超时会让模型收到与事实相反的结论,
+           * 客户端还会把一张其实没人作答的卡片锁死收起。
            */
-          const aborted = await pendingResult(exec.callId, false, true)
-          return aborted ?? { pending: true, callId: exec.callId, message: TIMEOUT_PENDING_NOTICE }
+          throw first.error
         }
         const result = first.value
         if (!('pending' in result)) return toAnswers(result)
@@ -567,10 +526,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * 此时不返回 pending, 继续等待用户提交, 模型工作被阻塞。
          */
         if (infiniteEnabled && isInfiniteWait(exec.callId)) {
-          const settled = await settleWait(wait)
-          if (settled === undefined) {
-            return { pending: true, callId: exec.callId, message: TIMEOUT_PENDING_NOTICE }
-          }
+          const settled = await wait
           if (!('pending' in settled)) return toAnswers(settled)
           /*
            * 宿主自己也已经把这批问题结算成超时了, 无可再等;
@@ -582,8 +538,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            * 否则界面显示「已暂停」而模型这边已经超时, 两边对不上。
            */
           if (infiniteEnabled && isInfiniteWait(exec.callId)) {
-            const stillWaiting = await settleWait(wait)
-            if (stillWaiting !== undefined && !('pending' in stillWaiting)) return toAnswers(stillWaiting)
+            const stillWaiting = await wait
+            if (!('pending' in stillWaiting)) return toAnswers(stillWaiting)
             return { pending: true, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }
           }
           const settledPending = await pendingResult(settled.callId, false)
@@ -607,20 +563,14 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            */
           wait.then(
             (value) => ({ kind: 'answer' as const, value }),
-            (error: unknown) => {
-              /* 宿主明确拒绝时不能按"等待被中止"处理, 原样抛给模型 */
-              if (!isAbortError(error)) throw error
-              return { kind: 'failed' as const, value: undefined as never }
-            },
+            /* 拒绝先收成结果, 免得另一条臂胜出时这里留下未处理的拒绝 */
+            (error: unknown) => ({ kind: 'error' as const, value: error }),
           ),
           pendingResult(result.callId, true).then((value) => ({ kind: 'pending' as const, value })),
         ])
-        if (settled.kind === 'failed') {
-          /*
-           * 宿主等待被中止: 这一轮提问已经结束, 按超时结算, 不再等任何答案。
-           */
-          const aborted = await pendingResult(result.callId, false, true)
-          return aborted ?? { pending: true, callId: result.callId, message: TIMEOUT_PENDING_NOTICE }
+        if (settled.kind === 'error') {
+          /* 中止或宿主拒绝同样原样抛出, 不伪装成超时 */
+          throw settled.value
         }
         if (settled.kind === 'answer') {
           if (!('pending' in settled.value)) return toAnswers(settled.value)
@@ -630,10 +580,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         /*
          * 到期结果没有产出(宽限期内到达了「无限等待」): 回到宿主等待里继续等。
          */
-        const again = await settleWait(wait)
-        if (again === undefined) {
-          return { pending: true, callId: result.callId, message: TIMEOUT_PENDING_NOTICE }
-        }
+        const again = await wait
         if (!('pending' in again)) return toAnswers(again)
         const second = await pendingResult(again.callId, false)
         return second ?? { pending: true, callId: again.callId, message: TIMEOUT_PENDING_NOTICE }

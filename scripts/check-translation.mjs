@@ -397,6 +397,14 @@ const ARRAY_KEY_MAP = {
  */
 const HOST_LABEL_BASELINE = {
   TAKE_TIME_TEXTS: ['慢慢回答', 'Take time'],
+  /* 卡片侧与工具行侧两套文案, 少一条就会在英文界面下静默失效 */
+  HOST_WAIT_PATTERNS: [
+    '会一直等你回答',
+    '已继续工作',
+    'Waiting until you answer',
+    'Work continued',
+    'continued; answer still available',
+  ],
   COLLAPSE_CONTROL_LABELS: [
     '收起问题卡片',
     '展开问题卡片',
@@ -420,7 +428,6 @@ const HOST_LABEL_ARRAYS = new Set(Object.keys(HOST_LABEL_BASELINE))
  */
 const IGNORED_ARRAYS = new Set([
   'FALLBACK_MODES',
-  'HOST_WAIT_PATTERNS',
   'COUNTDOWN_PATTERNS',
   'PAUSED_TEXT_PATTERNS',
 ])
