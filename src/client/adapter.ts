@@ -850,8 +850,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
  * 按文案隐藏宿主的等待状态提示: 宿主可能把「会一直等你回答」「已继续工作, 仍可回答」
  * 渲染在类名不匹配的容器里, 只靠类名后缀会漏掉, 插件接管后必须一并藏起来。
  */
-function hideHostWaitText(card: HTMLElement): void {
-  for (const element of Array.from(card.querySelectorAll('span, div'))) {
+function hideHostWaitText(root: HTMLElement): void {
+  for (const element of Array.from(root.querySelectorAll('span, div'))) {
     if (!(element instanceof HTMLElement)) continue
     if (element.hasAttribute(COUNTDOWN_ATTRIBUTE) || element.querySelector('button') !== null) continue
     const text = (element.textContent ?? '').trim()
@@ -1168,14 +1168,26 @@ function hideHostWaitText(card: HTMLElement): void {
     const hidden = draft === undefined
     button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
     if (draft === undefined) {
-      if (timedOut.has(callId)) hideHostReopen(row)
+      /* 没有草稿但已被接管(空草稿超时): 宿主那句「已继续工作, 仍可回答」同样要收起 */
+      if (timedOut.has(callId)) {
+        hideHostReopen(row)
+        hideHostWaitText(row)
+      }
       return
     }
     const label = pick(BUBBLE_DRAFT_LABEL_ZH, BUBBLE_DRAFT_LABEL_EN)
     if (button.textContent !== label) button.textContent = label
     if (button.getAttribute(BUBBLE_STATE_ATTRIBUTE) !== BUBBLE_STATE_DRAFT)
       button.setAttribute(BUBBLE_STATE_ATTRIBUTE, BUBBLE_STATE_DRAFT)
-    if (timedOut.has(callId)) hideHostReopen(row)
+    if (timedOut.has(callId)) {
+      hideHostReopen(row)
+      /*
+       * 宿主把等待结果写在这条工具行的摘要里(「已继续工作, 仍可回答」),
+       * 而插件已经把这一轮收尾成超时并交出草稿, 留着这句话等于告诉用户"还能继续答",
+       * 与卡片已关闭的事实冲突, 因此接管后同样要按文案把它藏掉。
+       */
+      hideHostWaitText(row)
+    }
   }
 
   /* 超时后的统一收尾: 锁定并收起卡片, 不产生任何提交 */

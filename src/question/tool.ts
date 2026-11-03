@@ -418,10 +418,17 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
             dropped += 1
             continue
           }
+          /*
+           * 某一题既没选中项也没有补充内容时不算草稿:
+           * 客户端每轮都会上报全量分题快照, 空条目只是"这题没写",
+           * 把它当成草稿交给模型, 会让模型以为用户"作答了但什么都没选"。
+           */
+          const custom = item.custom?.trim() ?? ''
+          if (item.selected.length === 0 && custom === '') continue
           mapped.push({
             id: question.id,
             selected: [...item.selected],
-            ...(item.custom === undefined ? {} : { custom: item.custom }),
+            ...(custom === '' ? {} : { custom }),
           })
         }
         if (dropped > 0) {

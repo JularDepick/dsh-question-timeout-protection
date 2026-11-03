@@ -81,10 +81,12 @@ export class QuestionTimeoutService {
     if (this.perAgent.has(key)) return
     try {
       /*
-       * 工具要在 agent 的作用域里注册: 它用到的提问服务与 agent 绑定,
-       * 用根上下文注册会让宿主把它当成与 agent 无关的调用。
+       * 注册要落在 agent 作用域: 同名工具按作用域分层遮蔽, 只有更近的作用域才能盖住预设里的阻塞式提问。
+       * 但工具本体必须持有插件自己的上下文 —— 提问服务是在插件里 inject 声明的,
+       * 拿 agent 作用域的 ctx 去读 userQuestions 会被框架直接拒绝
+       * (cannot get property "userQuestions" without inject), 工具一调用就失败。
        */
-      this.perAgent.set(key, agent.ctx.tools.register(createAskUserQuestionTool(agent.ctx, this.config)))
+      this.perAgent.set(key, agent.ctx.tools.register(createAskUserQuestionTool(this.ctx, this.config)))
     } catch (error) {
       this.ctx.logger.warn(
         `question-timeout-protection: failed to register the timed ask tool for agent ${key}: ${String(error)}`,
