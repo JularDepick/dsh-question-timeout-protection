@@ -18,6 +18,7 @@ import {
   clearCallQuestions,
   clearDraft,
   clearInfiniteWait,
+  hasSyncChannel,
   isInfiniteWait,
   markCallSettled,
   registerCallDeadline,
@@ -77,8 +78,23 @@ function linkSignals(first: AbortSignal | undefined, second: AbortSignal): Abort
 }
 
 /*
+ * 宿主给出的拒绝是否只是"这次等待被中止"。
+ *
+ * 宿主 askTimed 在调用方不是 live 的根 agent(CALLER_NOT_LIVE),
+ * 或 agent 被另一个 live agent 拥有(DELEGATED_CALLER, 子代理必然命中)时同步拒绝;
+ * 这类拒绝与超时无关, 必须原样抛给模型, 不能伪装成"用户看过了但没提交"。
+ * 只有 ASK_ABORTED 才是等待确实被中止。
+ */
+function isAbortError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const code = (error as { code?: unknown }).code
+  if (code === 'ASK_ABORTED') return true
+  return (error as { name?: unknown }).name === 'AbortError'
+}
+
+/*
  * 等宿主等待给出结果: 被中止时返回 undefined, 让调用方按超时结算。
- * 宿主等待被中止时承诺会拒绝, 直接 await 会把拒绝抛到工具外层。
+ * 其它拒绝(宿主明确报错)原样抛出, 由模型看到真实原因。
  */
 async function settleWait(
   wait: Promise<
@@ -91,8 +107,9 @@ async function settleWait(
 > {
   try {
     return await wait
-  } catch {
-    return undefined
+  } catch (error) {
+    if (isAbortError(error)) return undefined
+    throw error
   }
 }
 
@@ -144,6 +161,32 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
             header: {
               type: 'string',
               description: 'Optional short heading for the question, such as "Confirm" or "Choose Mode".',
+            },
+            detail: {
+              type: 'string',
+              description:
+                'Optional supporting detail rendered with the question but kept out of the option labels, such as a plan or a long explanation.',
+            },
+            intent: {
+              type: 'object',
+              additionalProperties: true,
+              description:
+                'Optional presentation intent for capable UIs. Currently the only tag is plan-review, which needs approve (the option label that accepts it); a UI that does not know the tag renders the generic option list.',
+              properties: {
+                kind: {
+                  type: 'string',
+                  required: true,
+                  description: 'Intent tag. Currently only "plan-review".',
+                },
+                approve: {
+                  type: 'string',
+                  description: 'For plan-review: the option label that approves the plan; every other option declines it.',
+                },
+                callId: {
+                  type: 'string',
+                  description: 'For plan-review: the logged tool call whose arguments contain the reviewed plan.',
+                },
+              },
             },
             options: {
               type: 'array',
@@ -274,28 +317,60 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       const injectsDraft = injectsContext(configValue(config.fallback) ?? DEFAULT_FALLBACK_MODE)
       assertQuestionsPresent(args.questions)
       assertUniqueQuestionIds(args.questions)
-      const questions = args.questions.map((question) => ({
-        id: question.id,
-        question: question.question,
-        ...(question.header === undefined ? {} : { header: question.header }),
-        ...(question.options === undefined
-          ? {}
-          : { options: question.options.map((option) => ({ ...option })) }),
-        ...(question.multi_select === undefined ? {} : { multiSelect: question.multi_select }),
-      }))
-      if (timeoutSeconds === -1) {
-        const answers = await ctx.userQuestions.ask({
-          questions,
-          ...(exec.agent === undefined ? {} : { agent: exec.agent }),
-          signal: exec.signal,
-          wait: { callId: exec.callId },
-        })
+      /*
+       * 逐字段映射而不是整体透传: 宿主用 multiSelect, 模型侧写的是 multi_select。
+       * detail 与 intent 是宿主支持的展示字段, 同名遮蔽后若不透传就静默丢失。
+       * intent 收窄成宿主认识的那个标签: 不认识的标签宿主会当普通选项列表渲染,
+       * 但类型上只接受 plan-review, 因此只在这一种情形透传。
+       */
+      /*
+       * 只透传 approve: intent.callId 在宿主侧是品牌化的工具调用标识,
+       * 模型侧给的是普通字符串, 强行透传会在类型上失真; 该字段本来就是可选的记录用途。
+       */
+      const toIntent = (
+        value: { kind?: string; approve?: string } | undefined,
+      ): { kind: 'plan-review'; approve: string } | undefined => {
+        if (value === undefined || value.kind !== 'plan-review') return undefined
+        if (typeof value.approve !== 'string' || value.approve === '') return undefined
+        return { kind: 'plan-review', approve: value.approve }
+      }
+      const questions = args.questions.map((question) => {
+        const intent = toIntent(question.intent)
         return {
-          answers: answers.answers.map((answer) => ({
-            id: answer.id,
-            selected: [...answer.selected],
-            ...(answer.custom === undefined ? {} : { custom: answer.custom }),
-          })),
+          id: question.id,
+          question: question.question,
+          ...(question.header === undefined ? {} : { header: question.header }),
+          ...(question.detail === undefined ? {} : { detail: question.detail }),
+          ...(question.options === undefined
+            ? {}
+            : { options: question.options.map((option) => ({ ...option })) }),
+          ...(question.multi_select === undefined ? {} : { multiSelect: question.multi_select }),
+          ...(intent === undefined ? {} : { intent }),
+        }
+      })
+      if (timeoutSeconds === -1) {
+        /*
+         * 必答阻塞等待: 这里不走超时结算, 因此不登记到期时刻、也不读草稿快照。
+         * 结束时清一次残留登记, 免得调用异常退出后留下没人认领的条目。
+         */
+        try {
+          const answers = await ctx.userQuestions.ask({
+            questions,
+            ...(exec.agent === undefined ? {} : { agent: exec.agent }),
+            signal: exec.signal,
+            wait: { callId: exec.callId },
+          })
+          return {
+            answers: answers.answers.map((answer) => ({
+              id: answer.id,
+              selected: [...answer.selected],
+              ...(answer.custom === undefined ? {} : { custom: answer.custom }),
+            })),
+          }
+        } finally {
+          clearDraft(exec.callId)
+          clearCallQuestions(exec.callId)
+          markCallSettled(exec.callId)
         }
       }
       if (exec.agent === undefined) throw new Error('timed questions require a live agent')
@@ -357,6 +432,19 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 状态到达了(用户在到期瞬间点了无限等待), 说明这一轮提问其实还想继续等,
        * 这时不能按超时结算, 返回 null 让调用方继续阻塞等待。
        */
+      /*
+       * 草稿只能取一次: 到期结果可能同时被竞态的两条臂生成, 而 awaitDraft 取走即删除,
+       * 第二条臂会拿到 undefined, 于是模型收到的超时结果里没有草稿。
+       * 这里按 callId 缓存同一个承诺, 多条臂共享同一份结果。
+       */
+      const draftCache = new Map<string, Promise<Awaited<ReturnType<typeof awaitDraft>>>>()
+      const loadDraft = (callId: string): Promise<Awaited<ReturnType<typeof awaitDraft>>> => {
+        const cached = draftCache.get(callId)
+        if (cached !== undefined) return cached
+        const created = awaitDraft(callId, DRAFT_GRACE_MS)
+        draftCache.set(callId, created)
+        return created
+      }
       const pendingResult = async (
         callId: string,
         checkInfinite: boolean,
@@ -379,6 +467,13 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
         }
         /*
+         * 没有网页客户端的部署(纯命令行 profile)根本没有页面上报草稿,
+         * 这时等满宽限期也没有意义, 直接按无草稿结算。
+         */
+        if (!hasSyncChannel()) {
+          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+        }
+        /*
          * draft 为 undefined 表示宽限期内没有等到任何上报, 按无草稿结算;
          * 空数组表示客户端明确上报过"确实没有草稿", 同样按无草稿结算, 但不必再等。
          */
@@ -386,7 +481,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * 提问已被宿主取消或配置为不注入时, 草稿没有意义, 也不必等宽限期 ——
          * 每次都白等三秒会让这一轮提问迟迟不返回。
          */
-        const draft = skipGrace ? undefined : await awaitDraft(callId, DRAFT_GRACE_MS)
+        const draft = skipGrace ? undefined : await loadDraft(callId)
         /*
          * 宽限期内到达的「无限等待」也要认: 用户是在到期那一刻点的,
          * 界面已经冻结成「已暂停」, 这时再按超时结算会让界面与模型状态对不上。
@@ -445,14 +540,27 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         }
       }
       try {
-        const result = await Promise.race([wait.catch(() => undefined), expired])
-        if (result === undefined) {
+        /*
+         * 第一臂必须区分两种结束: 宿主明确拒绝(CALLER_NOT_LIVE / DELEGATED_CALLER /
+         * BAD_TIMEOUT / DUPLICATE_WAIT)与等待被中止。前者要让模型看到真实原因,
+         * 后者才按超时结算 —— 一律当成超时会把"用户根本没看到提问"说成"用户没提交"。
+         */
+        const first = await Promise.race([
+          wait.then(
+            (value) => ({ kind: 'value' as const, value }),
+            (error: unknown) => ({ kind: 'error' as const, error }),
+          ),
+          expired.then((value) => ({ kind: 'expired' as const, value })),
+        ])
+        if (first.kind === 'error') {
+          if (!isAbortError(first.error)) throw first.error
           /*
            * 宿主等待被中止: 这一轮提问已经结束, 按超时结算。
            */
           const aborted = await pendingResult(exec.callId, false, true)
           return aborted ?? { pending: true, callId: exec.callId, message: TIMEOUT_PENDING_NOTICE }
         }
+        const result = first.value
         if (!('pending' in result)) return toAnswers(result)
         /*
          * 客户端已点击「无限等待」时, 状态同步通道会先登记该调用;
@@ -499,7 +607,11 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            */
           wait.then(
             (value) => ({ kind: 'answer' as const, value }),
-            () => ({ kind: 'failed' as const, value: undefined }),
+            (error: unknown) => {
+              /* 宿主明确拒绝时不能按"等待被中止"处理, 原样抛给模型 */
+              if (!isAbortError(error)) throw error
+              return { kind: 'failed' as const, value: undefined as never }
+            },
           ),
           pendingResult(result.callId, true).then((value) => ({ kind: 'pending' as const, value })),
         ])

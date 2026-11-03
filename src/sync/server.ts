@@ -29,11 +29,19 @@ export interface DraftAnswer {
 /* 已声明无限等待的调用 */
 const infiniteCalls = new Set<string>()
 
-/* 请求体上限: 正常负载只有一个 callId 与少量草稿条目 */
-const MAX_BODY_LENGTH = 4096
+/*
+ * 请求体上限: 负载是一个 callId 与少量草稿条目, 但草稿里的补充内容是自由文本,
+ * 中文按 3 字节/字计算, 4096 字节只够约 1200 字。上限太紧会让长文本作答被判通道不可用,
+ * 因此放宽到 64 KiB, 同时保留上限防止被无限灌入。
+ */
+const MAX_BODY_LENGTH = 64 * 1024
 
-/* callId 形态白名单, 避免任意字符串灌进集合 */
-const CALL_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/
+/*
+ * callId 形态白名单: 只挡空白与控制字符, 不假定具体字符集。
+ * 宿主 callId 由模型提供方生成且不做校验, 收紧到某个字符集会整体拒绝合法 callId,
+ * 表现是这一轮的每次上报都被回 400, 通道等于不可用。
+ */
+const CALL_ID_PATTERN = /^[^\u0000-\u0020\u007f]{1,200}$/
 
 /* 集合上限: 超出后丢弃最早登记的一项, 防止被撑爆 */
 const MAX_INFINITE_CALLS = 512
@@ -91,6 +99,11 @@ function rememberInfiniteCall(callId: string): void {
  * 工具到期时会等一小段时间等这份上报, 拿到后随 pending 结果一起交给模型。
  */
 export function reportDraft(callId: string, answers: DraftAnswer[]): void {
+  /*
+   * 只收「限时提问」的草稿: 阻塞提问(timeout=-1)不登记权威到期时刻,
+   * 它永远不会按超时结算, 收下的快照没有取用者, 只会在内存里躺到过期。
+   */
+  if (!callDeadlines.has(callId)) return
   if (draftReports.size >= MAX_INFINITE_CALLS && !draftReports.has(callId)) {
     const oldest = draftReports.keys().next()
     if (!oldest.done) {
@@ -228,7 +241,12 @@ function isHostOrigin(origin: string, host: string | undefined): boolean {
   if (host === undefined || host === '') return false
   const source = parseHostPort(origin)
   if (source === undefined) return false
-  const request = parseHostPort('http://' + host)
+  /*
+   * 请求侧只知道 Host 头(不带协议), 因此端口按来源自身的协议补默认值:
+   * 反代或 https 部署下来源是 https://host, 默认端口是 443,
+   * 一律按 http 的 80 补会与来源对不上, 整条通道被 403。
+   */
+  const request = parseHostPort(source.protocol + '//' + host)
   if (request === undefined) return false
   return source.host === request.host && source.port === request.port
 }
@@ -237,12 +255,12 @@ function isHostOrigin(origin: string, host: string | undefined): boolean {
  * 把来源或地址拆成主机与端口。
  * localhost 与 127.0.0.1 指向同一台机器, 视为同一个主机。
  */
-function parseHostPort(value: string): { host: string; port: string } | undefined {
+function parseHostPort(value: string): { host: string; port: string; protocol: string } | undefined {
   try {
     const parsed = new URL(value)
     if (parsed.hostname === '') return undefined
     const port = parsed.port === '' ? (parsed.protocol === 'https:' ? '443' : '80') : parsed.port
-    return { host: normalizeHost(parsed.hostname), port }
+    return { host: normalizeHost(parsed.hostname), port, protocol: parsed.protocol }
   } catch {
     return undefined
   }
@@ -421,12 +439,22 @@ export function registerQuestionSyncRoute(webServer: {
     path: SYNC_PATH + '-state',
     handler: handleStateRequest,
   })
+  syncChannelReady = true
   console.info('[question-timeout-protection] 状态同步路由已挂在宿主 HTTP 服务上: ' + SYNC_PATH)
   return () => {
+    syncChannelReady = false
     off()
     offToken()
     offState()
   }
+}
+
+/* 状态通道是否已经挂在宿主 HTTP 服务上, 供工具判断要不要等客户端上报 */
+let syncChannelReady = false
+
+/* 是否有可用的状态通道 */
+export function hasSyncChannel(): boolean {
+  return syncChannelReady
 }
 
 /*
@@ -477,6 +505,7 @@ export function clearInfiniteWait(callId: string): void {
 
 /** 清空状态通道里登记的全部状态 */
 export function stopQuestionSync(): void {
+  syncChannelReady = false
   infiniteCalls.clear()
   draftReports.clear()
   draftReportedAt.clear()
