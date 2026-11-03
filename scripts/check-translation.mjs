@@ -379,6 +379,7 @@ const CONSTANT_KEY_MAP = {
   DRAFT_PANEL_EMPTY: 'draftPanel.empty',
   DRAFT_PANEL_UNANSWERED: 'draftPanel.unanswered',
   DRAFT_SYNC_FAILED_TEXT: 'draft.deliveryFailed',
+  DRAFT_TOO_LARGE_TEXT: 'draft.tooLarge',
   AUTO_INFINITE_LABEL: 'control.autoInfiniteLabel',
   AUTO_INFINITE_ON_TEXT: 'control.autoInfiniteOn',
   AUTO_INFINITE_OFF_TEXT: 'control.autoInfiniteOff',

@@ -26,15 +26,18 @@ export interface DraftAnswer {
   custom?: string
 }
 
-/* 已声明无限等待的调用 */
-const infiniteCalls = new Set<string>()
+/*
+ * 已声明无限等待的调用, 值是登记时刻。
+ * 带上时间戳才能做过期清扫: 只有数量上限时, 旧条目会一直占着内存直到被新的挤掉。
+ */
+const infiniteCalls = new Map<string, number>()
 
 /*
  * 请求体上限: 负载是一个 callId 与少量草稿条目, 但草稿里的补充内容是自由文本,
- * 中文按 3 字节/字计算, 4096 字节只够约 1200 字。上限太紧会让长文本作答被判通道不可用,
- * 因此放宽到 64 KiB, 同时保留上限防止被无限灌入。
+ * 中文按 3 字节/字计算。64 KiB 只够约两万字, 粘贴长文就会被拒收并连带判成通道不可用,
+ * 因此放宽到 256 KiB(约八万字), 同时保留上限防止被无限灌入。
  */
-const MAX_BODY_LENGTH = 64 * 1024
+const MAX_BODY_LENGTH = 256 * 1024
 
 /*
  * callId 形态白名单: 只挡空白与控制字符, 不假定具体字符集。
@@ -73,6 +76,9 @@ const callDeadlines = new Map<string, number>()
 /* 草稿条目上限: 单次上报最多保留这么多题 */
 const MAX_DRAFT_ANSWERS = 64
 
+/* 草稿快照容量: 与「无限等待」的容量分开, 两件事的压力来源不同 */
+const MAX_DRAFT_SNAPSHOTS = 256
+
 /* 调用登记条目上限: 超出后丢弃最早登记的一条, 防止被撑爆 */
 const MAX_TRACKED_CALLS = 512
 
@@ -87,24 +93,24 @@ const POLL_INTERVAL_MS = 100
 
 /* 登记一个无限等待调用 */
 function rememberInfiniteCall(callId: string): void {
-  if (infiniteCalls.size >= MAX_INFINITE_CALLS) {
-    const oldest = infiniteCalls.values().next()
+  if (infiniteCalls.size >= MAX_INFINITE_CALLS && !infiniteCalls.has(callId)) {
+    const oldest = infiniteCalls.keys().next()
     if (!oldest.done) infiniteCalls.delete(oldest.value)
   }
-  infiniteCalls.add(callId)
+  infiniteCalls.set(callId, Date.now())
 }
 
 /*
  * 登记客户端上报的超时草稿。
  * 工具到期时会等一小段时间等这份上报, 拿到后随 pending 结果一起交给模型。
  */
-export function reportDraft(callId: string, answers: DraftAnswer[]): void {
+export function reportDraft(callId: string, answers: DraftAnswer[]): boolean {
   /*
    * 只收「限时提问」的草稿: 阻塞提问(timeout=-1)不登记权威到期时刻,
    * 它永远不会按超时结算, 收下的快照没有取用者, 只会在内存里躺到过期。
    */
-  if (!callDeadlines.has(callId)) return
-  if (draftReports.size >= MAX_INFINITE_CALLS && !draftReports.has(callId)) {
+  if (!callDeadlines.has(callId)) return false
+  if (draftReports.size >= MAX_DRAFT_SNAPSHOTS && !draftReports.has(callId)) {
     const oldest = draftReports.keys().next()
     if (!oldest.done) {
       draftReports.delete(oldest.value)
@@ -113,6 +119,7 @@ export function reportDraft(callId: string, answers: DraftAnswer[]): void {
   }
   draftReports.set(callId, answers)
   draftReportedAt.set(callId, Date.now())
+  return true
 }
 
 /*
@@ -217,6 +224,10 @@ function sweepTrackedCalls(): void {
   }
   for (const callId of callQuestionOrders.keys()) {
     if (!callDeadlines.has(callId)) callQuestionOrders.delete(callId)
+  }
+  /* 「无限等待」的登记也要过期: 没有清扫时旧条目只能等被新条目挤掉 */
+  for (const [callId, registeredAt] of infiniteCalls) {
+    if (now - registeredAt > TRACKED_CALL_TTL_MS) infiniteCalls.delete(callId)
   }
   while (callDeadlines.size > MAX_TRACKED_CALLS) {
     const oldest = callDeadlines.keys().next()
@@ -338,7 +349,7 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
   /* 只读诊断端点: 返回已登记过的调用, 便于排查「无限等待」是否真的送达 */
   if (request.method === 'GET' && request.url === SYNC_PATH + '-state') {
     response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ calls: [...infiniteCalls] }))
+    response.end(JSON.stringify({ calls: [...infiniteCalls.keys()] }))
     return
   }
   if (request.method !== 'POST' || request.url !== SYNC_PATH) {
@@ -360,8 +371,9 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
     received += chunk.length
     if (received > MAX_BODY_LENGTH) {
       oversized = true
-      response.writeHead(413)
-      response.end()
+      /* 客户端据此显示「草稿过长」而不是把它算成通道故障 */
+      response.writeHead(413, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ ok: false, reason: 'too-large' }))
     }
   })
   request.on('end', () => {
@@ -402,7 +414,15 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
         }
         rememberInfiniteCall(parsed.callId)
       } else if (Array.isArray(parsed.answers)) {
-        reportDraft(parsed.callId, normalizeAnswers(parsed.answers))
+        /*
+         * 没有登记的调用(已结算的历史卡片, 阻塞提问)收下也没有取用者,
+         * 这里明说丢弃, 客户端才不会以为草稿已经送达。
+         */
+        if (!reportDraft(parsed.callId, normalizeAnswers(parsed.answers))) {
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ ok: true, ignored: true }))
+          return
+        }
       } else {
         response.writeHead(400)
         response.end()

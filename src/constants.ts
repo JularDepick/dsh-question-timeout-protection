@@ -88,8 +88,22 @@ export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式�
  * 草稿本身放在 pending 结果的 draft 字段里, 这里只说明它的存在与用法,
  * 避免模型把整段说明当成草稿内容。
  */
+/**
+ * 没有收到任何草稿快照时的说明。
+ * 与「收到空草稿」不同: 后者表示用户确实没写, 前者是快照没送达, 模型不能据此断定用户没输入。
+ */
+export const TIMEOUT_PENDING_MISSING_NOTICE =
+  '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入。'
+
 export const TIMEOUT_PENDING_DRAFT_NOTICE =
   '该轮提问已超时,用户没有正式提交; 超时前留下的草稿已随本结果带回, 内容见 draft 字段, 请据此继续任务, 并在最后告知用户这次超时以及你对草稿的处理决策。'
+
+/**
+ * 草稿快照超过通道上限时的提示。
+ * 与「草稿无法送达」不同: 那条说的是通道不可用, 这条说的是内容本身太大, 用户需要知道该删减。
+ */
+export const DRAFT_TOO_LARGE_TEXT_ZH = '草稿过长, 未送达'
+export const DRAFT_TOO_LARGE_TEXT_EN = 'Draft too large to deliver'
 
 /** 草稿文本里已选选项行的前缀 */
 export const DRAFT_SELECTED_LABEL_ZH = '已选: {items}'
@@ -197,6 +211,15 @@ export const SCAN_INTERVAL_MS = 1000
 
 /** 同时保持的会话投影订阅上限, 超出后淘汰最久没在界面上出现的会话 */
 export const MAX_SESSION_SUBSCRIPTIONS = 8
+
+/* 会话连续多少轮扫描看不见就释放它的投影订阅(按每秒一轮计算约十分钟) */
+export const SUBSCRIPTION_MISS_LIMIT = 600
+
+/* 客户端调用状态容量: 每个调用会留下若干登记, 超出后按最近使用时间淘汰最旧的 */
+export const MAX_CLIENT_CALL_STATES = 512
+
+/* 客户端调用状态的存活时长: 超过这个时间没有出现在投影或界面上的登记视为残留 */
+export const CALL_STATE_TTL_MS = 30 * 60 * 1000
 
 /** 工具到期后等待客户端上报草稿的宽限时长(毫秒) */
 export const DRAFT_GRACE_MS = 3000
@@ -338,13 +361,13 @@ export const DRAFT_PANEL_TITLE_ZH = '超时草稿'
 export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft'
 
 /** 只读草稿面板的说明(中文),提示该次提问已结束 */
-export const DRAFT_PANEL_NOTE_ZH = '该次提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容。'
+export const DRAFT_PANEL_NOTE_ZH = '该次提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容'
 
 /** 只读草稿面板的说明(英文) */
 export const DRAFT_PANEL_NOTE_EN = 'This set of questions timed out and can no longer be answered; the content below is only the draft as it stood at the timeout.'
 
 /** 只读草稿面板没有可展示内容时的提示(中文) */
-export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输入内容。'
+export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输入内容'
 
 /** 只读草稿面板没有可展示内容时的提示(英文) */
 export const DRAFT_PANEL_EMPTY_EN = 'No option was selected and no text had been entered at the timeout.'

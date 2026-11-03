@@ -34,6 +34,7 @@ import {
   MIN_TIMEOUT_SECONDS,
   TIMED_TIMEOUT_PARAMETER,
   TIMEOUT_PENDING_DRAFT_NOTICE,
+  TIMEOUT_PENDING_MISSING_NOTICE,
   TIMEOUT_PENDING_NOTICE,
 } from '../constants'
 
@@ -206,6 +207,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
                 type: 'string',
                 required: true,
                 description: 'How to continue while the questions stay answerable.',
+              },
+              draftMissing: {
+                type: 'boolean',
+                enum: [true],
+                description:
+                  'True when no draft snapshot ever reached the plugin, so an absent draft does not mean the user typed nothing.',
               },
               draft: {
                 type: 'array',
@@ -416,6 +423,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         pending: true
         callId: string
         message: string
+        draftMissing?: true
         draft?: Array<{ id: string; selected: string[]; custom?: string }>
       } | null> => {
         /*
@@ -434,7 +442,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * 这时等满宽限期也没有意义, 直接按无草稿结算。
          */
         if (!hasSyncChannel()) {
-          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+          /* 没有网页客户端就没有草稿上报, 这个"没有草稿"不是用户没写 */
+          return { pending: true, callId, message: TIMEOUT_PENDING_MISSING_NOTICE, draftMissing: true }
         }
         /*
          * draft 为 undefined 表示宽限期内没有等到任何上报, 按无草稿结算;
@@ -447,7 +456,14 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * 这里返回 null 表示不结算, 调用方会回到等待里。
          */
         if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) return null
-        if (draft === undefined || draft.length === 0) {
+        if (draft === undefined) {
+          /*
+           * 宽限期内一次快照都没收到: 通道不可达或页面没打开。
+           * 这与"收到空草稿"是两件事, 后者说明用户确实没写, 前者什么都不能说明。
+           */
+          return { pending: true, callId, message: TIMEOUT_PENDING_MISSING_NOTICE, draftMissing: true }
+        }
+        if (draft.length === 0) {
           return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
         }
         /*
