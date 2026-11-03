@@ -23,6 +23,8 @@ import {
   AUTO_INFINITE_STATE_OFF,
   AUTO_INFINITE_STATE_ON,
   AUTO_INFINITE_STORAGE_KEY,
+  AUTO_INFINITE_TITLE_EN,
+  AUTO_INFINITE_TITLE_ZH,
   COMPOSER_CONTROLS_SELECTOR,
   MODEL_SELECTOR_BUTTON,
   ASK_ROW_SELECTOR,
@@ -890,10 +892,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     }
     button.setAttribute(AUTO_INFINITE_STATE_ATTRIBUTE, autoInfinite ? AUTO_INFINITE_STATE_ON : AUTO_INFINITE_STATE_OFF)
     button.setAttribute('aria-pressed', autoInfinite ? 'true' : 'false')
-    button.title = pick(
-      '开启后每次提问都自动进入无限等待, 关闭后回到插件的计时行为',
-      'When on, every question waits indefinitely; when off, the plugin countdown applies',
-    )
+    button.title = pick(AUTO_INFINITE_TITLE_ZH, AUTO_INFINITE_TITLE_EN)
     const label = pick(AUTO_INFINITE_LABEL_ZH, AUTO_INFINITE_LABEL_EN)
     const state = autoInfinite
       ? pick(AUTO_INFINITE_ON_TEXT_ZH, AUTO_INFINITE_ON_TEXT_EN)

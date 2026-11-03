@@ -31,7 +31,7 @@ const EN: Record<keyof typeof ZH, string> = {
   fallbackSection: 'Timeout fallback',
   fallbackNote: 'What happens to the content the user already typed once the wait expires',
   injectLabel: 'Inject into context',
-  injectDesc: 'The draft snapshot is sent to the server before the timeout and comes back per question in the tool result, so the model decides with what the user had typed',
+  injectDesc: 'The draft snapshot is sent to the server before the timeout and comes back per question in the tool result, then the model decides whether to ask again',
   fixedSection: 'Fixed features',
   fixedNote: "Follows the plugin's enabled state and cannot be turned off separately",
   fixedKeepLabel: 'Keep the draft in the UI',

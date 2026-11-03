@@ -148,13 +148,18 @@ export const PAUSED_TEXT_PATTERNS: readonly RegExp[] = [/已暂停/, /Paused/]
 
 /** 「问答无限等待」常开开关的文案(中文与英文) */
 export const AUTO_INFINITE_LABEL_ZH = '问答无限等待'
-export const AUTO_INFINITE_LABEL_EN = 'Auto infinite wait'
+export const AUTO_INFINITE_LABEL_EN = 'Auto wait indefinitely'
 
 /** 常开开关的开启与关闭状态文案(中文与英文) */
 export const AUTO_INFINITE_ON_TEXT_ZH = '开'
 export const AUTO_INFINITE_ON_TEXT_EN = 'On'
 export const AUTO_INFINITE_OFF_TEXT_ZH = '关'
 export const AUTO_INFINITE_OFF_TEXT_EN = 'Off'
+
+/** 常开开关的悬停提示(中文与英文) */
+export const AUTO_INFINITE_TITLE_ZH = '开启后每次提问都自动进入无限等待, 关闭后回到插件的计时行为'
+export const AUTO_INFINITE_TITLE_EN =
+  'When on, every question waits indefinitely; when off, the plugin countdown applies'
 
 /** 常开开关按钮的类名与状态属性 */
 export const AUTO_INFINITE_BUTTON_CLASS = 'dqtp-auto-infinite'

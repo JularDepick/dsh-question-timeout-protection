@@ -26,7 +26,7 @@
   - `[translation]`: 文案键值对, 键名使用英文并以 `模块.字段` 分段, 值使用对应语言的文案.
   - 带占位符的文案使用 `{名称}` 形式, 如 `countdown.remaining` 的 `{seconds}` 与 `draft.selected` 的 `{items}`; 占位符名称在各语言版本中保持一致, 由调用方在取到文案后按名替换, `TranslationManager.translate()` 只做键查找与回退, 不替换占位符.
 - 新增翻译文件时, 以 `src/translation/.example_zh-CN.ini` 为基准模板(简体中文版复刻), 从该模板翻译更新为 `xx-YY.ini`, 改写 `[meta]` 各键后翻译 `[translation]` 键值.
-- 新增语言文件后无需另行登记: `pnpm run check:translation` 按 `src/translation/` 目录的实际内容枚举全部 ini, 逐个比对键集与占位符; 取值与中文版或另一种语言逐键相同, 或全部取值写成同一个字符串的, 都会被当作没有翻译拦下(整份照抄只报一条, 单键漏译按键逐个报出).
+- 新增语言文件后无需另行登记: `pnpm run check:translation` 按 `src/translation/` 目录的实际内容枚举全部 ini, 逐个比对键集与占位符; 与另一种已收录语言整份相同时按整份报一条, 与中文版逐键相同则按键逐个报出(单键漏译不会被漏过), 全部取值写成同一个字符串另报一条.
 
 ## 模板维护流程
 
@@ -37,7 +37,7 @@
 ## 键名与代码的对应
 
 - 键名分段对应文案所在位置: `settings.*` 对应插件配置页(键名与 `src/client/i18n.ts` 的字典键一一对应), `countdown.*` 对应提问卡片右上角的插件自绘倒计时文案(含通道不可用时的替代表述), `control.*` 对应卡片上的控件文案(插件自绘控件, 以及唯一需要镜像的宿主标签 `control.takeTime`), `bubble.*` 对应提问工具行的气泡按钮文案, `draft.*` 对应只读草稿正文的标签模板, `draftPanel.*` 对应只读草稿面板文案.
-- 配置页文案的实际来源是客户端半身的 `src/client/i18n.ts`, 它经宿主 locale 注册字典, 不读取本目录的 ini; 其余可见文案的实际来源是 `src/constants.ts` 的字面量常量(适配器只负责拼接与渲染, 不再持有可见文案). 本目录的 ini 是这些文案的同一套措辞镜像, 供 `TranslationManager` 与后续多语言接入使用; 界面里的纯图形符号(如勾选标记)不纳入镜像.
+- 配置页文案的实际来源是客户端半身的 `src/client/i18n.ts`, 它经宿主 locale 注册字典, 不读取本目录的 ini; 其余可见文案的实际来源是 `src/constants.ts` 的字面量常量(适配器只负责拼接与渲染, 不持有可见文案). 本目录的 ini 是这些文案的同一套措辞镜像, 供 `TranslationManager` 与后续多语言接入使用; 界面里的纯图形符号(如勾选标记)不纳入镜像.
 - 因此改动任一可见文案时, 需同步字面量所在文件与本节所列 ini 的对应键, 保持键集与取值一致.
 
 ## 收录边界
@@ -55,7 +55,7 @@
 | `countdown.remaining` / `countdown.paused` / `countdown.unavailable` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN`, `COUNTDOWN_PAUSED_TEXT_*`, `SYNC_UNAVAILABLE_TEXT_*` | 插件自绘倒计时的运行态, 暂停态与通道不可用替代文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
-| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*` | 对话框工具栏「问答无限等待」常开开关的文案: 标签与开启, 关闭两个状态词, 渲染成「标签 · 状态」 |
+| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` / `control.autoInfiniteTitle` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*`, `AUTO_INFINITE_TITLE_*` | 对话框工具栏「问答无限等待」常开开关的文案: 标签与开启, 关闭两个状态词渲染成「标签 · 状态」, 悬停提示说明开启与关闭各自的行为 |
 | `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板, 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
 | `draft.deliveryFailed` | `src/constants.ts` 的 `DRAFT_SYNC_FAILED_TEXT_ZH`/`DRAFT_SYNC_FAILED_TEXT_EN` | 草稿快照连续上报失败时显示在提问卡片倒计时位置的提示, 不属于草稿悬浮卡片里的标签 |
