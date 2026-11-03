@@ -26,7 +26,7 @@
   - `[translation]`: 文案键值对, 键名使用英文并以 `模块.字段` 分段, 值使用对应语言的文案.
   - 带占位符的文案使用 `{名称}` 形式, 如 `countdown.remaining` 的 `{seconds}` 与 `draft.selected` 的 `{items}`; 占位符名称在各语言版本中保持一致, 由调用方在取到文案后按名替换, `TranslationManager.translate()` 只做键查找与回退, 不替换占位符.
 - 新增翻译文件时, 以 `src/translation/.example_zh-CN.ini` 为基准模板(简体中文版复刻), 从该模板翻译更新为 `xx-YY.ini`, 改写 `[meta]` 各键后翻译 `[translation]` 键值.
-- 新增语言文件后无需另行登记: `pnpm run check:translation` 按 `src/translation/` 目录的实际内容枚举全部 ini, 逐个比对键集与占位符; 取值与中文版或另一种语言逐字相同、全部取值写成同一个字符串的, 都会被当作没有翻译拦下.
+- 新增语言文件后无需另行登记: `pnpm run check:translation` 按 `src/translation/` 目录的实际内容枚举全部 ini, 逐个比对键集与占位符; 取值与中文版或另一种语言逐键相同, 或全部取值写成同一个字符串的, 都会被当作没有翻译拦下(整份照抄只报一条, 单键漏译按键逐个报出).
 
 ## 模板维护流程
 
@@ -43,7 +43,7 @@
 ## 收录边界
 
 - 只收录插件自绘的可见文案; 宿主控件原文标签(如收起, 展开, 关闭, 回答 等用于定位宿主控件的识别文案)不在镜像范围, 它们随宿主版本变化, 改动只需同步 `src/constants.ts` 的识别标签常量.
-- 唯一例外是 `control.takeTime`: 它虽是宿主「慢慢回答」控件的原文, 但因为同时用于识别与隐藏该控件, 需要跟随界面语言, 因此仍收录为镜像键.
+- 唯一例外是 `control.takeTime`: 收录它的原因不是「需要跟随界面语言」——隐藏宿主控件靠的是中英文标签整组匹配(`TAKE_TIME_TEXTS`), 与界面语言无关; 收录它是因为该标签只有两个固定取值, 与宿主其余识别文案一样偶尔需要随宿主版本同步, 放进镜像里便于一并核对取值.
 - 模型可见文案(工具描述与工具 pending 结果里的中文说明)不在镜像范围, 它们面向模型而不是界面.
 - 只读草稿卡片在没有任何题目信息时使用 `draftPanel.empty`, 单题无内容用 `draftPanel.unanswered`, 两者都是兜底文案.
 
@@ -55,6 +55,7 @@
 | `countdown.remaining` / `countdown.paused` / `countdown.unavailable` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN`, `COUNTDOWN_PAUSED_TEXT_*`, `SYNC_UNAVAILABLE_TEXT_*` | 插件自绘倒计时的运行态, 暂停态与通道不可用替代文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
+| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*` | 对话框工具栏「问答无限等待」常开开关的文案: 标签与开启, 关闭两个状态词, 渲染成「标签 · 状态」 |
 | `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板, 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
 | `draft.deliveryFailed` | `src/constants.ts` 的 `DRAFT_SYNC_FAILED_TEXT_ZH`/`DRAFT_SYNC_FAILED_TEXT_EN` | 草稿快照连续上报失败时显示在提问卡片倒计时位置的提示, 不属于草稿悬浮卡片里的标签 |
@@ -64,11 +65,11 @@
 
 - 当前界面没有语言切换入口: 配置页与卡片控件共用同一套判定(`src/client/locale.ts`), 先取 `document.documentElement.lang`, 缺失时取 `navigator.language`, 都没有则按中文处理; 判定的结果在 `src/client/i18n.ts` 的内置字典里二选一.
 - 插件运行路径不读取本目录的 ini; ini 只作为同一套措辞的镜像, 并由 `TranslationManager` 提供给后续多语言接入.
-- `TranslationManager` 未命中翻译时回退到默认语言(`zh-CN.ini`), 再未命中则返回键名.
+- `TranslationManager` 未命中当前语言时回退到兜底语言(`FALLBACK_LANGUAGE`, 当前取值 `zh-CN`), 再未命中则返回键名.
 
 ## 加载与回退
 
-- 语言码先归一: 语言段小写, 地区段大写, `_` 换成 `-`; `zh` 归到 `zh-CN`, `zh-TW` `zh-HK` `zh-MO` `zh-Hant` 保留为 `zh-TW`, `en` 归到 `en-US`, 空串归到默认语言; 其余组合按语言段小写加地区段大写拼成 `语言-地区`.
+- 语言码先归一: 先转小写并把 `_` 换成 `-`; `zh` 与一切 `zh-*` 归到 `zh-CN`, `en` 与一切 `en-*` 归到 `en-US`(目录内目前只有这两套, 因此繁体与英式输入直接落到已有文件, 不会先去读一个不存在的文件再回退), 空串归到默认语言; 其他语言按语言段小写加地区段大写拼成 `语言-地区`, 取不到对应文件时按兜底语言处理.
 - 归一后只允许字母, 数字与连字符: 归一结果会被直接拼成文件路径, 不做白名单过滤的话, 形如 `../../..` 的输入会越出翻译目录去读别的文件, 因此不合规的语言码一律按默认语言处理.
 - 归一后的语言码决定读取 `<语言码>.ini`; 文件不存在时返回空表, 由调用方按默认语言兜底, 并只告警一次.
 - 读取失败的表不缓存, 但会在 30 秒内不再重试, 避免热路径反复读盘; 读取成功后清掉失败标记.
