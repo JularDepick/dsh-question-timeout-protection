@@ -36,6 +36,9 @@ import {
   CARD_BUTTON_SELECTOR,
   CARD_OPTIONS_SELECTOR,
   HOST_WAIT_PATTERNS,
+  CALL_STATE_TTL_MS,
+  MAX_CLIENT_CALL_STATES,
+  SUBSCRIPTION_MISS_LIMIT,
   MAX_KEPT_DRAFTS,
   MAX_SESSION_SUBSCRIPTIONS,
   PAUSED_TEXT_PATTERNS,
@@ -70,6 +73,8 @@ import {
   DRAFT_PANEL_UNANSWERED_ZH,
   DRAFT_SELECTED_LABEL_EN,
   DRAFT_SYNC_FAILED_TEXT_EN,
+  DRAFT_TOO_LARGE_TEXT_EN,
+  DRAFT_TOO_LARGE_TEXT_ZH,
   DRAFT_SYNC_FAILED_TEXT_ZH,
   DRAFT_SYNC_FAILURE_THRESHOLD,
   DRAFT_SELECTED_LABEL_ZH,
@@ -298,10 +303,14 @@ const CARD_STYLE = `
 }
 `
 
-/* 一次状态上报的回执: ok 为假时 reason 可能是 expired(上报已过截止时刻) */
+/*
+ * 一次状态上报的回执: ok 为假时 reason 可能是 expired(已过截止时刻)或 too-large(请求体过大);
+ * ignored 为真表示服务端收下了请求但没有可用的调用登记, 这份快照不会有人取走。
+ */
 interface StateReply {
   ok: boolean
   reason?: string
+  ignored?: boolean
 }
 
 /* 从卡片 key 解析会话与调用标识 */
@@ -591,13 +600,25 @@ function postState(url: string, body: unknown, token: string): Promise<StateRepl
         invalidateToken()
         return { ok: false, reason: 'token-stale' }
       }
-      if (!response.ok) return { ok: false }
+      if (!response.ok) {
+        /*
+         * 4xx 也可能带原因: 请求体过大时服务端回 413 + reason, 界面要显示「草稿过长」
+         * 而不是笼统的失败, 也不能把内容问题算成通道故障。
+         */
+        try {
+          const payload = (await response.json()) as { reason?: unknown }
+          if (typeof payload.reason === 'string') return { ok: false, reason: payload.reason }
+        } catch {
+          /* 没有 JSON 体时按普通失败处理 */
+        }
+        return { ok: false }
+      }
       try {
-        const payload = (await response.json()) as { ok?: unknown; reason?: unknown }
+        const payload = (await response.json()) as { ok?: unknown; reason?: unknown; ignored?: unknown }
         if (payload.ok !== true) {
           return { ok: false, reason: typeof payload.reason === 'string' ? payload.reason : undefined }
         }
-        return { ok: true }
+        return { ok: true, ...(payload.ignored === true ? { ignored: true } : {}) }
       } catch {
         return { ok: false }
       }
@@ -731,6 +752,15 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const deferred = new Map<string, ProjectionRow>()
   /* 投影里每个调用的题目数: 上报草稿时用它兜底题数, 避免只报第一题 */
   const projectedCounts = new Map<string, number>()
+  /*
+   * 投影里仍然活动的调用: 只有这些调用值得上报草稿。
+   * 已结算的历史卡片也会被扫描到, 为它们持续上报只会产生无人取走的请求。
+   */
+  const callActive = new Set<string>()
+  /* 每个调用最近一次被投影或界面看到的时间, 用于清理长会话里的残留登记 */
+  const callTouchedAt = new Map<string, number>()
+  /* 草稿快照超过通道上限的调用: 界面需要显示「草稿过长」而不是笼统的通道故障 */
+  const draftTooLarge = new Set<string>()
 
   /*
    * 每个 callId 属于哪个会话。
@@ -741,6 +771,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /* 记下调用归属的会话 */
   const rememberCallSession = (identity: CardIdentity): void => {
+    callTouchedAt.set(identity.callId, Date.now())
     if (callSessions.get(identity.callId) === identity.sessionId) return
     callSessions.set(identity.callId, identity.sessionId)
     while (callSessions.size > MAX_SESSION_SUBSCRIPTIONS * 64) {
@@ -787,6 +818,35 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     draftSyncFailures.delete(callId)
     draftReportedAt.delete(callId)
     projectedCounts.delete(callId)
+    callActive.delete(callId)
+    callTouchedAt.delete(callId)
+    draftTooLarge.delete(callId)
+    /* lastDrafts 只是工作副本, 气泡用的快照在 drafts 里, 这里可以一并清掉 */
+    lastDrafts.delete(callId)
+  }
+
+  /*
+   * 清理长会话里的残留登记。
+   * 一个调用离开 active 之后再没被看到时, handled/timedOut 之类的登记会一直留着;
+   * 按最近打点时间淘汰, 并按容量兜底淘汰最旧的。
+   */
+  const pruneCallStates = (): void => {
+    const now = Date.now()
+    for (const [callId, touchedAt] of callTouchedAt) {
+      if (now - touchedAt <= CALL_STATE_TTL_MS) continue
+      forgetCall(callId)
+    }
+    while (callTouchedAt.size > MAX_CLIENT_CALL_STATES) {
+      let oldestId: string | undefined
+      let oldestAt = Number.POSITIVE_INFINITY
+      for (const [callId, touchedAt] of callTouchedAt) {
+        if (touchedAt >= oldestAt) continue
+        oldestAt = touchedAt
+        oldestId = callId
+      }
+      if (oldestId === undefined) break
+      forgetCall(oldestId)
+    }
   }
 
   /* 草稿快照只保留最近若干条, 防止长时间使用后无限增长 */
@@ -1041,9 +1101,13 @@ function hideHostWaitText(root: HTMLElement): void {
 
 /* 装饰一张提问卡片: 倒计时、无限等待按钮、宿主控件隐藏、超时收起 */
   const decorateCard = (card: HTMLElement, identity: CardIdentity): void => {
+    /*
+     * 先打点再看分支: 交还宿主的卡片会一直留在界面上, 若在它上面提前返回,
+     * 这轮调用的登记就会被当成"很久没出现"的残留清掉, 卡片随后被重新装饰。
+     */
+    rememberCallSession(identity)
     /* 草稿为空的超时不接管, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
-    rememberCallSession(identity)
     /* 首次读到的剩余时长记为插件自己的截止时间 */
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
       for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
@@ -1111,6 +1175,12 @@ function hideHostWaitText(root: HTMLElement): void {
       if (draftSyncFailed.has(identity.callId)) {
         /* 草稿送不到模型时给出可见提示, 用户才知道内容不会被带走 */
         const text = pick(DRAFT_SYNC_FAILED_TEXT_ZH, DRAFT_SYNC_FAILED_TEXT_EN)
+        if (countdown.textContent !== text) countdown.textContent = text
+        countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
+        countdown.classList.add(COUNTDOWN_WARNING_CLASS)
+      } else if (draftTooLarge.has(identity.callId)) {
+        /* 内容过大与通道故障是两件事, 提示也不同, 用户才知道该删减 */
+        const text = pick(DRAFT_TOO_LARGE_TEXT_ZH, DRAFT_TOO_LARGE_TEXT_EN)
         if (countdown.textContent !== text) countdown.textContent = text
         countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
         countdown.classList.add(COUNTDOWN_WARNING_CLASS)
@@ -1411,6 +1481,11 @@ function hideHostWaitText(root: HTMLElement): void {
      */
     if (!current.draftFallback) return
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
+    /*
+     * 只上报仍在进行的提问: 已结算的历史卡片也会被扫描到,
+     * 为它们持续上报只会产生无人取走的请求, 而且拿不到任何回执信息。
+     */
+    if (!callActive.has(identity.callId)) return
     rememberCallSession(identity)
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
@@ -1445,6 +1520,21 @@ function hideHostWaitText(root: HTMLElement): void {
       if (reply.ok) {
         draftSyncFailures.delete(identity.callId)
         draftSyncFailed.delete(identity.callId)
+        /* 服务端没有可用的登记(调用已结算或本来就不限时): 快照不会有人取走 */
+        if (reply.ignored === true) draftTooLarge.delete(identity.callId)
+        return
+      }
+      if (reply.reason === 'too-large') {
+        /*
+         * 内容本身超出通道上限, 与通道故障无关: 不计入连续失败次数,
+         * 否则一份长文草稿会连带把整条通道判成不可用。
+         */
+        if (!draftTooLarge.has(identity.callId)) {
+          draftTooLarge.add(identity.callId)
+          console.warn('[question-timeout-protection] 草稿快照超过通道上限, 本次未能送达')
+          const card = findCard(identity)
+          if (card !== undefined) decorateCard(card, identity)
+        }
         return
       }
       const failures = (draftSyncFailures.get(identity.callId) ?? 0) + 1
@@ -1552,6 +1642,9 @@ function hideHostWaitText(root: HTMLElement): void {
     for (const row of active as ProjectionRow[]) {
       if (typeof row.callId !== 'string') continue
       live.add(row.callId)
+      /* 仍在 active 的行才算进行中的提问, 只有它们值得上报草稿 */
+      callActive.add(row.callId)
+      callTouchedAt.set(row.callId, Date.now())
       if (!Array.isArray(row.questions)) continue
       /*
        * 记下投影里的题目数: 卡片上的分页文案有时读不到,
@@ -1585,6 +1678,8 @@ function hideHostWaitText(root: HTMLElement): void {
   const polledSessions = new Map<string, () => void>()
   /* 各会话最近一次在界面上出现的时间, 用于限制订阅数量 */
   const subscriptionSeen = new Map<string, number>()
+  /* 各会话连续多少轮没有出现在界面上: 达到阈值就释放订阅, 不再等新会话把它挤掉 */
+  const subscriptionMissing = new Map<string, number>()
 
   /*
    * 限制轮询兜底的数量: 它每次扫描都会求值一次, 数量失控会同时拖慢扫描与占用内存。
@@ -1767,9 +1862,30 @@ function hideHostWaitText(root: HTMLElement): void {
   }
 
   const scanOnce = (): void => {
+    pruneCallStates()
     ensureAutoInfiniteButton()
     for (const evaluate of polledSessions.values()) evaluate()
-    for (const sessionId of visibleSessionIds()) ensureSubscription(sessionId)
+    const visibleSessions = new Set(visibleSessionIds())
+    for (const sessionId of visibleSessions) ensureSubscription(sessionId)
+    /*
+     * 会话被关掉或切走后订阅会一直留着, 上限淘汰只能等新会话把它挤掉;
+     * 这里按"连续若干轮看不见"主动释放, 免得长时间开着多个会话时一直占着。
+     */
+    for (const [sessionId, off] of subscriptions) {
+      if (visibleSessions.has(sessionId)) {
+        subscriptionMissing.delete(sessionId)
+        continue
+      }
+      const misses = (subscriptionMissing.get(sessionId) ?? 0) + 1
+      if (misses < SUBSCRIPTION_MISS_LIMIT) {
+        subscriptionMissing.set(sessionId, misses)
+        continue
+      }
+      off()
+      subscriptions.delete(sessionId)
+      subscriptionMissing.delete(sessionId)
+      subscriptionSeen.delete(sessionId)
+    }
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
       if (!(element instanceof HTMLElement)) continue
       const identity = parseCardKey(element.getAttribute('data-question-key'))
@@ -1780,7 +1896,8 @@ function hideHostWaitText(root: HTMLElement): void {
         deferred.delete(identity.callId)
         evaluateRow(identity, pending)
       }
-      if (options().cardEnhancements) {
+      /* 历史卡片不进工作副本: 那些草稿不会再被上报, 留着只是内存 */
+      if (options().cardEnhancements && callActive.has(identity.callId)) {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
@@ -1797,13 +1914,17 @@ function hideHostWaitText(root: HTMLElement): void {
         )
         decorateCard(element, identity)
       }
+      subscriptionSeen.set(identity.sessionId, Date.now())
+      /*
+       * 先订阅再上报: 订阅会立刻求值一次投影, 草稿上报靠投影里的活动行判定,
+       * 顺序反了会让第一轮扫描里的上报被当成"历史卡片"跳过。
+       */
+      ensureSubscription(identity.sessionId)
       /*
        * 提问还没超时的时候就把草稿持续交给服务端: 工具到期时直接从服务端取这份快照,
        * 随 pending 返回值一起交给模型, 不再依赖事后的晚回复通道。
        */
       reportCurrentDraft(identity, element)
-      subscriptionSeen.set(identity.sessionId, Date.now())
-      ensureSubscription(identity.sessionId)
     }
     if (!options().cardEnhancements) return
     for (const row of Array.from(document.querySelectorAll(ASK_ROW_SELECTOR))) {
