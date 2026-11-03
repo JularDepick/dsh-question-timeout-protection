@@ -63,8 +63,9 @@ function resolvePackageRoot(): string {
 const PACKAGE_ROOT = resolvePackageRoot()
 
 /*
- * 语言码归一: zh, zh-cn, zh-hans 归到 zh-CN; zh-tw, zh-hk, zh-mo, zh-hant 归到 zh-TW;
- * en, en-us 归到 en-US; 其余保持原样。
+ * 语言码归一: 一切 zh 变体归到 zh-CN, 一切 en 变体归到 en-US, 其余按语言段小写加地区段大写。
+ * 目录里只有简体与英文两套, 因此繁体与英式输入不再映射到没有文件的 zh-TW,
+ * 那只会先读盘失败告警一次再回退, 徒增一条无意义的告警。
  */
 export function normalizeLocale(locale: string): string {
   const raw = locale.trim().toLowerCase().replace(/_/g, '-')
@@ -73,14 +74,12 @@ export function normalizeLocale(locale: string): string {
    * 语言码只允许字母、数字与连字符: 归一后的结果会被直接拼成文件路径,
    * 不做白名单过滤的话, 形如 ../../.. 的输入会越出翻译目录去读别的文件。
    */
-  if (!/^[a-z0-9-]+$/.test(raw)) return DEFAULT_LANGUAGE
+  /* 允许字母, 数字与单个连字符, 但连字符不能出现在首尾或连续出现 */
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw)) return DEFAULT_LANGUAGE
   const [language, ...rest] = raw.split('-')
   const region = rest[0]
   if (region !== undefined && !/^[a-z0-9]+$/.test(region)) return DEFAULT_LANGUAGE
-  if (language === 'zh') {
-    if (region === 'tw' || region === 'hk' || region === 'mo' || region === 'hant') return 'zh-TW'
-    return 'zh-CN'
-  }
+  if (language === 'zh') return 'zh-CN'
   if (language === 'en') return 'en-US'
   return region === undefined ? language : language + '-' + region.toUpperCase()
 }
@@ -112,6 +111,21 @@ export class TranslationManager {
     const filePath = join(PACKAGE_ROOT, TRANSLATION_DIR, `${normalized}.ini`)
     try {
       const table = parseTranslationSection(readFileSync(filePath, 'utf-8'))
+      /*
+       * 空表不缓存: 文件存在但缺 [translation] 节或被截断时, 缓存下来会让这次修复永远不生效,
+       * 而它和"文件读不到"没有本质区别, 都该按失败处理并给出告警。
+       */
+      if (Object.keys(table).length === 0) {
+        this.failedAt.set(normalized, Date.now())
+        if (!this.warned.has(normalized)) {
+          this.warned.add(normalized)
+          console.warn(
+            '[question-timeout-protection] 翻译文件没有可用条目, 未命中时回退到兜底语言 ' + FALLBACK_LANGUAGE + ':',
+            filePath,
+          )
+        }
+        return {}
+      }
       this.tables.set(normalized, table)
       this.failedAt.delete(normalized)
       return table
@@ -139,7 +153,10 @@ export class TranslationManager {
   translate(key: string): string {
     const current = this.load(this.language)
     const fallback = this.load(FALLBACK_LANGUAGE)
-    return current[key] ?? fallback[key] ?? key
+    /* 用 hasOwnProperty 判定: 普通对象的原型上带着 constructor 之类的键, 会被当成命中 */
+    if (Object.prototype.hasOwnProperty.call(current, key)) return current[key]
+    if (Object.prototype.hasOwnProperty.call(fallback, key)) return fallback[key]
+    return key
   }
 }
 

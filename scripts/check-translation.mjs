@@ -252,6 +252,13 @@ function arrayLiterals() {
   return out
 }
 
+/*
+ * 允许与中文版(或另一种语言)取值完全相同的键。
+ * 正常应当为空: 取值相同的键要么是漏译, 要么是本来就该两边一致的专有名词。
+ * 真要放行时在这里登记, 并写明理由。
+ */
+const SAME_AS_BASELINE = new Set([])
+
 const problems = []
 const baseline = parseIni(readFileSync(join(ROOT, BASELINE), 'utf8'))
 const baseKeys = new Set([...baseline.entries.keys()].filter((key) => !key.startsWith('meta.')))
@@ -295,15 +302,22 @@ for (const file of FILES) {
   if (file === BASELINE || file === TEMPLATE) continue
   const parsed = parseIni(readFileSync(join(ROOT, file), 'utf8'))
   const values = []
-  let identicalToBaseline = 0
+  const identicalKeys = []
   for (const key of baseKeys) {
     const value = parsed.entries.get(key)
     if (value === undefined) continue
     values.push(value)
-    if (value === baseline.entries.get(key)) identicalToBaseline += 1
+    if (value === baseline.entries.get(key)) identicalKeys.push(key)
   }
   if (values.length === 0) continue
-  if (identicalToBaseline === values.length) problems.push(file + ' 的文案与中文版完全相同, 看起来没有翻译')
+  /*
+   * 逐键判定: 只有整份文件全部照抄才报的话, 漏译一个键会被当成通过,
+   * 而界面上的那一条就会一直显示中文原文。允许的例外只在 SAME_AS_BASELINE 里登记。
+   */
+  for (const key of identicalKeys) {
+    if (SAME_AS_BASELINE.has(key)) continue
+    problems.push(file + ' 的 ' + key + ' 与中文版逐字相同, 看起来没有翻译')
+  }
   if (new Set(values).size === 1) problems.push(file + ' 的所有文案都写成同一个字符串, 看起来没有逐条翻译')
   /*
    * 与另一种已收录语言逐字相同: 多半是直接复制过去忘了翻译,
@@ -312,17 +326,24 @@ for (const file of FILES) {
   for (const other of FILES) {
     if (other === file || other === BASELINE || other === TEMPLATE) continue
     const otherParsed = parseIni(readFileSync(join(ROOT, other), 'utf8'))
-    let identical = 0
-    let compared = 0
+    const sameKeys = []
     for (const key of baseKeys) {
       const value = parsed.entries.get(key)
       const reference = otherParsed.entries.get(key)
       if (value === undefined || reference === undefined) continue
-      compared += 1
-      if (value === reference) identical += 1
+      if (value === reference) sameKeys.push(key)
     }
-    if (compared > 0 && identical === compared) {
+    /*
+     * 逐键比对, 同时保留整份照抄的判定: 整份相同是最典型的复制粘贴漏翻译,
+     * 只报逐键会让一份完全照抄的文件刷出几十条重复问题。
+     */
+    if (sameKeys.length === baseKeys.size) {
       problems.push(file + ' 的文案与 ' + other + ' 逐字相同, 看起来没有翻译')
+      continue
+    }
+    for (const key of sameKeys) {
+      if (SAME_AS_BASELINE.has(key)) continue
+      problems.push(file + ' 的 ' + key + ' 与 ' + other + ' 逐字相同, 看起来没有翻译')
     }
   }
 }
@@ -358,6 +379,9 @@ const CONSTANT_KEY_MAP = {
   DRAFT_PANEL_EMPTY: 'draftPanel.empty',
   DRAFT_PANEL_UNANSWERED: 'draftPanel.unanswered',
   DRAFT_SYNC_FAILED_TEXT: 'draft.deliveryFailed',
+  AUTO_INFINITE_LABEL: 'control.autoInfiniteLabel',
+  AUTO_INFINITE_ON_TEXT: 'control.autoInfiniteOn',
+  AUTO_INFINITE_OFF_TEXT: 'control.autoInfiniteOff',
 }
 
 /* 数组型文案常量到 ini 键的映射(仅收录需要镜像的数组) */

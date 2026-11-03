@@ -12,6 +12,19 @@
 import { pick } from './locale'
 import {
   ASK_REOPEN_LABELS,
+  AUTO_INFINITE_BUTTON_CLASS,
+  AUTO_INFINITE_LABEL_EN,
+  AUTO_INFINITE_LABEL_ZH,
+  AUTO_INFINITE_OFF_TEXT_EN,
+  AUTO_INFINITE_OFF_TEXT_ZH,
+  AUTO_INFINITE_ON_TEXT_EN,
+  AUTO_INFINITE_ON_TEXT_ZH,
+  AUTO_INFINITE_STATE_ATTRIBUTE,
+  AUTO_INFINITE_STATE_OFF,
+  AUTO_INFINITE_STATE_ON,
+  AUTO_INFINITE_STORAGE_KEY,
+  COMPOSER_CONTROLS_SELECTOR,
+  MODEL_SELECTOR_BUTTON,
   ASK_ROW_SELECTOR,
   BUBBLE_BUTTON_CLASS,
   BUBBLE_DRAFT_LABEL_EN,
@@ -191,6 +204,25 @@ const CARD_STYLE = `
 .dqtp-infinite-wait:hover {
   background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06));
 }
+.dqtp-auto-infinite {
+  flex-shrink: 0;
+  white-space: nowrap;
+  height: 24px;
+  padding: 0 10px;
+  margin-right: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.16));
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+}
+.dqtp-auto-infinite[data-dqtp-auto-infinite="on"] {
+  border-color: #e5484d;
+  color: #e5484d;
+  font-weight: 600;
+}
 .dqtp-question-bubble {
   display: inline-flex;
   align-items: center;
@@ -303,13 +335,49 @@ function parseRemainingSeconds(text: string): number | undefined {
   return undefined
 }
 
-/* 注入样式,重复安装时跳过 */
-function ensureStyle(): void {
-  if (document.getElementById(COUNTDOWN_STYLE_ID) !== null) return
-  const style = document.createElement('style')
-  style.id = COUNTDOWN_STYLE_ID
-  style.textContent = CARD_STYLE
-  document.head.appendChild(style)
+/* 读取常开开关的持久化状态 */
+function readAutoInfinite(): boolean {
+  try {
+    return window.localStorage.getItem(AUTO_INFINITE_STORAGE_KEY) === AUTO_INFINITE_STATE_ON
+  } catch {
+    /* 存储不可用时按关闭处理, 只影响本次页面 */
+    return false
+  }
+}
+
+/* 写入常开开关的持久化状态 */
+function writeAutoInfinite(value: boolean): void {
+  try {
+    window.localStorage.setItem(AUTO_INFINITE_STORAGE_KEY, value ? AUTO_INFINITE_STATE_ON : AUTO_INFINITE_STATE_OFF)
+  } catch {
+    /* 存储不可用时只在本次页面生效 */
+  }
+}
+
+/*
+ * 样式节点的引用计数。
+ * 宿主热更新可能先装载新实例再释放旧实例, 那时旧实例的卸载会把新实例还在用的样式节点删掉,
+ * 界面上的倒计时与气泡就失去全部样式。用计数保证最后一个使用者离开时才移除。
+ */
+let styleUsers = 0
+
+/* 注入样式, 返回一个可重复调用的释放函数 */
+function ensureStyle(): () => void {
+  styleUsers += 1
+  if (document.getElementById(COUNTDOWN_STYLE_ID) === null) {
+    const style = document.createElement('style')
+    style.id = COUNTDOWN_STYLE_ID
+    style.textContent = CARD_STYLE
+    document.head.appendChild(style)
+  }
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    styleUsers -= 1
+    if (styleUsers > 0) return
+    document.getElementById(COUNTDOWN_STYLE_ID)?.remove()
+  }
 }
 
 /*
@@ -428,15 +496,16 @@ function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem
  * - live: 卡片当前显示那一题的实时值。只有这一题有值, 而且宿主重渲染后可能短暂为空。
  * - snapshot: 插件自己记录的草稿, 宿主的记录取不到时用它兜底。
  *
- * 取舍规则(每一题独立判断):
- * 1. 当前显示的题且实时值有内容: 用实时值, 它是用户此刻的状态。
- * 2. 宿主的记录里有这一题: 用宿主的记录。用户清空输入时宿主同步写下的就是空值,
- *    因此不会把用户删掉的内容顶回来; 宿主重渲染导致实时值变空时, 记录仍留着内容。
- * 3. 宿主的记录里没有这一题: 用插件自己的记录, 没有就是空。
+ * 取舍规则(每一题独立判断, 顺序即优先级):
+ * 1. 宿主的记录里有这一题: 用宿主的记录。宿主在用户每次改动时同步写一次,
+ *    它是用户意图的权威记录: 用户清空输入时写下的就是空值, 不会被顶回来。
+ * 2. 宿主的记录里没有这一题, 且这一题正是当前显示题且实时值有内容: 用实时值。
+ *    这是宿主的记录还没落盘(或存储不可用)时唯一能拿到的用户输入。
+ * 3. 都没有: 用插件自己记录的快照, 没有就是空。
  *
- * 之所以不按"客户端报过空就当空"来判断: 客户端报空既可能是用户清空了内容,
- * 也可能是宿主重渲染让实时值读不到, 两者在数据上无法区分;
- * 而宿主的记录能区分这两种情况, 它是用户每次改动同步写下的。
+ * 之所以不让实时值压过宿主记录: 实时值只是渲染结果, 宿主重渲染期间可能读到半成品
+ * (选项节点已替换但 aria-checked 未落定, 输入框被临时清空后又回填),
+ * 而宿主的记录是每次改动同步写下的完整值。
  */
 function mergeDrafts(
   host: DraftItem[] | undefined,
@@ -447,14 +516,14 @@ function mergeDrafts(
 ): DraftItem[] {
   const merged: DraftItem[] = []
   for (let i = 0; i < count; i += 1) {
-    const liveItem = live?.[i]
-    if (i === liveIndex && liveItem !== undefined && hasItemContent(liveItem)) {
-      merged.push({ selected: [...liveItem.selected], custom: liveItem.custom, skipped: liveItem.skipped })
-      continue
-    }
     const hostItem = host?.[i]
     if (hostItem !== undefined) {
       merged.push({ selected: [...hostItem.selected], custom: hostItem.custom, skipped: hostItem.skipped })
+      continue
+    }
+    const liveItem = live?.[i]
+    if (i === liveIndex && liveItem !== undefined && hasItemContent(liveItem)) {
+      merged.push({ selected: [...liveItem.selected], custom: liveItem.custom, skipped: liveItem.skipped })
       continue
     }
     const snapshotItem = snapshot?.[i]
@@ -621,7 +690,7 @@ const DRAFT_REPORT_INTERVAL_MS = 800
  */
 export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: AdapterOptionsSource): () => void {
   if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
-  ensureStyle()
+  const releaseStyle = ensureStyle()
 
   /* 已处理过超时流程的调用 */
   const handled = new Set<string>()
@@ -654,6 +723,28 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   /* 投影里每个调用的题目数: 上报草稿时用它兜底题数, 避免只报第一题 */
   const projectedCounts = new Map<string, number>()
 
+  /*
+   * 每个 callId 属于哪个会话。
+   * 状态表是跨会话共享的, 而投影订阅是按会话逐个触发的,
+   * 回收时必须知道某条登记归谁, 否则一个会话的更新会清掉另一个会话的状态。
+   */
+  const callSessions = new Map<string, string>()
+
+  /* 记下调用归属的会话 */
+  const rememberCallSession = (identity: CardIdentity): void => {
+    if (callSessions.get(identity.callId) === identity.sessionId) return
+    callSessions.set(identity.callId, identity.sessionId)
+    while (callSessions.size > MAX_SESSION_SUBSCRIPTIONS * 64) {
+      const oldest = callSessions.keys().next()
+      if (oldest.done) break
+      callSessions.delete(oldest.value)
+    }
+  }
+
+  /* 取调用归属的会话: 优先会话登记, 其次看草稿快照里记的会话 */
+  const callSessionOf = (callId: string): string | undefined =>
+    callSessions.get(callId) ?? drafts.get(callId)?.sessionId
+
   /* 所有登记过状态的 callId, 供结算后统一回收 */
   const knownCallIds = (): string[] => {
     const ids = new Set<string>()
@@ -674,6 +765,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 草稿快照要留下: 气泡按钮靠它展示只读悬浮卡片, 结算后就抹掉等于把入口一起删了。
    */
   const forgetCall = (callId: string): void => {
+    callSessions.delete(callId)
+    autoInfiniteAttempted.delete(callId)
     handled.delete(callId)
     timedOut.delete(callId)
     passive.delete(callId)
@@ -707,6 +800,16 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /* 当前生效的插件配置 */
   const options = (): AdapterOptions => source.getOptions()
+
+  /*
+   * 「问答无限等待」常开开关的状态。
+   * 存在 localStorage 里: 这是用户对后续所有提问的长期选择, 刷新后不该回到默认。
+   * 存储不可用时退化为本次页面有效。
+   */
+  let autoInfinite = readAutoInfinite()
+
+  /* 每次调用只尝试自动接管一次, 免得通道报错后每秒重试一次 */
+  const autoInfiniteAttempted = new Set<string>()
 
   /* 每个调用最近一次上报草稿的时间, 避免每次扫描都发一次请求 */
   const draftReportedAt = new Map<string, number>()
@@ -750,6 +853,65 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       actions.insertBefore(button, actions.firstChild)
     }
     return button
+  }
+
+  /*
+   * 「问答无限等待」常开开关: 放在对话框模型选择控件右侧。
+   * 开启后每次提问都自动进入无限等待, 关闭后回到插件默认的计时行为。
+   * 按钮插在宿主工具栏里的模型选择块之后, 宿主重渲染后被移除时由下一轮扫描补回。
+   */
+  const ensureAutoInfiniteButton = (): void => {
+    /* 「无限等待」关掉时这个开关没有意义, 一并撤掉按钮 */
+    if (!options().infiniteWait) {
+      for (const element of Array.from(document.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
+        element.remove()
+      }
+      return
+    }
+    const trigger = document.querySelector(MODEL_SELECTOR_BUTTON)
+    if (!(trigger instanceof HTMLElement)) return
+    const controls = trigger.closest(COMPOSER_CONTROLS_SELECTOR)
+    const host = controls instanceof HTMLElement ? controls : trigger.parentElement
+    if (!(host instanceof HTMLElement)) return
+    /* 找模型选择块在工具栏里的直接子节点, 开关接在它后面 */
+    let anchor: HTMLElement = trigger
+    while (anchor.parentElement !== null && anchor.parentElement !== host) anchor = anchor.parentElement
+    if (anchor.parentElement !== host) return
+    const existing = host.querySelector('button.' + AUTO_INFINITE_BUTTON_CLASS)
+    let button: HTMLButtonElement
+    if (existing instanceof HTMLButtonElement) {
+      button = existing
+      if (button.previousElementSibling !== anchor) anchor.insertAdjacentElement('afterend', button)
+    } else {
+      button = document.createElement('button')
+      button.type = 'button'
+      button.className = AUTO_INFINITE_BUTTON_CLASS
+      anchor.insertAdjacentElement('afterend', button)
+    }
+    button.setAttribute(AUTO_INFINITE_STATE_ATTRIBUTE, autoInfinite ? AUTO_INFINITE_STATE_ON : AUTO_INFINITE_STATE_OFF)
+    button.setAttribute('aria-pressed', autoInfinite ? 'true' : 'false')
+    button.title = pick(
+      '开启后每次提问都自动进入无限等待, 关闭后回到插件的计时行为',
+      'When on, every question waits indefinitely; when off, the plugin countdown applies',
+    )
+    const label = pick(AUTO_INFINITE_LABEL_ZH, AUTO_INFINITE_LABEL_EN)
+    const state = autoInfinite
+      ? pick(AUTO_INFINITE_ON_TEXT_ZH, AUTO_INFINITE_ON_TEXT_EN)
+      : pick(AUTO_INFINITE_OFF_TEXT_ZH, AUTO_INFINITE_OFF_TEXT_EN)
+    const text = label + ' · ' + state
+    if (button.textContent !== text) button.textContent = text
+  }
+
+  /* 切换常开开关: 开启后立刻把已在等待的提问也切到无限等待 */
+  const toggleAutoInfinite = (): void => {
+    autoInfinite = !autoInfinite
+    writeAutoInfinite(autoInfinite)
+    ensureAutoInfiniteButton()
+    if (autoInfinite) scan()
+    /*
+     * 关闭时不动已经暂停的提问: 服务端已经按「无限等待」登记, 单方面恢复倒计时
+     * 会让界面显示到期而模型那边还在等, 两边对不上。这些提问由用户提交结束。
+     */
   }
 
   /* 隐藏宿主自带的倒计时与等待状态文本, 由插件自绘 */
@@ -829,9 +991,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /*
    * 把卡片还原成宿主原样: 撤销插件加的隐藏类, 移除自绘倒计时与「无限等待」按钮。
-   * 草稿为空时超时不接管, 宿主按 continued 原版继续显示并允许作答。
+   * 交还宿主时(兜底关闭或通道不可用)用得上, 那时卡片保持可继续作答。
    */
   const restoreCard = (card: HTMLElement): void => {
+    /* 收起时隐藏类加在卡片根节点自身, querySelectorAll 不含自身, 必须单独清一次 */
+    card.classList.remove(HIDDEN_CONTROL_CLASS)
     for (const element of Array.from(card.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
       element.classList.remove(HIDDEN_CONTROL_CLASS)
     }
@@ -865,19 +1029,19 @@ function hideHostWaitText(root: HTMLElement): void {
   const decorateCard = (card: HTMLElement, identity: CardIdentity): void => {
     /* 草稿为空的超时不接管, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
+    rememberCallSession(identity)
     /* 首次读到的剩余时长记为插件自己的截止时间 */
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
       for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
         if (!(element instanceof HTMLElement)) continue
         const statusText = element.textContent?.trim() ?? ''
         /*
-         * 暂停态下的剩余秒数不是真实到期时间, 拿它当截止时间会让自绘倒计时从暂停值开始走,
-         * 因此这里按暂停态处理, 不登记截止时间。
+         * 暂停态下的剩余秒数不是真实到期时间, 拿它当截止时间会让自绘倒计时从暂停值开始走。
+         * 但也不能就此把这次调用记成插件的「已暂停」: 宿主在用户开始编辑回答时就会切到暂停态,
+         * 那时插件从没向服务端上报过「无限等待」, 工具侧计时照常到期。
+         * 这里只是本轮不登记截止时间(不显示倒计时、不挂无限等待按钮), 下一轮读到真实倒计时再登记。
          */
-        if (PAUSED_TEXT_PATTERNS.some((pattern) => pattern.test(statusText))) {
-          paused.set(identity.callId, Date.now())
-          break
-        }
+        if (PAUSED_TEXT_PATTERNS.some((pattern) => pattern.test(statusText))) break
         const total = parseRemainingSeconds(statusText)
         if (total === undefined) continue
         deadlines.set(identity.callId, Date.now() + total * 1000)
@@ -893,6 +1057,27 @@ function hideHostWaitText(root: HTMLElement): void {
      * (含「已继续工作, 仍可回答」提示与收起/展开控件), 不要连带宿主文案一起藏掉。
      */
     const live = frozen !== undefined || deadline !== undefined
+    /*
+     * 常开开关打开时, 每条新提问都自动切到无限等待:
+     * 与用户点「无限等待」走同一条路径(冻结倒计时 + 通知服务端继续阻塞),
+     * 因此表现和手动点击完全一致, 关闭开关后新的提问恢复计时行为。
+     * 每个调用只尝试一次: 通道报错时由 pauseCountdown 自己降级, 不能每秒重试。
+     */
+    if (
+      live
+      && autoInfinite
+      && deadline !== undefined
+      && frozen === undefined
+      && options().infiniteWait
+      && !timedOut.has(identity.callId)
+      && !syncUnavailable.has(identity.callId)
+      && !draftSyncFailed.has(identity.callId)
+      && !autoInfiniteAttempted.has(identity.callId)
+    ) {
+      autoInfiniteAttempted.add(identity.callId)
+      pauseCountdown(card, identity)
+      return
+    }
     if (!live) {
       restoreCard(card)
       if (timedOut.has(identity.callId)) {
@@ -988,7 +1173,7 @@ function hideHostWaitText(root: HTMLElement): void {
         return
       }
       /*
-       * 通道不可达(端口占用, 双实例, 或通过别的机器访问 web)时无限等待根本无法生效,
+       * 通道不可达(没有网页客户端, 令牌取不到, 或请求被拒)时无限等待根本无法生效,
        * 这里撤回冻结、把该调用交还宿主, 并在倒计时位置给出可见提示, 避免到期仍提交草稿。
        */
       paused.delete(identity.callId)
@@ -1159,7 +1344,7 @@ function hideHostWaitText(root: HTMLElement): void {
     if (callId === undefined) return
     const button = ensureBubble(row)
     if (button === undefined) return
-    /* 草稿为空的超时交还宿主, 插件气泡不出现, 宿主「回答」入口保持可见 */
+    /* 已交还宿主的行不出现插件气泡, 宿主「回答」入口保持可见 */
     if (passive.has(callId)) {
       button.classList.add(HIDDEN_CONTROL_CLASS)
       return
@@ -1212,6 +1397,7 @@ function hideHostWaitText(root: HTMLElement): void {
      */
     if (!current.draftFallback) return
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
+    rememberCallSession(identity)
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
     const count = Math.max(progress?.count ?? 1, projected)
@@ -1261,6 +1447,7 @@ function hideHostWaitText(root: HTMLElement): void {
 
   /* 评估一行 continued 投影: 按题收集草稿, 按兜底范围提交或收起卡片 */
   const evaluateRow = (identity: CardIdentity, row: ProjectionRow): void => {
+    rememberCallSession(identity)
     const card = findCard(identity)
     if (handled.has(row.callId)) return
     const stored = lastDrafts.get(row.callId)
@@ -1350,21 +1537,25 @@ function hideHostWaitText(root: HTMLElement): void {
     for (const row of active as ProjectionRow[]) {
       if (typeof row.callId !== 'string') continue
       live.add(row.callId)
-      if (row.state !== 'continued') continue
       if (!Array.isArray(row.questions)) continue
       /*
        * 记下投影里的题目数: 卡片上的分页文案有时读不到,
        * 那时上报草稿按这个题数来, 免得只报第一题而把后面的题丢掉。
+       * 必须对全部活动行记录: 草稿上报发生在提问进行中(open), 等到 continued 才记就晚了。
        */
       projectedCounts.set(row.callId, row.questions.length)
+      if (row.state !== 'continued') continue
       evaluateRow({ sessionId, callId: row.callId }, row)
     }
     /*
      * 该行一旦离开 active 就说明已经结算(无论是插件提交, 用户自己提交, 还是宿主处理),
      * 这里统一回收状态, 不再依赖"点了提交按钮"这一条路径。
+     * 只回收本会话的调用: 状态表是跨会话共享的, 用单会话的 active 去清全局登记,
+     * 多会话同时打开时会互相把对方的接管状态抹掉。
      */
     for (const callId of knownCallIds()) {
       if (live.has(callId)) continue
+      if (callSessionOf(callId) !== sessionId) continue
       forgetCall(callId)
     }
   }
@@ -1447,6 +1638,8 @@ function hideHostWaitText(root: HTMLElement): void {
       let oldestSession: string | undefined
       let oldestAt = Number.POSITIVE_INFINITY
       for (const [id, seenAt] of subscriptionSeen) {
+        /* 只淘汰真的还持有订阅的会话: 轮询兜底的会话没有订阅可释放 */
+        if (!subscriptions.has(id)) continue
         if (seenAt < oldestAt) {
           oldestAt = seenAt
           oldestSession = id
@@ -1486,6 +1679,13 @@ function hideHostWaitText(root: HTMLElement): void {
     if (!(target instanceof Element)) return
     const button = target.closest(CARD_BUTTON_SELECTOR)
     if (!(button instanceof HTMLElement)) return
+
+    if (button.classList.contains(AUTO_INFINITE_BUTTON_CLASS)) {
+      event.preventDefault()
+      event.stopPropagation()
+      toggleAutoInfinite()
+      return
+    }
 
     if (button.classList.contains(INFINITE_BUTTON_CLASS)) {
       event.preventDefault()
@@ -1538,6 +1738,7 @@ function hideHostWaitText(root: HTMLElement): void {
   }
 
   const scan = (): void => {
+    ensureAutoInfiniteButton()
     for (const evaluate of polledSessions.values()) evaluate()
     for (const sessionId of visibleSessionIds()) ensureSubscription(sessionId)
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
@@ -1621,7 +1822,11 @@ function hideHostWaitText(root: HTMLElement): void {
     for (const element of Array.from(document.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
       element.classList.remove(HIDDEN_CONTROL_CLASS)
     }
-    document.getElementById(COUNTDOWN_STYLE_ID)?.remove()
+    for (const element of Array.from(document.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
+      element.remove()
+    }
+    releaseStyle()
     syncUnavailable.clear()
+    autoInfiniteAttempted.clear()
   }
 }

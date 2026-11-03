@@ -97,7 +97,7 @@ export const DRAFT_SELECTED_LABEL_EN = 'Selected: {items}'
 
 /** 草稿文本里自由输入行的前缀 */
 export const DRAFT_CUSTOM_LABEL_ZH = '补充: {text}'
-export const DRAFT_CUSTOM_LABEL_EN = 'Note: {text}'
+export const DRAFT_CUSTOM_LABEL_EN = 'Additional: {text}'
 
 /** 是否把超时草稿注入对话上下文 */
 export function injectsContext(mode: FallbackMode): boolean {
@@ -145,6 +145,31 @@ export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
 
 /** 判定宿主是否停在暂停态的文案特征: 暂停态下的剩余秒数不是真实到期时间 */
 export const PAUSED_TEXT_PATTERNS: readonly RegExp[] = [/已暂停/, /Paused/]
+
+/** 「问答无限等待」常开开关的文案(中文与英文) */
+export const AUTO_INFINITE_LABEL_ZH = '问答无限等待'
+export const AUTO_INFINITE_LABEL_EN = 'Auto infinite wait'
+
+/** 常开开关的开启与关闭状态文案(中文与英文) */
+export const AUTO_INFINITE_ON_TEXT_ZH = '开'
+export const AUTO_INFINITE_ON_TEXT_EN = 'On'
+export const AUTO_INFINITE_OFF_TEXT_ZH = '关'
+export const AUTO_INFINITE_OFF_TEXT_EN = 'Off'
+
+/** 常开开关按钮的类名与状态属性 */
+export const AUTO_INFINITE_BUTTON_CLASS = 'dqtp-auto-infinite'
+export const AUTO_INFINITE_STATE_ATTRIBUTE = 'data-dqtp-auto-infinite'
+export const AUTO_INFINITE_STATE_ON = 'on'
+export const AUTO_INFINITE_STATE_OFF = 'off'
+
+/** 常开开关的持久化键: 开关状态跨刷新保留 */
+export const AUTO_INFINITE_STORAGE_KEY = 'dsh.question-timeout-protection.auto-infinite'
+
+/** 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希 */
+export const MODEL_SELECTOR_BUTTON = 'button[aria-label^="选择模型"], button[aria-label^="Select model"]'
+
+/** 模型选择控件所在的工具栏容器(类名后缀) */
+export const COMPOSER_CONTROLS_SELECTOR = '[class*="standardControls"]'
 
 /** 草稿快照保留上限, 超出后丢弃最早的一条 */
 export const MAX_KEPT_DRAFTS = 200
@@ -278,7 +303,7 @@ export const INFINITE_WAIT_LABEL_ZH = '无限等待'
 export const SYNC_UNAVAILABLE_TEXT_ZH = '无法无限等待'
 
 /** 状态同步通道不可达时替代倒计时的提示文案(英文) */
-export const SYNC_UNAVAILABLE_TEXT_EN = 'Infinite wait unavailable'
+export const SYNC_UNAVAILABLE_TEXT_EN = 'Cannot wait indefinitely'
 
 /** 「无限等待」按钮文案(英文) */
 export const INFINITE_WAIT_LABEL_EN = 'Wait indefinitely'

@@ -92,16 +92,31 @@ const SETTINGS_STYLE = `
 .dqtp-problem{font-size:12px;color:var(--dsw-alias-label-danger,#c0392b)}
 `
 
-let styleInstalled = false
+/*
+ * 配置页样式的引用计数。
+ * 与主适配器同样的理由: 热更新先装载新实例再释放旧实例时,
+ * 无条件删除样式节点会让新实例的页面变成没有样式的裸表格。
+ */
+let styleUsers = 0
 
-/* 首帧插入一次样式表 */
-function ensureStyle(): void {
-  if (styleInstalled || typeof document === 'undefined') return
-  styleInstalled = true
-  const style = document.createElement('style')
-  style.dataset[STYLE_FLAG] = 'true'
-  style.textContent = SETTINGS_STYLE
-  document.head.append(style)
+/* 首帧插入一次样式表, 返回可重复调用的释放函数 */
+function ensureStyle(): () => void {
+  if (typeof document === 'undefined') return () => {}
+  styleUsers += 1
+  if (document.querySelector('style[' + 'data-' + STYLE_FLAG + ']') === null) {
+    const style = document.createElement('style')
+    style.dataset[STYLE_FLAG] = 'true'
+    style.textContent = SETTINGS_STYLE
+    document.head.append(style)
+  }
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    styleUsers -= 1
+    if (styleUsers > 0) return
+    document.querySelector('style[data-' + STYLE_FLAG + ']')?.remove()
+  }
 }
 
 /* 固定特性的展示数据: 随插件启用状态生效, 页面不提供开关 */
