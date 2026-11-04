@@ -59,8 +59,8 @@ The plugin does one thing: make a question's wait visible and pausable, and keep
 
 ## Compatibility
 
-- dsh: `>=0.2.1-rc.1 <=0.2.1-rc.5`
-- Runtime: Node.js >= 20
+- dsh: `>=0.2.1-rc.1 <=0.2.2-rc.1`
+- Runtime: Node.js >= 20 (the plugin itself; dsh 0.2.2-rc.1 and later require Node.js >= 24.9)
 
 ## Install
 
@@ -94,6 +94,7 @@ The config page sits in the plugin-level config block at the **top of the plugin
 - No persistence: the draft lives only in client memory; after a refresh the bubble and its record are lost, a still-waiting question is re-evaluated from the host's persisted draft and taken over when the takeover conditions hold, and settled rows are not restored
 - "Wait indefinitely" and the draft report share one token-protected channel mounted on the host's own HTTP service, same-origin with the UI: the page first fetches the channel token and then reports, and neither capability works when the token cannot be obtained; other pages on the same machine cannot get the token because their origin does not match, so they cannot forge a report; that boundary only covers browser pages, since a request without an origin is treated as the host page itself, so other processes on the same machine can still obtain the token and forge a report or a draft; a deployment without the web client (no host HTTP service) has neither capability: the server still settles that question as timed out, but the draft never reaches the model context and "Wait indefinitely" has no effect
 - The plugin times the wait itself: on expiry it settles the timeout and releases the host-side foreground wait; an answer the user actually submitted before that moment still wins
+- UI languages: dsh 0.2.2 ships eight UI locales, while the plugin recognises Chinese and English labels only; under other locales the countdown, the wait-indefinitely button and the toolbar toggle stay inactive, while timeout settlement and draft reporting still work
 - With several tabs on the same session, the server keeps one draft snapshot per call id, so a later tab overwrites the one reported earlier
 - Only the latest 200 draft snapshots are kept, so older bubbles can no longer be opened
 - Skipping every question without any selection or typed text counts as an empty draft, so that timeout closes the card

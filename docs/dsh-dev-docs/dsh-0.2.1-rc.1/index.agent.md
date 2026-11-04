@@ -1,10 +1,10 @@
-# Agent 阅读指南 —— dsh 插件开发文档(v0.2.1-rc.1)
+# Agent 阅读指南 —— dsh 插件开发文档(v0.2.1-rc.1 至 v0.2.2-rc.1)
 
 本文档是给 Agent(自动编程代理)看的使用索引:说明这份文档集装了什么、各篇回答什么问题、在涉及 dsh 插件开发的常见任务中该查哪篇。用户一般不读本文档。
 
 ## 这份文档集是什么
 
-本目录 `docs/dsh-dev-docs/dsh-0.2.1-rc.1/` 收录了 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 0.2.1-rc.1(对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版插件开发文档(共 10 篇 + 本索引;英文原版见各 `.md`,中文见 `.zh.md`;30 个上游文件已与该标签逐字节核对一致)。它只覆盖 `docs/user/develop/` 路径;原文档中指向仓其他位置的链接(根 `README.zh.md`、`cookbook/`、`subsystems/`、`apps/cli/`、`packages/`、`capability-seams.md` 等)未随本目录下载,需要时回[官方仓库](https://github.com/deepseek-ai/deepseek-harness)查看。各篇同目录的 `.i18n.yaml` 是上游的双语一致性记录(按标题分节记录中英哈希),原样收录,与本项目自身的翻译机制无关。
+本目录 `docs/dsh-dev-docs/dsh-0.2.1-rc.1/` 收录了 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 0.2.1-rc.1(对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版插件开发文档(共 10 篇 + 本索引与增量说明;英文原版见各 `.md`,中文见 `.zh.md`;30 个上游文件已与该标签逐字节核对一致),并作为 `0.2.1-rc.1` 至 `0.2.2-rc.1` 的区间收录: 已按同一路径核对标签 `dsh-v0.2.2-rc.1`,30 个文件里 24 个字节一致,6 个有变化(2 篇正文各 1 句文案,中英各一份,另有 2 份 `.i18n.yaml` 只同步哈希),差异记录在 [`CHANGES-0.2.2-rc.1.md`](CHANGES-0.2.2-rc.1.md)。它只覆盖 `docs/user/develop/` 路径;原文档中指向仓其他位置的链接(根 `README.zh.md`、`cookbook/`、`subsystems/`、`apps/cli/`、`packages/`、`capability-seams.md` 等)未随本目录下载,需要时回[官方仓库](https://github.com/deepseek-ai/deepseek-harness)查看。各篇同目录的 `.i18n.yaml` 是上游的双语一致性记录(按标题分节记录中英哈希),原样收录,与本项目自身的翻译机制无关。
 
 ## 速查:什么任务查哪篇
 
@@ -41,7 +41,7 @@
 
 - **三层能力**:Service Definition(契约 + Request/Result 类型)/ Service Provider(实现)/ Consumer(暴露为工具)。Provider 和 Consumer 只依赖 Definition、互不依赖。不要预防性拆分;显式优于隐式(用显式的 `resolve(request): Spec` 步骤处理默认值,不在 `run()` 中隐藏 `?? default`)。
 - **LLM 适配器**:继承 `LlmAdapter` 覆写 `stream()`(异步生成 `StreamChunk`),`ctx.llm.registerAdapter(['provider'], adapter)`。StreamChunk 协议:`block-start`/`text-delta`(或 `tool-call-delta`)/`block-end` 成对出现,`finish` 必须是最后一个分片、`usage` 在 `finish` 前,`index` 从 0 递增;工具调用 ID 用 `brandString<ToolCallId>('...')`(`ToolCallId` 来自 `@deepseek-ai/dsh-llm`,`brandString` 来自 `@deepseek-ai/dsh-brand`)。错误抛带稳定 code 的 `LlmError`;合并 `attributionHeaders()` 并传递 `options.signal`;可覆写 `resolveModel()`、`listModels()`。官方 DeepSeek 参考适配器使用 Messages API。
-- **按提示词配置持久化插件**:创造模式提供 Plugin Manager 与只读运行时检查;插件配置属于当前 profile,影响其会话并**在进程重启后保留**。示例流程:准备暴露 `ping` 的 Streamable HTTP MCP 服务器,用提示词让 agent 编写**纯配置组合包**(patch 中插入 `@deepseek-ai/dsh-mcp-client`),经 `plugin_manager install_bundle` 安装;启用 HMR 时工具会出现在同一个运行中的会话里。校验要同时看管理结果(`application: applied`)与成功的 `mcp__demo__ping` 调用;返回 `restart-required` 的已保存条目尚未激活,失败条目需修复配置。改配置前先读组合包 patch;用 Plugin Manager 停用条目或移除组合包。可接受的配置与连接失败行为见官方 MCP client 参考。
+- **按提示词配置持久化插件**:标准模式和创造模式提供 Plugin Manager, 创造模式另提供只读运行时检查(0.2.2-rc.1 起);插件配置属于当前 profile,影响其会话并**在进程重启后保留**。示例流程:准备暴露 `ping` 的 Streamable HTTP MCP 服务器,用提示词让 agent 编写**纯配置组合包**(patch 中插入 `@deepseek-ai/dsh-mcp-client`),经 `plugin_manager install_bundle` 安装;启用 HMR 时工具会出现在同一个运行中的会话里。校验要同时看管理结果(`application: applied`)与成功的 `mcp__demo__ping` 调用;返回 `restart-required` 的已保存条目尚未激活,失败条目需修复配置。改配置前先读组合包 patch;用 Plugin Manager 停用条目或移除组合包。可接受的配置与连接失败行为见官方 MCP client 参考。
 
 ## 给你的操作提示
 

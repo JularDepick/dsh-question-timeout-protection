@@ -1,10 +1,10 @@
-# dsh 插件开发文档(v0.2.1-rc.1)
+# dsh 插件开发文档(v0.2.1-rc.1 至 v0.2.2-rc.1)
 
 > 面向 Agent 的利用指南与速查:请查看 `index.agent.md`。
 
 [dsh](https://github.com/deepseek-ai/deepseek-harness) 官方插件开发文档的**中文版**合集索引。
 
-本目录存放 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 **0.2.1-rc.1**(npm 发布包版本号,对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版(`.zh.md`)文档(英文原版见各 `.md`)。目录内 30 个上游文件已与该标签逐字节核对一致,作为本项目开发 dsh 插件时的参考指引。
+本目录存放 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 **0.2.1-rc.1**(npm 发布包版本号,对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版(`.zh.md`)文档(英文原版见各 `.md`)。目录内 30 个上游文件已与该标签逐字节核对一致,作为本项目开发 dsh 插件时的参考指引;同时作为 `0.2.1-rc.1` 至 `0.2.2-rc.1` 的区间收录,已核对标签 `dsh-v0.2.2-rc.1` 下 30 个文件里 24 个字节一致,6 个有变化(2 篇正文各 1 句文案,中英各一份,另有 2 份 `.i18n.yaml` 只同步哈希),差异见 [`CHANGES-0.2.2-rc.1.md`](CHANGES-0.2.2-rc.1.md)。
 
 | 分块 | 作用 |
 |:---:|:---:|
@@ -45,7 +45,7 @@
 |:---:|:---:|:---:|
 | [index.zh.md](practice/index.zh.md) | 能力的三种角色设计:Service Definition / Service Provider / Consumer 三角色拆分与组合,以 Bash 为例详解教程;设计要点(不预防性拆分、显式优于隐式) | 基础、framework/service |
 | [llm-adapter.zh.md](practice/llm-adapter.zh.md) | LLM 适配器:接入新的模型提供方,继承 `LlmAdapter` 实现 `stream()`,StreamChunk 协议、GenerateOptions、`resolveModel`/`listModels`、错误处理;官方 DeepSeek 参考适配器使用 Messages API | practice/index |
-| [dynamic-cordis.zh.md](practice/dynamic-cordis.zh.md) | 按提示词配置持久化插件:创造模式提供 Plugin Manager 与只读运行时检查,插件配置属于当前 profile、进程重启后保留;示例为接入 Streamable HTTP MCP 服务器(纯配置组合包 patch 插入 `@deepseek-ai/dsh-mcp-client`,经 `plugin_manager install_bundle` 安装,需核对 `application: applied` 与 `restart-required` 状态语义) | practice/index |
+| [dynamic-cordis.zh.md](practice/dynamic-cordis.zh.md) | 按提示词配置持久化插件:标准模式和创造模式提供 Plugin Manager,创造模式另提供只读运行时检查(0.2.2-rc.1 起),插件配置属于当前 profile、进程重启后保留;示例为接入 Streamable HTTP MCP 服务器(纯配置组合包 patch 插入 `@deepseek-ai/dsh-mcp-client`,经 `plugin_manager install_bundle` 安装,需核对 `application: applied` 与 `restart-required` 状态语义) | practice/index |
 
 ## 建议阅读顺序
 
