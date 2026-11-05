@@ -18,9 +18,12 @@
 
 ## 发布前检查
 
-1. `pnpm run check:translation`: 三份翻译文件与配置页字典键集一致
-2. `pnpm run typecheck`: 类型检查无错
-3. `pnpm run pack:release`: 构建并产出 `release/` 内的 tarball
-4. 核对 tarball: 文件清单为 `dist/` 三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与 `dist` 内的新文案与工作区一致
-5. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入
-6. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本
+1. `git status` 干净: 全部改动已提交, 以该提交为基线重建产物, 不允许用未提交的工作区直接产出发布物
+2. 按 `version.index.md` 的同步清单逐处核对版本号, 避免只改包清单而漏掉文档与翻译 meta
+3. `pnpm run check:translation`: 三份翻译文件, 配置页字典与宿主识别文案基线一致
+4. `pnpm run typecheck`: 类型检查无错
+5. `pnpm run pack:release`: 构建并产出 `release/` 内的 tarball
+6. 核对 tarball: 文件清单为 `dist/` 三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与 `dist` 内的新文案与工作区一致
+7. 在不带兼容性豁免的 profile 上验证 `engines.dsh` 放行, 避免豁免记录掩盖范围声明错误
+8. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入, 并覆盖三种交还宿主的路径, 空草稿, 草稿过长与非中英界面降级
+9. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本

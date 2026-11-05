@@ -55,7 +55,7 @@
 | `countdown.remaining` / `countdown.paused` / `countdown.unavailable` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN`, `COUNTDOWN_PAUSED_TEXT_*`, `SYNC_UNAVAILABLE_TEXT_*` | 插件自绘倒计时的运行态, 暂停态与通道不可用替代文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
-| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` / `control.autoInfiniteTitle` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*`, `AUTO_INFINITE_TITLE_*` | 对话框工具栏「问答无限等待」常开开关的文案: 标签与开启, 关闭两个状态词渲染成「标签 · 状态」, 悬停提示说明开启与关闭各自的行为 |
+| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` / `control.autoInfiniteTitle` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*`, `AUTO_INFINITE_TITLE_*` | 对话框工具栏「问答无限等待」常开开关的文案: 标签与开启, 关闭两个状态词渲染成「标签(中点)状态」, 悬停提示说明开启与关闭各自的行为 |
 | `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板, 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
 | `draft.deliveryFailed` | `src/constants.ts` 的 `DRAFT_SYNC_FAILED_TEXT_ZH`/`DRAFT_SYNC_FAILED_TEXT_EN` | 草稿快照连续上报失败时显示在提问卡片倒计时位置的提示, 不属于草稿悬浮卡片里的标签 |

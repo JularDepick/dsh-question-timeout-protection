@@ -141,8 +141,8 @@ function constValueStart(source, declarations, name) {
   return i
 }
 
-/* 读数组字面量, 返回元素与"是否全为字符串" */
-function readArrayLiteral(source, start) {
+/* 读数组字面体的原始内容: 字符串数组与正则数组都要先取到数组体 */
+function readArrayBody(source, start) {
   if (source[start] !== '[') return undefined
   let depth = 0
   for (let i = start; i < source.length; i += 1) {
@@ -156,17 +156,28 @@ function readArrayLiteral(source, start) {
     if (ch === '[') depth += 1
     else if (ch === ']') {
       depth -= 1
-      if (depth === 0) {
-        const body = source.slice(start + 1, i)
-        const elements = []
-        const pattern = /'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|\x60((?:[^\x60\\]|\\.)*)\x60/g
-        for (const match of body.matchAll(pattern)) elements.push(match[1] ?? match[2] ?? match[3])
-        const items = body.split(',').filter((part) => part.trim() !== '')
-        return { elements, textual: items.length === elements.length }
-      }
+      if (depth === 0) return source.slice(start + 1, i)
     }
   }
   return undefined
+}
+
+/* 读数组字面量, 返回元素与"是否全为字符串" */
+function readArrayLiteral(source, start) {
+  const body = readArrayBody(source, start)
+  if (body === undefined) return undefined
+  const elements = []
+  const pattern = /'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|\x60((?:[^\x60\\]|\\.)*)\x60/g
+  for (const match of body.matchAll(pattern)) elements.push(match[1] ?? match[2] ?? match[3])
+  const items = body.split(',').filter((part) => part.trim() !== '')
+  return { elements, textual: items.length === elements.length }
+}
+
+/* 从数组体里逐字取出正则字面量的模式串, 不编译也不求值 */
+function readRegExpPatterns(body) {
+  const patterns = []
+  for (const match of body.matchAll(/\/((?:\\.|[^/\\\n])*)\/([gimsuy]*)/g)) patterns.push(match[1])
+  return patterns
 }
 
 /* 读对象字面量的字符串属性 */
@@ -242,12 +253,14 @@ function arrayLiterals() {
   const source = readFileSync(join(ROOT, 'src/constants.ts'), 'utf8')
   const declarations = constDeclarations(source)
   const out = []
-  for (const [name, declared] of declarations) {
+  for (const name of declarations.keys()) {
     const start = constValueStart(source, declarations, name)
     if (start === undefined) continue
     const parsed = readArrayLiteral(source, start)
     if (parsed === undefined) continue
-    out.push({ name, elements: parsed.elements, textual: parsed.textual })
+    const body = readArrayBody(source, start)
+    if (body === undefined) continue
+    out.push({ name, elements: parsed.elements, textual: parsed.textual, patterns: readRegExpPatterns(body) })
   }
   return out
 }
@@ -413,26 +426,70 @@ const HOST_LABEL_BASELINE = {
     'Expand the question card',
   ],
   CLOSE_PANEL_LABELS: ['收起问题面板，可从工具调用重新打开', 'Close the panel — reopen it from the tool call'],
-  /* 结算后同一按钮的文案变成「查看回答」, 恢复入口时也要认它 */
-  ASK_REOPEN_LABELS: ['回答', 'Answer', '查看回答', 'View answers'],
+  /*
+   * 结算后同一按钮的文案变成「查看回答」, 恢复入口时也要认它。
+   * ja 的 ask.reopen 与中文同形, 结算后的 ask.review 是「回答を表示」:
+   * 补它只是恢复宿主回看入口, 不是让装饰链在非中英界面启用。
+   */
+  ASK_REOPEN_LABELS: ['回答', 'Answer', '查看回答', 'View answers', '回答を表示'],
   SUBMIT_TEXTS: ['提交', 'Submit'],
   NEXT_QUESTION_TEXTS: ['下一题', 'Next'],
   SKIP_QUESTION_TEXTS: ['跳过', 'Skip'],
 }
 
 /*
+ * 宿主倒计时与暂停态的识别正则: 它们决定倒计时、无限等待、工具栏开关与自动冻结是否出现。
+ * 取值逐字取自 dsh-client-ui-user-questions 的 wait.countdown 与 wait.paused:
+ * 0.2.1-rc.2 与 0.2.2-rc.1 的中英文版均为
+ * 「{seconds} 秒后继续工作」「已暂停 · 剩余 {seconds} 秒」
+ * 「Continuing in {seconds}s」「Paused · {seconds}s remaining」, 两版逐字一致。
+ * 宿主改一处措辞, 装饰整链会静默失效, 因此这里按源码里的正则模式逐字对账。
+ */
+const HOST_PATTERN_BASELINE = {
+  COUNTDOWN_PATTERNS: [
+    '(\\d+)\\s*秒后(?:继续工作|超时|继续)',
+    '剩余\\s*(\\d+)\\s*秒',
+    '(?:Continuing in|Timeout in) (\\d+)s',
+    'Paused · (\\d+)s remaining',
+  ],
+  PAUSED_TEXT_PATTERNS: ['已暂停', 'Paused'],
+}
+
+/*
+ * 宿主 wait.countdown / wait.paused 的原始文案, 逐字取自两个受支持版本:
+ * temp/pkg-022/ex 下 0.2.2-rc.1 与 temp/ref-pkgs/extracted 下 0.2.1-rc.2 的中英文取值完全相同。
+ * 用它们渲染成实际界面文本, 再要求识别正则能读出秒数并正确区分暂停态:
+ * 只比对正则自身是否改动不够, 宿主措辞一变这里就会先报出来。
+ */
+const HOST_WAIT_TEXT_BASELINE = [
+  { template: '{seconds} 秒后继续工作', paused: false },
+  { template: '已暂停 · 剩余 {seconds} 秒', paused: true },
+  { template: 'Continuing in {seconds}s', paused: false },
+  { template: 'Paused · {seconds}s remaining', paused: true },
+]
+const HOST_WAIT_SAMPLE_SECONDS = '12'
+
+/*
+ * 宿主模型选择控件的无障碍标签前缀。
+ * 已核实 dsh-client-ui-model-selection@0.2.2-rc.1 的 trigger.aria 为
+ * 「选择模型，当前 {model}」与「Select model, current {model}」,
+ * MODEL_SELECTOR_BUTTON 按这两个前缀做选择器匹配, 取值不改, 但必须显式断言前缀没有漂移。
+ */
+const HOST_MODEL_SELECTOR_PREFIXES = ['选择模型', 'Select model']
+
+/*
  * 宿主识别文案数组的登记名: 不在镜像表里, 也不在基线表里, 就是漏登记。
  */
 const HOST_LABEL_ARRAYS = new Set(Object.keys(HOST_LABEL_BASELINE))
 
+/* 宿主识别正则数组的登记名: 不进 ini 镜像, 但必须与 HOST_PATTERN_BASELINE 逐字一致 */
+const HOST_PATTERN_ARRAYS = new Set(Object.keys(HOST_PATTERN_BASELINE))
+
 /*
- * 不是文案的数组常量: 取值是配置枚举或正则, 不参与镜像比对, 也不需要登记。
+ * 不是文案的数组常量: 取值是配置枚举, 不参与镜像比对, 也不需要登记。
+ * 正则数组已改由 HOST_PATTERN_BASELINE 对账, 不能再从这里放行。
  */
-const IGNORED_ARRAYS = new Set([
-  'FALLBACK_MODES',
-  'COUNTDOWN_PATTERNS',
-  'PAUSED_TEXT_PATTERNS',
-])
+const IGNORED_ARRAYS = new Set(['FALLBACK_MODES'])
 
 /*
  * 每个镜像键期望的占位符集合。
@@ -497,6 +554,11 @@ for (const pair of literalPairs()) {
 /* 数组型常量与 ini 键的取值比对 */
 for (const item of arrayLiterals()) {
   if (!item.textual) {
+    /*
+     * 正则数组按 HOST_PATTERN_BASELINE 逐字对账, 不得再靠 IGNORED_ARRAYS 静默跳过。
+     * 其余非字符串数组仍按旧口径要求显式登记。
+     */
+    if (HOST_PATTERN_ARRAYS.has(item.name)) continue
     if (!IGNORED_ARRAYS.has(item.name)) {
       problems.push('数组常量 ' + item.name + ' 含非字符串元素, 需要登记进 IGNORED_ARRAYS')
     }
@@ -529,18 +591,71 @@ for (const item of arrayLiterals()) {
 }
 
 /*
- * 宿主识别文案的数组: 取值必须与基线一致。
- * 这些文案是插件定位宿主控件的唯一依据, 被误改就会静默失效, 因此逐字比对。
+ * 宿主识别文案的数组与正则数组: 取值必须与基线一致。
+ * 这些取值是插件定位宿主控件与读取倒计时的唯一依据, 被误改就会静默失效, 因此逐字比对。
  */
-for (const item of arrayLiterals()) {
-  if (!item.textual) continue
-  if (!HOST_LABEL_ARRAYS.has(item.name)) continue
-  const expected = HOST_LABEL_BASELINE[item.name]
-  if (item.elements.join('\u0000') !== expected.join('\u0000')) {
+const sourceArrays = arrayLiterals()
+const sourceArrayNames = new Set(sourceArrays.map((item) => item.name))
+for (const item of sourceArrays) {
+  const labels = HOST_LABEL_BASELINE[item.name]
+  if (labels !== undefined) {
+    if (!item.textual || item.elements.join('\u0000') !== labels.join('\u0000')) {
+      problems.push(
+        '宿主识别文案数组 ' + item.name + ' 与基线不一致, 改动时需同步检查脚本里的 HOST_LABEL_BASELINE',
+      )
+    }
+    continue
+  }
+  const patterns = HOST_PATTERN_BASELINE[item.name]
+  if (patterns === undefined) continue
+  /* 正则数组必须是纯正则: 写成字符串数组就再也读不出剩余秒数, 这里一并拦下 */
+  if (item.textual || item.patterns.length !== patterns.length || item.patterns.join('\u0000') !== patterns.join('\u0000')) {
     problems.push(
-      '宿主识别文案数组 ' + item.name + ' 与基线不一致, 改动时需同步检查脚本里的 HOST_LABEL_BASELINE',
+      '宿主识别正则数组 ' + item.name + ' 与基线不一致, 改动时需同步检查脚本里的 HOST_PATTERN_BASELINE',
     )
   }
+}
+/* 基线里登记但源码里已经删掉的常量也要报: 否则删掉整个数组就能绕过对账 */
+for (const name of HOST_LABEL_ARRAYS) {
+  if (!sourceArrayNames.has(name)) problems.push('宿主识别文案数组 ' + name + ' 在 src/constants.ts 里不存在')
+}
+for (const name of HOST_PATTERN_ARRAYS) {
+  if (!sourceArrayNames.has(name)) problems.push('宿主识别正则数组 ' + name + ' 在 src/constants.ts 里不存在')
+}
+
+/*
+ * 用登记的原始宿主文案跑一遍识别规则: 倒计时必须能读出示例秒数,
+ * 暂停态判定必须与文案的 paused 标记一致, 否则宿主措辞变化会先在这里报出来。
+ */
+const countdownPatterns = HOST_PATTERN_BASELINE.COUNTDOWN_PATTERNS.map((pattern) => new RegExp(pattern))
+const pausedPatterns = HOST_PATTERN_BASELINE.PAUSED_TEXT_PATTERNS.map((pattern) => new RegExp(pattern))
+for (const sample of HOST_WAIT_TEXT_BASELINE) {
+  const text = sample.template.replace('{seconds}', HOST_WAIT_SAMPLE_SECONDS)
+  const seconds = countdownPatterns.map((pattern) => pattern.exec(text)?.[1]).find((value) => value !== undefined)
+  if (seconds !== HOST_WAIT_SAMPLE_SECONDS) {
+    problems.push('宿主文案 ' + sample.template + ' 已无法由倒计时识别规则读出秒数, 需同步 HOST_PATTERN_BASELINE')
+  }
+  const paused = pausedPatterns.some((pattern) => pattern.test(text))
+  if (paused !== sample.paused) {
+    problems.push('宿主文案 ' + sample.template + ' 的暂停态判定与基线不一致, 需同步 HOST_PATTERN_BASELINE')
+  }
+}
+
+/*
+ * MODEL_SELECTOR_BUTTON 的显式断言: 它不是数组常量, 不在上面的宿主基线里,
+ * 但前缀一旦漂移, 工具栏开关、自动冻结与倒计时整条装饰链都会找不到锚点。
+ * 这里按前缀拼出期望选择器逐字比对, 并核对常量真的被适配器读取。
+ */
+const constantsDeclarations = constDeclarations(constantsSource)
+const modelSelectorValueStart = constValueStart(constantsSource, constantsDeclarations, 'MODEL_SELECTOR_BUTTON')
+const modelSelectorLiteral = modelSelectorValueStart === undefined
+  ? undefined
+  : readStringLiteral(constantsSource, modelSelectorValueStart)
+const expectedModelSelector = HOST_MODEL_SELECTOR_PREFIXES
+  .map((prefix) => 'button[aria-label^="' + prefix + '"]')
+  .join(', ')
+if (modelSelectorLiteral === undefined || modelSelectorLiteral.value !== expectedModelSelector) {
+  problems.push('常量 MODEL_SELECTOR_BUTTON 与宿主模型选择标签前缀登记不一致, 改动时需同步 HOST_MODEL_SELECTOR_PREFIXES')
 }
 
 /* 配置页字典的取值必须与 ini 的 settings.* 一致 */
@@ -579,6 +694,10 @@ for (const key of ['meta.for', 'meta.lang', 'meta.name', 'meta.endtime']) {
  * 否则占位符会原样出现在界面上。
  */
 const adapterSource = readFileSync(join(ROOT, 'src/client/adapter.ts'), 'utf8')
+/* MODEL_SELECTOR_BUTTON 登记了却没人用, 等于宿主改文案时永远不会有人复核这处基线 */
+if (!adapterSource.includes('MODEL_SELECTOR_BUTTON')) {
+  problems.push('src/client/adapter.ts 不再读取 MODEL_SELECTOR_BUTTON, 宿主选择器登记需要复核')
+}
 const replaceTargets = new Map()
 for (const match of adapterSource.matchAll(/\.replace\('(\{[a-zA-Z0-9_]+\})'\s*,\s*([^\n]*)/g)) {
   replaceTargets.set(match[1], match[2])
