@@ -7,8 +7,10 @@
  * 客户端也会在提问进行中上报草稿快照, 工具到期时取走这份快照随 pending 结果交给模型。
  *
  * 端点挂在宿主服务上而不是自开回环端口, 是为了让通道与界面同源:
- * 同源请求不带 Origin, 跨源请求带 Origin 且必须与请求地址同主机同端口,
- * 因此同机其他网页拿不到令牌, 也伪造不了草稿或「无限等待」。
+ * 同源请求不带 Origin, 跨源请求的 Origin 必须与请求的 Host 自洽;
+ * 另外请求 Host 的主机名必须落在回环白名单里, 否则 DNS rebinding 下攻击者域名解析到回环后,
+ * Origin 与 Host 会一起变成攻击者域名, 自洽检查形同虚设。
+ * 两道检查合起来, 同机其他网页拿不到令牌, 也伪造不了草稿或「无限等待」。
  * 作者: JularDepick
  */
 
@@ -242,11 +244,12 @@ function sweepTrackedCalls(): void {
 }
 
 /*
- * 来源是否指向宿主页面。
+ * 带 Origin 时, 来源是否与请求的 Host 自洽。
  *
  * 通道挂在宿主自己的 HTTP 服务上, 因此宿主页面发出的请求, Host 头就是它所在地址;
  * 同机其他网页的请求, Host 是它自己的地址, Origin 也指向它自己, 与宿主页面对不上。
- * 浏览器同源请求不带 Origin, 那种请求本来就来自宿主页面自己。
+ * 但自洽比对只能证明 Origin 与 Host 是同一个值: DNS rebinding 下这两个值都由攻击者给出,
+ * 因此端点都在它之前先过 Host 的回环白名单, 不带 Origin 的请求也要过那道白名单。
  */
 function isHostOrigin(origin: string, host: string | undefined): boolean {
   if (host === undefined || host === '') return false
@@ -283,14 +286,47 @@ function normalizeHost(value: string): string {
 }
 
 /*
+ * 回环主机名白名单: 宿主页面从本机回环地址打开这个通道。
+ * 白名单由代码给定, 不取请求方提供的字段, DNS rebinding 改不动它;
+ * localhost 与 127.0.0.1 都收下, [::1] 是 IPv6 回环在 Host 头里的写法。
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+/*
+ * 请求的 Host 是否指向本机回环。
+ *
+ * 这道检查对不带 Origin 的同源请求同样生效: DNS rebinding 下攻击者域名解析到回环后,
+ * 它自己发出的同源请求不带 Origin, 带 Origin 的也能让 Origin 与 Host 同时写成攻击者域名,
+ * 只靠 isHostOrigin 的自洽比对挡不住, 因此两个端点都在原有检查之前先过这道白名单。
+ * 大小写差异由 URL 解析归一, 带 userinfo 或路径的畸形 Host 一律拒绝。
+ */
+function isLoopbackHost(host: string | undefined): boolean {
+  if (host === undefined || host === '') return false
+  try {
+    const parsed = new URL('http://' + host)
+    if (parsed.username !== '' || parsed.password !== '') return false
+    if (parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') return false
+    return LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+/*
  * 令牌读取端点: 只给宿主页面发令牌。
  *
  * 浏览器同源请求不带 Origin, 跨源请求一定带 Origin:
- * 不带 Origin 的请求来自宿主页面自己, 带 Origin 的必须与请求地址同主机同端口,
- * 否则是同机其他网页, 一律拒绝 —— 它们拿到令牌就能伪造草稿或「无限等待」上报。
+ * 不带 Origin 的请求同样要先过请求 Host 的回环白名单, 带 Origin 的还要与 Host 同主机同端口,
+ * 否则是同机其他网页或 DNS rebinding, 一律拒绝 —— 它们拿到令牌就能伪造草稿或「无限等待」上报。
  */
 function serveToken(request: IncomingMessage, response: ServerResponse): boolean {
   if (request.method !== 'GET' || request.url !== SYNC_PATH + '-token') return false
+  /* 先挡 DNS rebinding: 攻击者域名解析到回环后, 它给出的 Host 不是回环字面量 */
+  if (!isLoopbackHost(request.headers.host)) {
+    response.writeHead(403)
+    response.end()
+    return true
+  }
   const origin = request.headers.origin
   if (typeof origin === 'string') {
     if (!isHostOrigin(origin, request.headers.host)) {
@@ -308,6 +344,12 @@ function serveToken(request: IncomingMessage, response: ServerResponse): boolean
 
 /* 处理一次上报请求 */
 function handleStateRequest(request: IncomingMessage, response: ServerResponse): void {
+  /* 先挡 DNS rebinding: 无 Origin 的同源请求也要过这道回环白名单 */
+  if (!isLoopbackHost(request.headers.host)) {
+    response.writeHead(403)
+    response.end()
+    return
+  }
   const origin = request.headers.origin
   if (typeof origin === 'string') {
     /* 来源必须与请求地址同主机同端口, 否则是同机其他网页, 一律拒绝 */

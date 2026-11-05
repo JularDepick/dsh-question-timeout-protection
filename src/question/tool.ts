@@ -26,6 +26,7 @@ import {
 } from '../sync/server'
 import {
   ASK_USER_TOOL_NAME,
+  DEFAULT_DRAFT_FALLBACK,
   DEFAULT_FALLBACK_MODE,
   DEFAULT_TIMEOUT_SECONDS,
   DRAFT_GRACE_MS,
@@ -40,7 +41,7 @@ import {
 
 /* 模型侧工具说明 */
 const TOOL_DESCRIPTION =
-  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: that question batch is closed and the user cannot answer it any more, so decide yourself whether to ask again.'
+  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: that round has already been settled as timed out, and an answer submitted later is not adopted by this tool, so decide yourself whether to ask again.'
 
 /* 模型侧问题数组说明 */
 const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'
@@ -282,6 +283,11 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       const timeoutSeconds = resolveTimeout(args.timeout, configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)
       const infiniteEnabled = configValue(config.infiniteWait) ?? true
       /*
+       * 草稿兜底总开关: 关闭时客户端既不上报草稿也不收尾卡片, 服务端就不该等宽限期,
+       * 也不能把「没有快照」解释成草稿通道不可达。
+       */
+      const draftFallbackEnabled = configValue(config.draftFallback) ?? DEFAULT_DRAFT_FALLBACK
+      /*
        * 草稿是否进入模型上下文由配置决定: 兜底范围为 ui 时只把草稿留在界面里回看,
        * 不随工具返回值交给模型, 免得绕过用户在配置页关掉的「注入到上下文」。
        */
@@ -394,15 +400,16 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       })
       /*
        * 超时结果: 客户端在用户编辑卡片时就把草稿快照持续上报到状态通道,
-       * 到期时在这里取回最新的一份, 随 pending 结果一起交给模型 ——
-       * 草稿因此走的是工具返回值这条通道, 不再依赖事后的晚回复注入。
+       * 到期时取回最新的一份随 pending 结果交给模型, 不走宿主的晚回复通道。
+       * 三个超时出口共用同一套组装逻辑, 保证草稿与说明的口径一致。
        */
-      /*
-       * 到期结果的生成。
-       * 先等一小段宽限时间, 等客户端把草稿快照送上来; 宽限期内如果「无限等待」的
-       * 状态到达了(用户在到期瞬间点了无限等待), 说明这一轮提问其实还想继续等,
-       * 这时不能按超时结算, 返回 null 让调用方继续阻塞等待。
-       */
+      type PendingResult = {
+        pending: true
+        callId: string
+        message: string
+        draftMissing?: true
+        draft?: Array<{ id: string; selected: string[]; custom?: string }>
+      }
       /*
        * 草稿只能取一次: 到期结果可能同时被竞态的两条臂生成, 而 awaitDraft 取走即删除,
        * 第二条臂会拿到 undefined, 于是模型收到的超时结果里没有草稿。
@@ -416,23 +423,30 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         draftCache.set(callId, created)
         return created
       }
-      const pendingResult = async (
-        callId: string,
-        checkInfinite: boolean,
-      ): Promise<{
-        pending: true
-        callId: string
-        message: string
-        draftMissing?: true
-        draft?: Array<{ id: string; selected: string[]; custom?: string }>
-      } | null> => {
+      /*
+       * 到期结果的生成: 先等一小段宽限时间, 等客户端把草稿快照送上来;
+       * checkInfinite 为 true 时, 宽限期内到达的「无限等待」返回 null 让调用方继续阻塞等待;
+       * 为 false 时该出口已确定按超时结算, 不再检查「无限等待」, 也就不会返回 null。
+       */
+      function pendingResult(callId: string, checkInfinite: false): Promise<PendingResult>
+      function pendingResult(callId: string, checkInfinite: boolean): Promise<PendingResult | null>
+      async function pendingResult(callId: string, checkInfinite: boolean): Promise<PendingResult | null> {
         /*
          * 「无限等待」的判定要先做: 它只查状态通道, 不需要等草稿快照。
          */
         if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) return null
         /*
-         * 兜底范围为 ui 时草稿不进模型上下文, 客户端也不会上报快照,
-         * 这时不必等宽限期, 直接按超时结算, 免得每次超时都白等几秒。
+         * 草稿兜底关闭时客户端从一开始就不上报草稿, 也不接管卡片: 既不等宽限期,
+         * 也不能把「没有快照」说成通道不可达, 直接返回纯超时说明。
+         * 这与下面两件事互不相同: injectsDraft 为 false 是客户端照样上报、服务端不读;
+         * hasSyncChannel() 为 false 是部署里根本没有网页客户端可上报。
+         */
+        if (!draftFallbackEnabled) {
+          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+        }
+        /*
+         * 兜底范围为 ui 时草稿不进模型上下文: 客户端仍照常上报快照,
+         * 但服务端不取也不带 draft, 因此直接结算, 不必白等一段宽限期。
          */
         if (!injectsDraft) {
           return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
@@ -467,12 +481,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
         }
         /*
-         * 客户端按顺序上报草稿(它不知道题目的 id), 这里按提问顺序把序号对应回 id,
-         * 顺序之外的条目直接丢弃, 免得给模型一份对不上的草稿。
-         */
-        /*
-         * 客户端只按序号上报草稿, 这里按权威题目顺序映射回 id;
-         * 两边顺序不一致时立刻说明, 免得把草稿挂到错的题目上却看不出问题。
+         * 客户端只按题序上报草稿(它不知道题目的 id), 这里按权威题目顺序映射回 id;
+         * 顺序之外的条目直接丢弃, 序号越界时给出提示, 免得把草稿挂到错的题目上却看不出问题。
          */
         const authority = callQuestionOrder(callId)
         if (authority !== undefined && draft.some((item) => item.index >= authority.length)) {
@@ -545,21 +555,14 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           const settled = await wait
           if (!('pending' in settled)) return toAnswers(settled)
           /*
-           * 宿主自己也已经把这批问题结算成超时了, 无可再等;
-           * 这时按超时出结果, 不再因为「无限等待」继续挂着。
+           * 冻结后用户关页或刷新, 宿主释放前台等待的 claim, 定时器把这一轮结算成 pending:
+           * 已无可再等, 但通道里已送达的草稿快照必须按正常超时出口的口径取走,
+           * 否则 finally 里的 clearDraft 会把没人取的草稿删掉。
+           * 「无限等待」的登记此刻不再代表还有人在等, 先撤掉它: awaitDraft 见到这条登记
+           * 会直接返回 undefined, 不清掉就会把已送达的草稿误报成「没有快照」。
            */
-          /*
-           * 宿主自己已经把这批问题结算成超时了, 这时再查一次「无限等待」:
-           * 用户若在到期瞬间点了无限等待, 而上报刚好在这个时刻到达, 就按继续等待处理,
-           * 否则界面显示「已暂停」而模型这边已经超时, 两边对不上。
-           */
-          if (infiniteEnabled && isInfiniteWait(exec.callId)) {
-            const stillWaiting = await wait
-            if (!('pending' in stillWaiting)) return toAnswers(stillWaiting)
-            return { pending: true, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }
-          }
-          const settledPending = await pendingResult(settled.callId, false)
-          return settledPending ?? { pending: true, callId: settled.callId, message: TIMEOUT_PENDING_NOTICE }
+          clearInfiniteWait(exec.callId)
+          return await pendingResult(settled.callId, false)
         }
         /*
          * 到期时先等一小段宽限时间, 等客户端把草稿快照送上来;
@@ -598,8 +601,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          */
         const again = await wait
         if (!('pending' in again)) return toAnswers(again)
-        const second = await pendingResult(again.callId, false)
-        return second ?? { pending: true, callId: again.callId, message: TIMEOUT_PENDING_NOTICE }
+        return await pendingResult(again.callId, false)
       } finally {
         /* 释放宿主那边还没结算的前台等待 */
         waitController.abort()

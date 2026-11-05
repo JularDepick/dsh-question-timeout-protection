@@ -194,9 +194,10 @@ export const AUTO_INFINITE_STATE_OFF = 'off'
 /** 常开开关的持久化键: 开关状态跨刷新保留 */
 export const AUTO_INFINITE_STORAGE_KEY = 'dsh.question-timeout-protection.auto-infinite'
 
-/**
- * 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希.
- * 这是选择器字符串, 不在 check-translation.mjs 的宿主基线表范围, 宿主改文案时需人工核对.
+/*
+ * 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希。
+ * 取值不改: 宿主 0.2.2-rc.1 的 trigger.aria 是「选择模型，当前 {model}」与「Select model, current {model}」,
+ * 前缀匹配成立; scripts/check-translation.mjs 对这两个前缀与宿主标签有显式断言, 改动时同步那处登记。
  */
 export const MODEL_SELECTOR_BUTTON = 'button[aria-label^="选择模型"], button[aria-label^="Select model"]'
 
@@ -257,8 +258,13 @@ export const CLOSE_PANEL_LABELS: readonly string[] = [
   'Close the panel — reopen it from the tool call',
 ]
 
-/** 宿主提问工具行「回答」按钮的文案(中文与英文),超时后隐藏以免重新打开问答框; 结算后同一按钮变成「查看回答」, 恢复入口时也要认它 */
-export const ASK_REOPEN_LABELS: readonly string[] = ['回答', 'Answer', '查看回答', 'View answers']
+/*
+ * 宿主提问工具行「回答」按钮的文案(中文与英文), 超时后隐藏以免重新打开问答框;
+ * 结算后同一按钮变成「查看回答」, 恢复入口时也要认它。
+ * ja 的 ask.reopen 与中文同形, 结算后的 ask.review 变成「回答を表示」:
+ * 补这条只是让 showHostReopen 认回被隐藏的入口, 不是让装饰链在 ja 界面启用。
+ */
+export const ASK_REOPEN_LABELS: readonly string[] = ['回答', 'Answer', '查看回答', 'View answers', '回答を表示']
 
 /** 草稿悬浮卡片与气泡之间的间距(px) */
 export const DRAFT_PANEL_OFFSET = 8
