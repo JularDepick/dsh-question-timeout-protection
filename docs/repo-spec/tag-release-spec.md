@@ -12,6 +12,15 @@
 
 ## Release
 
-遵守 `<版本号>-dsh-<本版本实测验证过的最高 dsh 版本号>` 格式, 例如 `v0.1.0-dsh-0.2.2-rc.1`.
+遵守 `<版本号>-dsh-<本版本实测验证过的最高 dsh 版本号>` 格式, 例如 `v0.1.0-dsh-0.2.2-rc.1`(仅示意格式, 实际取名以本版本实测结果为准).
 
 > `engines.dsh` 可以声明一个覆盖范围(当前为 `>=0.2.1-rc.1 <=0.2.2-rc.1`), 而 Release 名只能写一个版本号, 因此取该范围内实测验证过的最高版本. 范围内的其余版本由 `engines.dsh` 与 README 的兼容性小节说明; 新增受支持版本时优先扩大范围, 只有出现不兼容变更才迭代项目版本号并另发 Release.
+
+## 发布前检查
+
+1. `pnpm run check:translation`: 三份翻译文件与配置页字典键集一致
+2. `pnpm run typecheck`: 类型检查无错
+3. `pnpm run pack:release`: 构建并产出 `release/` 内的 tarball
+4. 核对 tarball: 文件清单为 `dist/` 三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与 `dist` 内的新文案与工作区一致
+5. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入
+6. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本
