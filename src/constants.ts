@@ -251,8 +251,8 @@ export const CLOSE_PANEL_LABELS: readonly string[] = [
   'Close the panel — reopen it from the tool call',
 ]
 
-/** 宿主提问工具行「回答」按钮的文案(中文与英文),超时后隐藏以免重新打开问答框 */
-export const ASK_REOPEN_LABELS: readonly string[] = ['回答', 'Answer']
+/** 宿主提问工具行「回答」按钮的文案(中文与英文),超时后隐藏以免重新打开问答框; 结算后同一按钮变成「查看回答」, 恢复入口时也要认它 */
+export const ASK_REOPEN_LABELS: readonly string[] = ['回答', 'Answer', '查看回答', 'View answers']
 
 /** 草稿悬浮卡片与气泡之间的间距(px) */
 export const DRAFT_PANEL_OFFSET = 8

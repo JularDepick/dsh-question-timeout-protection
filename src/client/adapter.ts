@@ -127,6 +127,9 @@ interface QuestionMeta {
   id: string
   question?: string
   header?: string
+  /* 选项原文与是否多选: 宿主会用带推荐后缀的原文做持久化, 读卡片的显示文案时需要还原 */
+  options?: ReadonlyArray<{ label?: string }>
+  multiSelect?: boolean
 }
 
 /** 会话投影面 */
@@ -391,16 +394,45 @@ function ensureStyle(): () => void {
   }
 }
 
+/* 去掉宿主为推荐项附加的末尾后缀, 还原成无障碍标签里的显示文案 */
+function stripRecommendedSuffix(label: string): string {
+  return label.replace(/\s*(?:\((?:recommended|推荐)\)|（(?:recommended|推荐)）)\s*$/i, '').trim()
+}
+
+/*
+ * 宿主会在卡片打开时预选推荐项(单选取第一个, 多选取全部), 这些值不是用户的选择。
+ * 按投影里的选项原文认出它们, 才能只剥掉预选值, 保留刷新前用户真正点过的其它项。
+ */
+function recommendedOptionLabels(question?: QuestionMeta): string[] {
+  const labels = (question?.options ?? [])
+    .map((option) => (typeof option.label === 'string' ? option.label : ''))
+    .filter((label) => label !== '')
+  const marked = labels.filter((label) => stripRecommendedSuffix(label) !== label)
+  return question?.multiSelect === true ? marked : marked.slice(0, 1)
+}
+
+/* 从选中项里去掉宿主预选的推荐项 */
+function dropRecommended(selected: readonly string[], question?: QuestionMeta): string[] {
+  const recommended = new Set(recommendedOptionLabels(question))
+  return selected.filter((label) => !recommended.has(label))
+}
+
 /*
  * 读取卡片里已选的选项文案。
  * 用无障碍标签而不是节点文本: 选项按钮里同时含标号, 标题与说明, 文本会拼成一大段,
- * 而宿主持久化的 selected 用的正是这个标签, 两者必须一致才不会把说明当成选项。
+ * 而宿主持久化的 selected 用的是选项原文(可能带推荐后缀), 两者必须一致才不会把同一项算成两条。
+ * 有题目原文时按去后缀后的显示文案反查原文, 取不到才退回无障碍标签本身。
  */
-function readSelected(card: HTMLElement): string[] {
+function readSelected(card: HTMLElement, question?: QuestionMeta): string[] {
   const selected: string[] = []
+  const originals = (question?.options ?? [])
+    .map((option) => (typeof option.label === 'string' ? option.label : ''))
+    .filter((label) => label !== '')
   for (const button of Array.from(card.querySelectorAll('button[aria-checked="true"]'))) {
-    const label = (button.getAttribute('aria-label') ?? '').trim()
-    if (label !== '' && !selected.includes(label)) selected.push(label)
+    const display = (button.getAttribute('aria-label') ?? '').trim()
+    if (display === '') continue
+    const label = originals.find((original) => stripRecommendedSuffix(original) === display) ?? display
+    if (!selected.includes(label)) selected.push(label)
   }
   return selected
 }
@@ -498,12 +530,12 @@ function readHostDrafts(identity: CardIdentity, count: number): DraftItem[] | un
 }
 
 /* 宿主没有持久化记录时, 至少把卡片当前显示这一题的作答放到对应位置 */
-function readLiveDrafts(card: HTMLElement | undefined, count: number): DraftItem[] {
+function readLiveDrafts(card: HTMLElement | undefined, count: number, selected: string[]): DraftItem[] {
   const items = Array.from({ length: count }, () => emptyItem())
   if (card === undefined) return items
   const progress = readProgress(card)
   if (progress === undefined || progress.index >= count) return items
-  items[progress.index] = { selected: readSelected(card), custom: readCustom(card), skipped: false }
+  items[progress.index] = { selected: [...selected], custom: readCustom(card), skipped: false }
   return items
 }
 
@@ -752,6 +784,14 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const deferred = new Map<string, ProjectionRow>()
   /* 投影里每个调用的题目数: 上报草稿时用它兜底题数, 避免只报第一题 */
   const projectedCounts = new Map<string, number>()
+  /* 投影里的题目原文: 宿主回传的 selected 用原文, 卡片无障碍标签用去掉推荐后缀的显示文案 */
+  const projectedQuestions = new Map<string, ReadonlyArray<QuestionMeta>>()
+  /*
+   * 用户实际点过选项的题目页码(键为 callId)。
+   * 宿主 0.2.2 会在卡片打开时预选推荐项, 没点过选项就把 aria-checked 当成用户草稿,
+   * 会把用户没有触碰的推荐项交给模型; 只有确实点过选项的题目才读取选中态。
+   */
+  const optionInteractions = new Map<string, Set<number>>()
   /*
    * 投影里仍然活动的调用: 只有这些调用值得上报草稿。
    * 已结算的历史卡片也会被扫描到, 为它们持续上报只会产生无人取走的请求。
@@ -768,6 +808,36 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 回收时必须知道某条登记归谁, 否则一个会话的更新会清掉另一个会话的状态。
    */
   const callSessions = new Map<string, string>()
+
+  /*
+   * 读取当前卡片这一题的用户选中项: 没点过选项时只去掉宿主预选的推荐项,
+   * 刷新后宿主从本地草稿恢复的真实选择仍保留。
+   */
+  const readLiveSelected = (card: HTMLElement, callId: string): string[] => {
+    const index = readProgress(card)?.index ?? 0
+    const question = projectedQuestions.get(callId)?.[index]
+    const selected = readSelected(card, question)
+    if (optionInteractions.get(callId)?.has(index) === true) return selected
+    return dropRecommended(selected, question)
+  }
+
+  /*
+   * 宿主持久化的草稿同样要过一遍交互门: 用户在卡片里打字或点「慢慢回答」时,
+   * 宿主会把当前选中态(含它预选的推荐项)一起落盘, 没点过选项的题目只保留自由文本。
+   */
+  const gateDraftSelections = (items: DraftItem[] | undefined, callId: string): DraftItem[] | undefined => {
+    if (items === undefined) return undefined
+    const touched = optionInteractions.get(callId)
+    return items.map((item, index) =>
+      touched?.has(index) === true
+        ? item
+        : {
+            selected: dropRecommended(item.selected, projectedQuestions.get(callId)?.[index]),
+            custom: item.custom,
+            skipped: item.skipped,
+          },
+    )
+  }
 
   /* 记下调用归属的会话 */
   const rememberCallSession = (identity: CardIdentity): void => {
@@ -818,6 +888,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     draftSyncFailures.delete(callId)
     draftReportedAt.delete(callId)
     projectedCounts.delete(callId)
+    projectedQuestions.delete(callId)
+    optionInteractions.delete(callId)
     callActive.delete(callId)
     callTouchedAt.delete(callId)
     draftTooLarge.delete(callId)
@@ -1419,6 +1491,16 @@ function hideHostWaitText(root: HTMLElement): void {
   }
 
   /*
+   * 恢复宿主「回答」按钮。
+   * 已超时的调用若晚回复结算, 同一枚按钮会变成「查看回答」入口;
+   * 隐藏类不能一直留着, 否则用户永久失去回看入口。
+   */
+  const showHostReopen = (row: HTMLElement): void => {
+    const button = findHostReopen(row)
+    if (button !== undefined) button.classList.remove(HIDDEN_CONTROL_CLASS)
+  }
+
+  /*
    * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡。
    * 宿主自己那枚「回答」气泡与插件气泡功能冲突, 取缔掉它 —— 需要看回答草稿时用插件气泡,
    * 未超时且正常作答的行则由宿主的问答卡片本身承接, 不再额外提供重新打开的入口。
@@ -1426,6 +1508,8 @@ function hideHostWaitText(root: HTMLElement): void {
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
     if (callId === undefined) return
+    /* 该调用不在超时接管状态时, 宿主入口必须恢复可见 */
+    if (!timedOut.has(callId)) showHostReopen(row)
     const button = ensureBubble(row)
     if (button === undefined) return
     /* 已交还宿主的行不出现插件气泡, 宿主「回答」入口保持可见 */
@@ -1491,8 +1575,8 @@ function hideHostWaitText(root: HTMLElement): void {
     const projected = projectedCounts.get(identity.callId) ?? 1
     const count = Math.max(progress?.count ?? 1, projected)
     const items = mergeDrafts(
-      readHostDrafts(identity, count),
-      readLiveDrafts(card, count),
+      gateDraftSelections(readHostDrafts(identity, count), identity.callId),
+      readLiveDrafts(card, count, readLiveSelected(card, identity.callId)),
       lastDrafts.get(identity.callId),
       count,
       progress?.index,
@@ -1571,8 +1655,8 @@ function hideHostWaitText(root: HTMLElement): void {
      * 宿主的记录取不到(存储不可用或题数对不上)时, 用插件自己记录的快照兜底。
      */
     const items = mergeDrafts(
-      readHostDrafts(identity, count),
-      readLiveDrafts(card, count),
+      gateDraftSelections(readHostDrafts(identity, count), identity.callId),
+      readLiveDrafts(card, count, card === undefined ? [] : readLiveSelected(card, row.callId)),
       stored,
       count,
       liveIndex,
@@ -1652,6 +1736,7 @@ function hideHostWaitText(root: HTMLElement): void {
        * 必须对全部活动行记录: 草稿上报发生在提问进行中(open), 等到 continued 才记就晚了。
        */
       projectedCounts.set(row.callId, row.questions.length)
+      projectedQuestions.set(row.callId, row.questions)
       if (row.state !== 'continued') continue
       evaluateRow({ sessionId, callId: row.callId }, row)
     }
@@ -1801,6 +1886,23 @@ function hideHostWaitText(root: HTMLElement): void {
   const onDocumentClick = (event: Event): void => {
     const target = event.target
     if (!(target instanceof Element)) return
+    /*
+     * 先记录用户点过选项: 宿主 0.2.2 打开卡片时就会预选推荐项,
+     * 只有用户实际点过选项, 卡片上的 aria-checked 才能当作他的选择。
+     */
+    const option = target.closest('button[role="radio"], button[role="checkbox"]')
+    if (option instanceof HTMLElement) {
+      const card = option.closest(QUESTION_CARD_SELECTOR)
+      if (card instanceof HTMLElement) {
+        const identity = parseCardKey(card.getAttribute('data-question-key'))
+        if (identity !== undefined) {
+          const index = readProgress(card)?.index ?? 0
+          const touched = optionInteractions.get(identity.callId) ?? new Set<number>()
+          touched.add(index)
+          optionInteractions.set(identity.callId, touched)
+        }
+      }
+    }
     const button = target.closest(CARD_BUTTON_SELECTOR)
     if (!(button instanceof HTMLElement)) return
 
@@ -1905,8 +2007,8 @@ function hideHostWaitText(root: HTMLElement): void {
         lastDrafts.set(
           identity.callId,
           mergeDrafts(
-            readHostDrafts(identity, count),
-            readLiveDrafts(element, count),
+            gateDraftSelections(readHostDrafts(identity, count), identity.callId),
+            readLiveDrafts(element, count, readLiveSelected(element, identity.callId)),
             previous,
             count,
             progress?.index,

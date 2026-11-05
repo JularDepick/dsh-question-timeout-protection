@@ -413,7 +413,8 @@ const HOST_LABEL_BASELINE = {
     'Expand the question card',
   ],
   CLOSE_PANEL_LABELS: ['收起问题面板，可从工具调用重新打开', 'Close the panel — reopen it from the tool call'],
-  ASK_REOPEN_LABELS: ['回答', 'Answer'],
+  /* 结算后同一按钮的文案变成「查看回答」, 恢复入口时也要认它 */
+  ASK_REOPEN_LABELS: ['回答', 'Answer', '查看回答', 'View answers'],
   SUBMIT_TEXTS: ['提交', 'Submit'],
   NEXT_QUESTION_TEXTS: ['下一题', 'Next'],
   SKIP_QUESTION_TEXTS: ['跳过', 'Skip'],

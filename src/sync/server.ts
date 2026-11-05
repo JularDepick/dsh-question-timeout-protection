@@ -447,30 +447,71 @@ export function registerQuestionSyncRoute(webServer: {
   register: (route: { kind: 'exact'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }) => () => void
   getOrigin?: () => string | undefined
 }): () => void {
-  const off = webServer.register({ kind: 'exact', path: SYNC_PATH, handler: handleStateRequest })
-  const offToken = webServer.register({
-    kind: 'exact',
-    path: SYNC_PATH + '-token',
-    handler: handleStateRequest,
-  })
-  /* 只读诊断端点也要单独登记: 宿主按精确路径路由, 不登记就取不到 */
-  const offState = webServer.register({
-    kind: 'exact',
-    path: SYNC_PATH + '-state',
-    handler: handleStateRequest,
-  })
-  syncChannelReady = true
-  console.info('[question-timeout-protection] 状态同步路由已挂在宿主 HTTP 服务上: ' + SYNC_PATH)
-  return () => {
-    syncChannelReady = false
-    off()
-    offToken()
-    offState()
+  /*
+   * 热更新可能先装载新实例再释放旧实例, 而宿主对重复的 (kind, path) 直接抛错。
+   * 路由因此按引用计数只注册一次: 后来的实例复用已有路由, 最后一个使用者离开时才注销。
+   */
+  if (detachRoutes === undefined) {
+    const offs: Array<() => void> = []
+    try {
+      offs.push(webServer.register({ kind: 'exact', path: SYNC_PATH, handler: handleStateRequest }))
+      offs.push(webServer.register({ kind: 'exact', path: SYNC_PATH + '-token', handler: handleStateRequest }))
+      /* 只读诊断端点也要单独登记: 宿主按精确路径路由, 不登记就取不到 */
+      offs.push(webServer.register({ kind: 'exact', path: SYNC_PATH + '-state', handler: handleStateRequest }))
+    } catch (error) {
+      /* 三条路由要么全挂上要么全撤掉, 不能留下半套路由让客户端上报到一半 */
+      for (const off of offs.reverse()) {
+        try {
+          off()
+        } catch {
+          /* 回滚失败不应覆盖原始注册错误 */
+        }
+      }
+      throw error
+    }
+    detachRoutes = () => {
+      for (const off of offs.reverse()) {
+        try {
+          off()
+        } catch {
+          /* 宿主可能已随实例一起销毁, 注销失败不再抛出 */
+        }
+      }
+    }
+    syncChannelReady = true
+    console.info('[question-timeout-protection] 状态同步路由已挂在宿主 HTTP 服务上: ' + SYNC_PATH)
   }
+  channelUsers += 1
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    channelUsers = Math.max(0, channelUsers - 1)
+    if (channelUsers > 0) return
+    detachRoutes?.()
+    detachRoutes = undefined
+    /* 路由已全部撤销: 把登记表一起清空, 避免旧调用的状态留到 TTL 过期 */
+    clearSyncState()
+  }
+}
+
+/* 清空通道登记的全部状态(只在没有使用者时调用) */
+function clearSyncState(): void {
+  syncChannelReady = false
+  infiniteCalls.clear()
+  draftReports.clear()
+  draftReportedAt.clear()
+  callDeadlines.clear()
+  callQuestionOrders.clear()
+  settledCalls.clear()
 }
 
 /* 状态通道是否已经挂在宿主 HTTP 服务上, 供工具判断要不要等客户端上报 */
 let syncChannelReady = false
+
+/* 通道路由的引用计数与注销函数: 新旧实例并存时共享同一套路由 */
+let channelUsers = 0
+let detachRoutes: (() => void) | undefined
 
 /* 是否有可用的状态通道 */
 export function hasSyncChannel(): boolean {
@@ -525,11 +566,10 @@ export function clearInfiniteWait(callId: string): void {
 
 /** 清空状态通道里登记的全部状态 */
 export function stopQuestionSync(): void {
-  syncChannelReady = false
-  infiniteCalls.clear()
-  draftReports.clear()
-  draftReportedAt.clear()
-  callDeadlines.clear()
-  callQuestionOrders.clear()
-  settledCalls.clear()
+  /*
+   * 旧实例卸载时若还有新实例在用同一套路由, 清空共享登记会把新实例刚登记的调用一起抹掉,
+   * 无限等待与草稿注入随即静默失效; 只有最后一个使用者离开时才清空。
+   */
+  if (channelUsers > 0) return
+  clearSyncState()
 }

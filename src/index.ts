@@ -39,9 +39,17 @@ export function apply(ctx: Context, config: Config): void {
     }
     const webServer = holder.webServer
     if (webServer === undefined) return
-    syncStarted = true
-    const off = registerQuestionSyncRoute(webServer)
-    holder.effect?.(() => off)
+    try {
+      const off = registerQuestionSyncRoute(webServer)
+      syncStarted = true
+      holder.effect?.(() => off)
+    } catch (error) {
+      /* 路由冲突或宿主拒绝注册时降级: 通道不可用, 但插件其余部分照常工作 */
+      console.warn(
+        '[question-timeout-protection] 状态同步路由注册失败, 「无限等待」与草稿上报在本部署不可用',
+        error,
+      )
+    }
   })
   /*
    * inject 在依赖缺席时只会让回调永不执行, 本身不留痕迹; 若该服务名与目标构建不符,
