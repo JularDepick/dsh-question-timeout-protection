@@ -93,6 +93,7 @@ import {
   SKIP_QUESTION_TEXTS,
   SUBMIT_TEXTS,
   SYNC_PATH,
+  SYNC_REQUEST_TIMEOUT_MS,
   TAKE_TIME_TEXTS,
   TOOL_CALL_ID_ATTRIBUTE,
   TOOL_CALL_ID_SELECTOR,
@@ -408,7 +409,9 @@ function recommendedOptionLabels(question?: QuestionMeta): string[] {
     .map((option) => (typeof option.label === 'string' ? option.label : ''))
     .filter((label) => label !== '')
   const marked = labels.filter((label) => stripRecommendedSuffix(label) !== label)
-  return question?.multiSelect === true ? marked : marked.slice(0, 1)
+  if (question?.multiSelect === true) return marked
+  /* 宿主单选只预选「第一个选项」且它带推荐标记时的那一项, 第二项带标记不算预选 */
+  return labels.length > 0 && stripRecommendedSuffix(labels[0]) !== labels[0] ? [labels[0]] : []
 }
 
 /* 从选中项里去掉宿主预选的推荐项 */
@@ -617,8 +620,15 @@ function resolveProjectionFace(ctx: AdapterContext, sessionId: string): Projecti
  * 只认明确的成功应答: 宿主的单页应用兜底路由对未知路径也可能回 200 并给出页面,
  * 只看 response.ok 会把"没人接收"当成"已登记", 于是到期照样按超时提交草稿。
  */
+function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  /* 请求挂起时不能让令牌 Promise 或连续失败计数一起卡死, 超时按普通失败处理 */
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS)
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer))
+}
+
 function postState(url: string, body: unknown, token: string): Promise<StateReply> {
-  return fetch(url, {
+  return fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-qtp-token': token },
     body: JSON.stringify(body),
@@ -673,7 +683,7 @@ function invalidateToken(): void {
 
 async function fetchToken(url: string): Promise<string | undefined> {
   try {
-    const response = await fetch(url, { headers: { accept: 'application/json' } })
+    const response = await fetchWithTimeout(url, { headers: { accept: 'application/json' } })
     if (!response.ok) return undefined
     const payload = (await response.json()) as { token?: unknown }
     return typeof payload.token === 'string' && payload.token !== '' ? payload.token : undefined
@@ -1303,20 +1313,34 @@ function hideHostWaitText(root: HTMLElement): void {
     }
   }
 
-  /* 点击「无限等待」: 冻结本次问答的倒计时, 直到用户提交为止 */
-  const pauseCountdown = (card: HTMLElement, identity: CardIdentity): void => {
-    if (paused.has(identity.callId)) return
-    const deadline = deadlines.get(identity.callId)
-    paused.set(identity.callId, deadline === undefined ? 0 : Math.max(0, deadline - Date.now()))
-    /* 同步触发宿主自带的「慢慢回答」, 让宿主自己的定时器也停下 */
+  /* 触发宿主自带的「慢慢回答」, 让宿主自己的定时器也停下 */
+  const clickHostTakeTime = (identity: CardIdentity): void => {
+    const card = findCard(identity)
+    if (card === undefined) return
     for (const element of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
       if (!TAKE_TIME_TEXTS.includes(element.textContent?.trim() ?? '')) continue
       element.click()
       break
     }
+  }
+
+  /* 点击「无限等待」: 冻结本次问答的倒计时, 直到用户提交为止 */
+  const pauseCountdown = (card: HTMLElement, identity: CardIdentity): void => {
+    if (paused.has(identity.callId)) return
+    const deadline = deadlines.get(identity.callId)
+    paused.set(identity.callId, deadline === undefined ? 0 : Math.max(0, deadline - Date.now()))
     decorateCard(card, identity)
     void reportInfiniteWait(identity, deadlines.get(identity.callId)).then((reply) => {
-      if (disposed || reply.ok) return
+      if (disposed) return
+      /*
+       * 只有服务端确实登记了「无限等待」才停宿主自己的定时器:
+       * 宿主的「慢慢回答」是单向的, 先点后报一旦失败就无法还原, 卡片再也回不到计时状态。
+       */
+      if (reply.ok) {
+        /* 回调到达时卡片可能已经超时收起, 不再对已结算的卡片写宿主草稿 */
+        if (!timedOut.has(identity.callId)) clickHostTakeTime(identity)
+        return
+      }
       if (reply.reason === 'expired') {
         /*
          * 上报到达时这一轮提问已经过了截止时刻, 工具多半已经按超时结算:
@@ -1604,8 +1628,14 @@ function hideHostWaitText(root: HTMLElement): void {
       if (reply.ok) {
         draftSyncFailures.delete(identity.callId)
         draftSyncFailed.delete(identity.callId)
-        /* 服务端没有可用的登记(调用已结算或本来就不限时): 快照不会有人取走 */
-        if (reply.ignored === true) draftTooLarge.delete(identity.callId)
+        /*
+         * 成功上报说明当前草稿已经送达, 之前那条「草稿过长」的提示必须撤掉;
+         * 服务端没有可用登记(调用已结算或本来就不限时)时同样不必保留提示。
+         */
+        if (draftTooLarge.delete(identity.callId)) {
+          const card = findCard(identity)
+          if (card !== undefined) decorateCard(card, identity)
+        }
         return
       }
       if (reply.reason === 'too-large') {

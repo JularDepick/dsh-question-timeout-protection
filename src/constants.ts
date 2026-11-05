@@ -84,17 +84,17 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
 export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式提交。'
 
 /**
- * 有草稿时随 pending 结果返回给模型的说明。
- * 草稿本身放在 pending 结果的 draft 字段里, 这里只说明它的存在与用法,
- * 避免模型把整段说明当成草稿内容。
- */
-/**
  * 没有收到任何草稿快照时的说明。
  * 与「收到空草稿」不同: 后者表示用户确实没写, 前者是快照没送达, 模型不能据此断定用户没输入。
  */
 export const TIMEOUT_PENDING_MISSING_NOTICE =
   '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入。'
 
+/**
+ * 有草稿时随 pending 结果返回给模型的说明。
+ * 草稿本身放在 pending 结果的 draft 字段里, 这里只说明它的存在与用法,
+ * 避免模型把整段说明当成草稿内容。
+ */
 export const TIMEOUT_PENDING_DRAFT_NOTICE =
   '该轮提问已超时,用户没有正式提交; 超时前留下的草稿已随本结果带回, 内容见 draft 字段, 请据此继续任务, 并在最后告知用户这次超时以及你对草稿的处理决策。'
 
@@ -194,7 +194,10 @@ export const AUTO_INFINITE_STATE_OFF = 'off'
 /** 常开开关的持久化键: 开关状态跨刷新保留 */
 export const AUTO_INFINITE_STORAGE_KEY = 'dsh.question-timeout-protection.auto-infinite'
 
-/** 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希 */
+/**
+ * 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希.
+ * 这是选择器字符串, 不在 check-translation.mjs 的宿主基线表范围, 宿主改文案时需人工核对.
+ */
 export const MODEL_SELECTOR_BUTTON = 'button[aria-label^="选择模型"], button[aria-label^="Select model"]'
 
 /** 模型选择控件所在的工具栏容器(类名后缀) */
@@ -223,6 +226,9 @@ export const CALL_STATE_TTL_MS = 30 * 60 * 1000
 
 /** 工具到期后等待客户端上报草稿的宽限时长(毫秒) */
 export const DRAFT_GRACE_MS = 3000
+
+/** 单次状态通道请求(取令牌与上报)的超时: 请求挂起时不能让整页通道一直 pending */
+export const SYNC_REQUEST_TIMEOUT_MS = 8000
 
 /**
  * 草稿连续上报失败多少次后判定通道不可用。
