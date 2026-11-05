@@ -1107,9 +1107,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   }
 
   /*
-   * 「问答无限等待」常开开关: 放在对话框模型选择控件右侧。
+   * 「问答无限等待」常开开关: 放在对话框模型选择控件左侧。
    * 开启后每次提问都自动进入无限等待, 关闭后回到插件默认的计时行为。
-   * 按钮插在宿主工具栏里的模型选择块之后, 宿主重渲染后被移除时由下一轮扫描补回。
+   * 按钮插在宿主工具栏里的模型选择块之前, 宿主重渲染后被移除时由下一轮扫描补回。
    */
   const ensureAutoInfiniteButtonIn = (container: HTMLElement): void => {
     const trigger = container.querySelector(MODEL_SELECTOR_BUTTON)
@@ -1117,7 +1117,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     const controls = trigger.closest(COMPOSER_CONTROLS_SELECTOR)
     const host = controls instanceof HTMLElement ? controls : trigger.parentElement
     if (!(host instanceof HTMLElement)) return
-    /* 找模型选择块在工具栏里的直接子节点, 开关接在它后面 */
+    /* 找模型选择块在工具栏里的直接子节点, 开关接在它前面 */
     let anchor: HTMLElement = trigger
     while (anchor.parentElement !== null && anchor.parentElement !== host) anchor = anchor.parentElement
     if (anchor.parentElement !== host) return
@@ -1125,12 +1125,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     let button: HTMLButtonElement
     if (existing instanceof HTMLButtonElement) {
       button = existing
-      if (button.previousElementSibling !== anchor) anchor.insertAdjacentElement('afterend', button)
+      if (button.nextElementSibling !== anchor) anchor.insertAdjacentElement('beforebegin', button)
     } else {
       button = document.createElement('button')
       button.type = 'button'
       button.className = AUTO_INFINITE_BUTTON_CLASS
-      anchor.insertAdjacentElement('afterend', button)
+      anchor.insertAdjacentElement('beforebegin', button)
     }
     button.setAttribute(AUTO_INFINITE_STATE_ATTRIBUTE, autoInfinite ? AUTO_INFINITE_STATE_ON : AUTO_INFINITE_STATE_OFF)
     button.setAttribute('aria-pressed', autoInfinite ? 'true' : 'false')
