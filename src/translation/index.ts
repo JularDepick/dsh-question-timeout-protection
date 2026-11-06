@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_LANGUAGE, FALLBACK_LANGUAGE, TRANSLATION_DIR } from '../constants'
+import { normalizeLocale } from '../locale-core'
 
 /** 当前文件所在目录(构建产物位于 dist/ 下) */
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
@@ -63,26 +64,10 @@ function resolvePackageRoot(): string {
 const PACKAGE_ROOT = resolvePackageRoot()
 
 /*
- * 语言码归一: 一切 zh 变体归到 zh-CN, 一切 en 变体归到 en-US, 其余按语言段小写加地区段大写。
- * 目录里只有简体与英文两套, 因此繁体与英式输入不再映射到没有文件的 zh-TW,
- * 那只会先读盘失败告警一次再回退, 徒增一条无意义的告警。
+ * 语言码归一由 src/locale-core.ts 提供, 客户端半身与这里共用同一份实现:
+ * 两边各存一份副本时, 任何一边改动都会让界面语言与加载结果对不上。
  */
-export function normalizeLocale(locale: string): string {
-  const raw = locale.trim().toLowerCase().replace(/_/g, '-')
-  if (raw === '') return DEFAULT_LANGUAGE
-  /*
-   * 语言码只允许字母、数字与连字符: 归一后的结果会被直接拼成文件路径,
-   * 不做白名单过滤的话, 形如 ../../.. 的输入会越出翻译目录去读别的文件。
-   */
-  /* 允许字母, 数字与单个连字符, 但连字符不能出现在首尾或连续出现 */
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw)) return DEFAULT_LANGUAGE
-  const [language, ...rest] = raw.split('-')
-  const region = rest[0]
-  if (region !== undefined && !/^[a-z0-9]+$/.test(region)) return DEFAULT_LANGUAGE
-  if (language === 'zh') return 'zh-CN'
-  if (language === 'en') return 'en-US'
-  return region === undefined ? language : language + '-' + region.toUpperCase()
-}
+export { normalizeLocale }
 
 /* 读取失败后的最短重试间隔, 避免热路径每次翻译都做一次失败的读盘 */
 const RETRY_INTERVAL_MS = 30000

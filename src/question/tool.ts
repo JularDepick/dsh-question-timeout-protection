@@ -624,10 +624,15 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * 登记在场时缓存里的承诺也可能已经因它提前返回, 一并撤掉缓存重新取一份;
          * 没有登记就不动缓存, 竞态里另一条臂可能正与这里共享同一个承诺。
          */
-        const frozen = isInfiniteWait(exec.callId)
-        clearInfiniteWait(exec.callId)
-        if (frozen) forgetDraft(again.callId)
-        return await pendingResult(again.callId, false)
+        /*
+         * 结算标识统一用宿主回执里的 callId: 它与本次调用的 callId 相同, 后续取草稿
+         * 与撤缓存都以它为键, 三处用同一个值才不会出现撤了登记却漏撤缓存的情况。
+         */
+        const settleId = again.callId
+        const frozen = isInfiniteWait(settleId)
+        clearInfiniteWait(settleId)
+        if (frozen) forgetDraft(settleId)
+        return await pendingResult(settleId, false)
       } finally {
         /* 释放宿主那边还没结算的前台等待 */
         waitController.abort()

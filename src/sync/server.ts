@@ -77,6 +77,8 @@ const callDeadlines = new Map<string, number>()
 
 /* 草稿条目上限: 单次上报最多保留这么多题 */
 const MAX_DRAFT_ANSWERS = 64
+/* 草稿条目被截断时只告警一次, 每秒上报不该刷屏 */
+let truncationWarned = false
 
 /* 草稿快照容量: 与「无限等待」的容量分开, 两件事的压力来源不同 */
 const MAX_DRAFT_SNAPSHOTS = 256
@@ -189,6 +191,20 @@ function sleep(ms: number): Promise<void> {
 /* 把客户端上报的草稿整理成可用的条目数组, 脏数据一律丢弃 */
 function normalizeAnswers(value: unknown): DraftAnswer[] {
   if (!Array.isArray(value)) return []
+  /*
+   * 超出上限的条目会被静默丢弃, 那样模型拿到的草稿看起来像是用户只答了前若干题。
+   * 这里留一条告警说明被截断, 每种情况只告警一次, 避免每秒上报时刷屏。
+   */
+  if (value.length > MAX_DRAFT_ANSWERS && !truncationWarned) {
+    truncationWarned = true
+    console.warn(
+      '[question-timeout-protection] 单次上报的草稿条目数为 ' +
+        String(value.length) +
+        ', 超过上限 ' +
+        String(MAX_DRAFT_ANSWERS) +
+        ', 超出的部分已丢弃',
+    )
+  }
   const answers: DraftAnswer[] = []
   for (const entry of value.slice(0, MAX_DRAFT_ANSWERS)) {
     if (typeof entry !== 'object' || entry === null) continue
@@ -423,6 +439,16 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
       response.writeHead(413, { 'content-type': 'application/json' })
       response.end(JSON.stringify({ ok: false, reason: 'too-large' }))
     }
+  })
+  /*
+   * 客户端中途断开时 IncomingMessage 会发 error 或 aborted, 不接住会变成未捕获异常。
+   * 此时响应已不可写, 只留诊断日志, 不再尝试 end。
+   */
+  request.on('error', (error: unknown) => {
+    console.warn('[question-timeout-protection] 状态上报请求体读取失败, 本次上报已丢弃', String(error))
+  })
+  request.on('aborted', () => {
+    console.warn('[question-timeout-protection] 状态上报请求被客户端中断, 本次上报已丢弃')
   })
   request.on('end', () => {
     if (oversized) return

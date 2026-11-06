@@ -998,6 +998,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     draftSyncFailed.delete(callId)
     draftSyncFailures.delete(callId)
     draftReportedAt.delete(callId)
+    draftIgnored.delete(callId)
     projectedCounts.delete(callId)
     projectedQuestions.delete(callId)
     optionInteractions.delete(callId)
@@ -1086,6 +1087,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
 
   /* 每个调用最近一次上报草稿的时间, 避免每次扫描都发一次请求 */
   const draftReportedAt = new Map<string, number>()
+  /*
+   * 服务端回执 ignored 表示它收下了请求却没有可用登记, 这份快照不会有人取走。
+   * 记下来之后不再为该调用上报, 免得每秒发一个注定无人取走的请求。
+   */
+  const draftIgnored = new Set<string>()
 
   /* 倒计时文案, 暂停态与运行态分开 */
   const countdownText = (remainingMs: number, isPaused: boolean): string => {
@@ -1884,6 +1890,7 @@ function hideHostWaitText(root: HTMLElement): void {
      * 模型只收到超时说明, 而界面上却显示草稿已保留 —— 用户输入就这样静默丢了。
      */
     if (!current.draftFallback) return
+    if (draftIgnored.has(identity.callId)) return
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
     /*
      * 只上报仍在进行的提问: 已结算的历史卡片也会被扫描到,
@@ -1936,6 +1943,14 @@ function hideHostWaitText(root: HTMLElement): void {
       if (reply.ok) {
         draftSyncFailures.delete(callId)
         draftSyncFailed.delete(callId)
+        /*
+         * 服务端没有可用登记时, 这份快照不会随任何 pending 结果交给模型,
+         * 继续上报只是白跑请求, 因此标记该调用后直接返回。
+         */
+        if (reply.ignored === true) {
+          draftIgnored.add(callId)
+          return
+        }
         /*
          * 成功上报说明当前草稿已经送达, 之前那条「草稿过长」的提示必须撤掉;
          * 服务端没有可用登记(调用已结算或本来就不限时)时同样不必保留提示。
@@ -2460,7 +2475,17 @@ function hideHostWaitText(root: HTMLElement): void {
   document.addEventListener('input', onDraftContentChange, true)
   document.addEventListener('change', onDraftContentChange, true)
   const observer = new MutationObserver(scheduleScan)
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+  /*
+   * body 尚未建立时(脚本在 head 里提前执行)直接 observe 会抛错,
+   * 那时监听与样式都已装上, 抛错会留下无法卸载的半装状态。
+   * 这里退回 documentElement, 它在这时一定存在; 两者都缺席才跳过观察, 定时器仍会兜底扫描。
+   */
+  const observeTarget: Node | null = document.body ?? document.documentElement ?? null
+  if (observeTarget !== null) {
+    observer.observe(observeTarget, { childList: true, subtree: true, characterData: true })
+  } else {
+    console.warn('[question-timeout-protection] 页面尚无根节点, 本次跳过 DOM 变化观察, 仅靠定时扫描')
+  }
   const timer = window.setInterval(scan, SCAN_INTERVAL_MS)
   scan()
 
