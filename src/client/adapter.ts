@@ -1088,10 +1088,15 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   /* 每个调用最近一次上报草稿的时间, 避免每次扫描都发一次请求 */
   const draftReportedAt = new Map<string, number>()
   /*
-   * 服务端回执 ignored 表示它收下了请求却没有可用登记, 这份快照不会有人取走。
-   * 记下来之后不再为该调用上报, 免得每秒发一个注定无人取走的请求。
+   * 服务端回执 ignored 表示它收下了请求却没有可用登记, 这份快照不会有人取走,
+   * 记下来之后短时间内不再为该调用上报, 免得每秒发一个注定无人取走的请求。
+   *
+   * 不能永久记住: 服务端登记会被热替换或重启清空, 那时活跃提问的草稿会全部收到
+   * ignored, 永久记住等于让这些提问此后再也不上报, 草稿全部丢失。
+   * 登记恢复后超过这个时长就重新尝试。
    */
-  const draftIgnored = new Set<string>()
+  const DRAFT_IGNORED_RETRY_MS = 30_000
+  const draftIgnored = new Map<string, number>()
 
   /* 倒计时文案, 暂停态与运行态分开 */
   const countdownText = (remainingMs: number, isPaused: boolean): string => {
@@ -1583,15 +1588,19 @@ function hideHostWaitText(root: HTMLElement): void {
     }
   }
 
-  /* 触发宿主自带的「慢慢回答」, 让宿主自己的定时器也停下 */
-  const clickHostTakeTime = (identity: CardIdentity): void => {
+  /*
+   * 触发宿主自带的「慢慢回答」, 让宿主自己的定时器也停下。
+   * 返回是否真的点到了控件: 宿主改动或该控件不存在时, 停不下宿主的计时。
+   */
+  const clickHostTakeTime = (identity: CardIdentity): boolean => {
     const card = findCard(identity)
-    if (card === undefined) return
+    if (card === undefined) return false
     for (const element of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
       if (!TAKE_TIME_TEXTS.includes(element.textContent?.trim() ?? '')) continue
       element.click()
-      break
+      return true
     }
+    return false
   }
 
   /* 点击「无限等待」: 冻结本次问答的倒计时, 直到用户提交为止 */
@@ -1608,7 +1617,20 @@ function hideHostWaitText(root: HTMLElement): void {
        */
       if (reply.ok) {
         /* 回调到达时卡片可能已经超时收起, 不再对已结算的卡片写宿主草稿 */
-        if (!timedOut.has(identity.callId)) clickHostTakeTime(identity)
+        if (timedOut.has(identity.callId)) return
+        /*
+         * 宿主没有可用的暂停控件时, 它自己的定时器不会停: 界面显示「已暂停」,
+         * 宿主却可能先结算成超时, 模型拿到的仍是超时结果, 两边结论对不上。
+         * 这时撤回冻结并把该轮交还宿主, 让界面与模型保持一致。
+         */
+        if (clickHostTakeTime(identity)) return
+        paused.delete(identity.callId)
+        syncUnavailable.add(identity.callId)
+        console.warn(
+          '[question-timeout-protection] 宿主没有可用的暂停控件, 「无限等待」无法让宿主停止计时, 本次问答改由宿主原版处理',
+        )
+        const unsettled = findCard(identity)
+        if (unsettled !== undefined) decorateCard(unsettled, identity)
         return
       }
       if (reply.reason === 'expired') {
@@ -1890,7 +1912,15 @@ function hideHostWaitText(root: HTMLElement): void {
      * 模型只收到超时说明, 而界面上却显示草稿已保留 —— 用户输入就这样静默丢了。
      */
     if (!current.draftFallback) return
-    if (draftIgnored.has(identity.callId)) return
+    /*
+     * 收到 ignored 后只冷却一段时长: 服务端登记恢复(热替换完成或重启后)时
+     * 必须能重新上报, 否则这一轮提问的草稿就彻底送不出去了。
+     */
+    const ignoredAt = draftIgnored.get(identity.callId)
+    if (ignoredAt !== undefined) {
+      if (Date.now() - ignoredAt < DRAFT_IGNORED_RETRY_MS) return
+      draftIgnored.delete(identity.callId)
+    }
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
     /*
      * 只上报仍在进行的提问: 已结算的历史卡片也会被扫描到,
@@ -1948,7 +1978,7 @@ function hideHostWaitText(root: HTMLElement): void {
          * 继续上报只是白跑请求, 因此标记该调用后直接返回。
          */
         if (reply.ignored === true) {
-          draftIgnored.add(callId)
+          draftIgnored.set(callId, Date.now())
           return
         }
         /*

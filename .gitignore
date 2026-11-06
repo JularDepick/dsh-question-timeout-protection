@@ -15,6 +15,9 @@ pnpm-lock.yaml
 # 版本文档(守则第 15 章占用的忽略规则)
 v*-*.md
 
+# 路径变量未展开时产生的杂散目录
+%SystemDrive%/
+
 # Agent Runtime
 .skills/
 AGENTS.md

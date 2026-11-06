@@ -66,17 +66,37 @@ function resolveTimeout(requested: number | undefined, fallback: number): number
 
 /*
  * 合并两个中止信号: 任意一个中止, 合并结果就中止。
+ * 返回可撤销句柄: 调用方信号在整条会话里长期存活, 挂上去的监听不在结算时解绑
+ * 就会随每次工具调用累积, 长会话最终触发监听数量超限告警。
  */
-function linkSignals(first: AbortSignal | undefined, second: AbortSignal): AbortSignal {
+function linkSignals(
+  first: AbortSignal | undefined,
+  second: AbortSignal,
+): { signal: AbortSignal; dispose: () => void } {
   const controller = new AbortController()
   const abort = (): void => {
     if (!controller.signal.aborted) controller.abort()
   }
-  if (first?.aborted === true) abort()
-  else first?.addEventListener('abort', abort, { once: true })
-  if (second.aborted) abort()
-  else second.addEventListener('abort', abort, { once: true })
-  return controller.signal
+  const bound: AbortSignal[] = []
+  if (first?.aborted === true) {
+    abort()
+  } else if (first !== undefined) {
+    first.addEventListener('abort', abort, { once: true })
+    bound.push(first)
+  }
+  if (second.aborted) {
+    abort()
+  } else {
+    second.addEventListener('abort', abort, { once: true })
+    bound.push(second)
+  }
+  return {
+    signal: controller.signal,
+    dispose: (): void => {
+      for (const target of bound) target.removeEventListener('abort', abort)
+      bound.length = 0
+    },
+  }
 }
 
 /* 题目数组不能为空, 空数组没有可等待的内容 */
@@ -368,7 +388,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 合并两个中止信号: 任意一个中止, 合并结果就中止。
        * 不用 AbortSignal.any, 它在 Node.js 20.3 之前不存在, 而插件声明的下限是 Node.js 20。
        */
-      const waitSignal = linkSignals(exec.signal, waitController.signal)
+      const linked = linkSignals(exec.signal, waitController.signal)
+      const waitSignal = linked.signal
       const wait = ctx.userQuestions.askTimed(
         {
           questions,
@@ -636,6 +657,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       } finally {
         /* 释放宿主那边还没结算的前台等待 */
         waitController.abort()
+        /* 解绑合并信号时挂在调用方信号上的监听, 长会话里不累积 */
+        linked.dispose()
         clearInfiniteWait(exec.callId)
         clearCallDeadline(exec.callId)
         clearCallQuestions(exec.callId)
