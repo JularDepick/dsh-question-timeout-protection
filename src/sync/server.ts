@@ -131,6 +131,8 @@ export function reportDraft(callId: string, answers: DraftAnswer[]): boolean {
  *
  * 宽限期内若登记了「无限等待」, 立即结束等待并返回 undefined:
  * 用户是在到期瞬间点的, 这一轮提问还想继续等, 工具据此回到等待里而不是按超时结算。
+ * 已经有一份快照时只再等 SETTLE_MS 就返回, 因此这条路径上留给用户补交的窗口是 SETTLE_MS,
+ * 而不是调用方传入的整个宽限期。
  */
 export async function awaitDraft(callId: string, timeoutMs: number): Promise<DraftAnswer[] | undefined> {
   const deadline = Date.now() + timeoutMs
@@ -337,7 +339,11 @@ function serveToken(request: IncomingMessage, response: ServerResponse): boolean
     response.setHeader('Access-Control-Allow-Origin', origin)
     response.setHeader('Vary', 'Origin')
   }
-  response.writeHead(200, { 'content-type': 'application/json' })
+  /*
+   * 令牌随插件加载重新生成, 一旦被浏览器或中间代理按启发式缓存,
+   * 客户端在 401 之后重取仍会拿到旧值, 两个端点会继续拒绝它, 整条通道被判成不可用。
+   */
+  response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
   response.end(JSON.stringify({ token: syncToken }))
   return true
 }
@@ -492,6 +498,14 @@ export function registerQuestionSyncRoute(webServer: {
   /*
    * 热更新可能先装载新实例再释放旧实例, 而宿主对重复的 (kind, path) 直接抛错。
    * 路由因此按引用计数只注册一次: 后来的实例复用已有路由, 最后一个使用者离开时才注销。
+   *
+   * 宿主的两条热替换路径与这里的两处假设并不互斥:
+   * 配置变更只重新执行 apply, 模块实例与通道令牌沿用, 引用计数既保证路由不重复注册,
+   * 也保证先离开的旧实例不会把新实例还在用的路由撤掉;
+   * 插件包热替换由 @deepseek-ai/dsh-hmr 先卸载旧插件(注册随之清理)再重新加载代码,
+   * 新模块实例从空的模块状态开始, 令牌一并重新生成, 此时路由已释放, 注册不会撞车。
+   * 只有「新实例先于旧实例安装」这一顺序会撞上车, 那时注册抛错,
+   * 由插件入口记一条告警并把整条通道降级为不可用。
    */
   if (detachRoutes === undefined) {
     const offs: Array<() => void> = []

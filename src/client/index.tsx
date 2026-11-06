@@ -79,11 +79,16 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
           }
           return degraded
         }
+        /*
+         * 只有真的读到布尔值才采用: 快照里的字段可能是半截值或脏值,
+         * 退回默认值才不会把卡片增强或无限等待误判成关闭。
+         */
         return {
           warningSeconds: typeof value.warningSeconds === 'number' ? value.warningSeconds : base.warningSeconds,
-          cardEnhancements: value.cardEnhancements ?? base.cardEnhancements,
-          infiniteWait: value.infiniteWait ?? base.infiniteWait,
-          draftFallback: value.draftFallback ?? base.draftFallback,
+          cardEnhancements:
+            typeof value.cardEnhancements === 'boolean' ? value.cardEnhancements : base.cardEnhancements,
+          infiniteWait: typeof value.infiniteWait === 'boolean' ? value.infiniteWait : base.infiniteWait,
+          draftFallback: typeof value.draftFallback === 'boolean' ? value.draftFallback : base.draftFallback,
         }
       } catch {
         return degraded

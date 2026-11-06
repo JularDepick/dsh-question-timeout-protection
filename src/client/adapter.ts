@@ -34,6 +34,7 @@ import {
   BUBBLE_STATE_ATTRIBUTE,
   BUBBLE_STATE_DRAFT,
   CARD_BUTTON_SELECTOR,
+  CARD_ENHANCEMENTS_CLASS,
   CARD_OPTIONS_SELECTOR,
   HOST_WAIT_PATTERNS,
   CALL_STATE_TTL_MS,
@@ -255,7 +256,7 @@ const CARD_STYLE = `
   color: #e5484d;
   font-weight: 600;
 }
-[data-question-key] button[role="radio"][aria-checked="true"] > span:first-child {
+.${CARD_ENHANCEMENTS_CLASS} [data-question-key] button[role="radio"][aria-checked="true"] > span:first-child {
   background: var(--dsw-alias-label-primary);
   color: var(--dsw-alias-label-primary-foreground);
 }
@@ -392,6 +393,9 @@ function writeAutoInfinite(value: boolean): void {
  * 界面上的倒计时与气泡就失去全部样式。用计数保证最后一个使用者离开时才移除。
  */
 let styleUsers = 0
+
+/* 「卡片增强」根类名的使用者计数: 热更新时新旧实例短暂并存, 旧实例卸载不能把新实例还要用的开关类删掉 */
+let enhancementUsers = 0
 
 /* 注入样式, 返回一个可重复调用的释放函数 */
 function ensureStyle(): () => void {
@@ -853,6 +857,7 @@ const DRAFT_REPORT_INTERVAL_MS = 800
 export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: AdapterOptionsSource): () => void {
   if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
   const releaseStyle = ensureStyle()
+  enhancementUsers += 1
 
   /* 已处理过超时流程的调用 */
   const handled = new Set<string>()
@@ -971,6 +976,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of draftSyncFailures.keys()) ids.add(id)
     for (const id of draftTooLarge.keys()) ids.add(id)
     for (const id of dismissedCallIds.keys()) ids.add(id)
+    /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
+    for (const id of optionInteractions.keys()) ids.add(id)
     return [...ids]
   }
 
@@ -1048,7 +1055,16 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const options = (): AdapterOptions => source.getOptions()
 
   /*
-   * 「问答无限等待」常开开关的状态。
+   * 把卡片增强开关同步成 documentElement 上的类名: 单选选中底色等静态样式按它门控,
+   * 关闭卡片增强后这些装饰不出现。只有明确读到 false 才按关闭处理,
+   * 读不到宿主配置时会退回 schema 默认值(true), 否则一次读取失败就会把装饰全部关掉。
+   */
+  const syncEnhancementsClass = (): void => {
+    document.documentElement.classList.toggle(CARD_ENHANCEMENTS_CLASS, options().cardEnhancements !== false)
+  }
+
+  /*
+   * 「问答自动无限等待」常开开关的状态。
    * 存在 localStorage 里: 这是用户对后续所有提问的长期选择, 刷新后不该回到默认。
    * 存储不可用时退化为本次页面有效。
    */
@@ -1058,6 +1074,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    */
   let disposed = false
   let autoInfinite = readAutoInfinite()
+
+  /*
+   * 常开开关定位失败的告警: 每轮扫描都会在同一处落空, 按原因只报一次,
+   * 不能每秒刷一条同样的日志。
+   */
+  const autoInfiniteWarned = new Set<string>()
 
   /* 每次调用只尝试自动接管一次, 免得通道报错后每秒重试一次 */
   const autoInfiniteAttempted = new Set<string>()
@@ -1106,31 +1128,110 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     return button
   }
 
+  /* 常开开关定位失败按原因告警一次: 每轮扫描都在同一处落空, 不能每秒刷一条同样的日志 */
+  const warnAutoInfiniteOnce = (reason: string, message: string): void => {
+    if (autoInfiniteWarned.has(reason)) return
+    autoInfiniteWarned.add(reason)
+    console.warn('[question-timeout-protection] ' + message)
+  }
+
+  /* 把元素提升到工具栏的直接子节点, 作为开关的插入锚点 */
+  const directChildOf = (element: HTMLElement, host: HTMLElement): HTMLElement | undefined => {
+    let anchor: HTMLElement = element
+    while (anchor.parentElement !== null && anchor.parentElement !== host) anchor = anchor.parentElement
+    return anchor.parentElement === host ? anchor : undefined
+  }
+
   /*
-   * 「问答无限等待」常开开关: 放在对话框模型选择控件左侧。
+   * 定位常开开关的宿主容器与插入锚点, 按三级兜底:
+   * 1. 按模型选择控件的无障碍标签找到触发按钮, 开关插在它所在的模型选择块之前;
+   * 2. 标签与宿主对不上时, 退到会话容器里的工具栏容器, 按结构取最后一个子节点(模型选择插槽)作锚点;
+   * 3. 工具栏不在会话容器里时, 才在全文档范围找, 并跳过属于其它会话的工具栏。
+   * 每一级落空都留一条可诊断的日志, 不再让开关静默消失。
+   */
+  const locateAutoInfiniteAnchor = (
+    container: HTMLElement,
+  ): { host: HTMLElement; anchor: HTMLElement | undefined } | undefined => {
+    const sessionId = container.getAttribute('data-conversation-session')
+    /* 结构锚点取工具栏最后一个元素子节点: 宿主 standardControls 的最后一项就是模型选择插槽 */
+    const structuralAnchor = (host: HTMLElement): HTMLElement | undefined => {
+      const last = host.lastElementChild
+      return last instanceof HTMLElement ? last : undefined
+    }
+    const fromTrigger = (
+      trigger: HTMLElement,
+    ): { host: HTMLElement; anchor: HTMLElement | undefined } | undefined => {
+      const controls = trigger.closest(COMPOSER_CONTROLS_SELECTOR)
+      const host = controls instanceof HTMLElement ? controls : trigger.parentElement
+      if (!(host instanceof HTMLElement)) return undefined
+      return { host, anchor: directChildOf(trigger, host) ?? structuralAnchor(host) }
+    }
+    const trigger = container.querySelector(MODEL_SELECTOR_BUTTON)
+    if (trigger instanceof HTMLElement) {
+      const located = fromTrigger(trigger)
+      if (located !== undefined) return located
+      warnAutoInfiniteOnce(
+        'trigger',
+        '找到了模型选择控件, 但它不在可插入的工具栏里, 「问答自动无限等待」开关改用工具栏容器内的结构定位',
+      )
+    }
+    const controls = container.querySelector(COMPOSER_CONTROLS_SELECTOR)
+    if (controls instanceof HTMLElement) {
+      warnAutoInfiniteOnce(
+        'fallback',
+        '模型选择控件的无障碍标签与预期不符, 「问答自动无限等待」开关改用工具栏容器内的结构定位',
+      )
+      return { host: controls, anchor: structuralAnchor(controls) }
+    }
+    for (const candidate of Array.from(document.querySelectorAll(COMPOSER_CONTROLS_SELECTOR))) {
+      if (!(candidate instanceof HTMLElement)) continue
+      const owner = candidate.closest(SESSION_CONTAINER_SELECTOR)
+      /* 多会话界面下不把开关挂到别的会话的工具栏上 */
+      if (
+        sessionId !== null
+        && owner instanceof HTMLElement
+        && owner.getAttribute('data-conversation-session') !== sessionId
+      ) {
+        continue
+      }
+      warnAutoInfiniteOnce('document', '会话容器里没有工具栏, 「问答自动无限等待」开关已退回全文档范围定位')
+      const scoped = candidate.querySelector(MODEL_SELECTOR_BUTTON)
+      if (scoped instanceof HTMLElement) {
+        const located = fromTrigger(scoped)
+        if (located !== undefined) return located
+      }
+      return { host: candidate, anchor: structuralAnchor(candidate) }
+    }
+    warnAutoInfiniteOnce(
+      'missing',
+      '定位不到模型选择控件与工具栏容器, 「问答自动无限等待」开关未渲染, 请核对宿主 DOM 结构',
+    )
+    return undefined
+  }
+
+  /*
+   * 「问答自动无限等待」常开开关: 放在对话框模型选择控件左侧。
    * 开启后每次提问都自动进入无限等待, 关闭后回到插件默认的计时行为。
-   * 按钮插在宿主工具栏里的模型选择块之前, 宿主重渲染后被移除时由下一轮扫描补回。
+   * 锚点定位见 locateAutoInfiniteAnchor, 宿主重渲染后被移除时由下一轮扫描补回。
    */
   const ensureAutoInfiniteButtonIn = (container: HTMLElement): void => {
-    const trigger = container.querySelector(MODEL_SELECTOR_BUTTON)
-    if (!(trigger instanceof HTMLElement)) return
-    const controls = trigger.closest(COMPOSER_CONTROLS_SELECTOR)
-    const host = controls instanceof HTMLElement ? controls : trigger.parentElement
-    if (!(host instanceof HTMLElement)) return
-    /* 找模型选择块在工具栏里的直接子节点, 开关接在它前面 */
-    let anchor: HTMLElement = trigger
-    while (anchor.parentElement !== null && anchor.parentElement !== host) anchor = anchor.parentElement
-    if (anchor.parentElement !== host) return
+    const located = locateAutoInfiniteAnchor(container)
+    if (located === undefined) return
+    const { host, anchor } = located
     const existing = host.querySelector('button.' + AUTO_INFINITE_BUTTON_CLASS)
     let button: HTMLButtonElement
     if (existing instanceof HTMLButtonElement) {
       button = existing
-      if (button.nextElementSibling !== anchor) anchor.insertAdjacentElement('beforebegin', button)
+      /* 锚点就是自己时不能插到自己前面; 位置已经正确时也不重复移动 */
+      if (anchor !== undefined && anchor !== button && button.nextElementSibling !== anchor) {
+        anchor.insertAdjacentElement('beforebegin', button)
+      }
     } else {
       button = document.createElement('button')
       button.type = 'button'
       button.className = AUTO_INFINITE_BUTTON_CLASS
-      anchor.insertAdjacentElement('beforebegin', button)
+      if (anchor === undefined) host.appendChild(button)
+      else anchor.insertAdjacentElement('beforebegin', button)
     }
     button.setAttribute(AUTO_INFINITE_STATE_ATTRIBUTE, autoInfinite ? AUTO_INFINITE_STATE_ON : AUTO_INFINITE_STATE_OFF)
     button.setAttribute('aria-pressed', autoInfinite ? 'true' : 'false')
@@ -1147,8 +1248,10 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     /*
      * 卡片增强关掉时没有倒计时与「无限等待」按钮, 自动冻结又走装饰那条链路,
      * 留着这个开关只会让人以为已经开启; 「无限等待」本身关掉时同理。
+     * 只有明确读到 false 才移除: 读不到宿主配置时会退回 schema 默认值(true),
+     * 若按假值处理, 一次配置读取失败就会把用户打开的开关静默摘掉。
      */
-    if (!options().infiniteWait || !options().cardEnhancements) {
+    if (options().infiniteWait === false || options().cardEnhancements === false) {
       const roots = containers.length > 0 ? containers : [document]
       for (const root of roots) {
         for (const element of Array.from(root.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
@@ -1157,10 +1260,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       }
       return
     }
-    /* 每个会话容器各挂一个开关: 全局 querySelector 在多会话界面下会挂到别的对话框工具栏上 */
-    for (const container of containers) {
-      ensureAutoInfiniteButtonIn(container)
-    }
+    /*
+     * 每个会话容器各挂一个开关: 全局 querySelector 在多会话界面下会挂到别的对话框工具栏上。
+     * 页面上还没有会话容器时退回整个文档, 否则新会话页面会一直没有这个开关。
+     */
+    const targets = containers.length > 0 ? containers : [document.documentElement]
+    for (const container of targets) ensureAutoInfiniteButtonIn(container)
   }
 
   /* 切换常开开关: 开启后立刻把已在等待的提问也切到无限等待 */
@@ -1279,6 +1384,24 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   }
 
   /*
+   * 带还原指纹的还原: 历史卡片每轮扫描仍会被看到, 重复还原只是白遍历一遍节点。
+   * 指纹由卡片 key 与收尾状态(已超时/已交还)组成, 状态变化或宿主换节点/换 key 时
+   * 指纹不匹配, 还原会重跑; 状态不变时跳过, 收起类名不会被反复摘掉。
+   * extra 用于区分到期未结算这类临时状态, 避免结算后还原被指纹挡住。
+   */
+  const restoredCards = new WeakMap<HTMLElement, string>()
+  const restoreCardOnce = (card: HTMLElement, key: string, extra = ''): void => {
+    const identity = parseCardKey(card.getAttribute('data-question-key'))
+    const callId = identity?.callId
+    const state = (callId !== undefined && timedOut.has(callId) ? 't' : '')
+      + (callId !== undefined && passive.has(callId) ? 'p' : '')
+    const signature = key + ':' + state + ':' + extra
+    if (restoredCards.get(card) === signature) return
+    restoreCard(card)
+    restoredCards.set(card, signature)
+  }
+
+  /*
  * 按文案隐藏宿主的等待状态提示: 宿主可能把「会一直等你回答」「已继续工作, 仍可回答」
  * 渲染在类名不匹配的容器里, 只靠类名后缀会漏掉, 插件接管后必须一并藏起来。
  */
@@ -1333,8 +1456,8 @@ function hideHostWaitText(root: HTMLElement): void {
      * 只有正在进行的提问才挂倒计时与「无限等待」: 历史提问与已结算回答的只读卡片
      * 没有宿主等待状态, 也就拿不到截止时间, 这时把插件控件一律隐藏, 并把宿主原样还原
      * (含「已继续工作, 仍可回答」提示与收起/展开控件), 不要连带宿主文案一起藏掉。
-     * 已按插件截止时间到期但投影里尚无结算结果的卡片仍算 live: 宿主原版控件要继续隐藏,
-     * 避免结算回执到达前把收起/展开与「慢慢回答」重新露出来。
+     * 已按插件截止时间到期但投影里尚无结算结果的卡片仍算 live: 它不算历史卡片,
+     * 这段空窗由下面的到期分支还原宿主原样, 结算回执到达后再锁定并收起。
      */
     const live = frozen !== undefined || deadline !== undefined
     /*
@@ -1359,19 +1482,30 @@ function hideHostWaitText(root: HTMLElement): void {
       pauseCountdown(card, identity)
       return
     }
+    /*
+     * 插件截止时间已过但投影还没结算这一轮: 不能把宿主的等待状态藏掉又什么都不显示,
+     * 否则卡片在这段空窗里既没有超时提示也不能收起。这里撤掉插件装饰并还原宿主原样,
+     * 由宿主自己的等待状态接管, 结算回执到达后再锁定并收起。
+     */
+    if (expired && !timedOut.has(identity.callId)) {
+      restoreCardOnce(card, key, 'expired')
+      return
+    }
     if (!live) {
       /*
        * timedOut 仍登记时保持收起; 结算后 forgetCall 会连它一起回收,
        * 那时按既有行为还原宿主原样, 历史与只读卡片不挂插件控件。
        * hideCard 的幂等标记保证这里每轮收起也不会重复点宿主关闭按钮。
        */
-      restoreCard(card)
+      restoreCardOnce(card, key)
       if (timedOut.has(identity.callId)) {
         lockCard(card)
         hideCard(card)
       }
       return
     }
+    /* 卡片重新进入进行中状态: 清掉还原指纹, 下次退回历史态时才会重新还原 */
+    restoredCards.delete(card)
     hideHostWaitStatus(card)
     hideHostWaitText(card)
     hideHostControls(card)
@@ -1654,6 +1788,9 @@ function hideHostWaitText(root: HTMLElement): void {
     if (button !== undefined) button.classList.remove(HIDDEN_CONTROL_CLASS)
   }
 
+  /* 已装饰过的工具行及其状态指纹: 状态没变就不重复遍历行内按钮 */
+  const decoratedRows = new WeakMap<HTMLElement, string>()
+
   /*
    * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡。
    * 宿主自己那枚「回答」气泡与插件气泡功能冲突, 取缔掉它 —— 需要看回答草稿时用插件气泡,
@@ -1662,6 +1799,16 @@ function hideHostWaitText(root: HTMLElement): void {
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
     if (callId === undefined) return
+    /*
+     * 普通历史行(没有草稿, 未超时, 未交还)装饰一次后每轮跳过:
+     * 它们只需要一个隐藏的气泡按钮, 长会话里这类行占绝大多数。
+     * 接管过的行每轮照旧重跑, 宿主重渲染把隐藏类清掉时还会重新藏回去。
+     * 气泡节点被宿主移除时指纹不匹配, 会重新创建。
+     */
+    const plain = !timedOut.has(callId) && !passive.has(callId) && !drafts.has(callId)
+    const bubblePresent = row.querySelector('button.' + BUBBLE_BUTTON_CLASS) !== null
+    const signature = callId + (bubblePresent ? '1' : '0')
+    if (plain && decoratedRows.get(row) === signature) return
     /* 该调用不在超时接管状态时, 宿主入口必须恢复可见 */
     if (!timedOut.has(callId)) showHostReopen(row)
     const button = ensureBubble(row)
@@ -1669,6 +1816,7 @@ function hideHostWaitText(root: HTMLElement): void {
     /* 已交还宿主的行不出现插件气泡, 宿主「回答」入口保持可见 */
     if (passive.has(callId)) {
       button.classList.add(HIDDEN_CONTROL_CLASS)
+      decoratedRows.set(row, signature)
       return
     }
     const draft = drafts.get(callId)
@@ -1680,6 +1828,7 @@ function hideHostWaitText(root: HTMLElement): void {
         hideHostReopen(row)
         hideHostWaitText(row)
       }
+      decoratedRows.set(row, signature)
       return
     }
     const label = pick(BUBBLE_DRAFT_LABEL_ZH, BUBBLE_DRAFT_LABEL_EN)
@@ -1695,6 +1844,7 @@ function hideHostWaitText(root: HTMLElement): void {
        */
       hideHostWaitText(row)
     }
+    decoratedRows.set(row, signature)
   }
 
   /* 超时后的统一收尾: 锁定并收起卡片, 不产生任何提交 */
@@ -1703,6 +1853,22 @@ function hideHostWaitText(root: HTMLElement): void {
     if (card === undefined) return
     lockCard(card)
     hideCard(card)
+  }
+
+  /*
+   * 超时收尾每轮收敛, 不依赖卡片增强:
+   * 关闭卡片增强后装饰链路整体跳过, 但宿主重渲染替换卡片节点时收尾结果仍要补回去,
+   * 否则卡片会重新变成可作答。这里只补锁定与收起(以及交还宿主的还原),
+   * 不挂倒计时与其它装饰。
+   */
+  const enforceTimeoutOutcome = (card: HTMLElement, identity: CardIdentity): void => {
+    if (timedOut.has(identity.callId)) {
+      lockCard(card)
+      hideCard(card)
+      return
+    }
+    if (!passive.has(identity.callId)) return
+    restoreCardOnce(card, QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId)
   }
 
   /*
@@ -1956,6 +2122,9 @@ function hideHostWaitText(root: HTMLElement): void {
       if (oldestSession === undefined) break
       polledSessions.delete(oldestSession)
       subscriptionSeen.delete(oldestSession)
+      /* 告警去重随会话一起回收, 之后若重新出现还能再留一条日志 */
+      subscribeWarned.delete(oldestSession)
+      evaluateWarned.delete(oldestSession)
       console.warn('[question-timeout-protection] 会话轮询兜底数量达到上限, 已释放最久未出现的会话, 该会话的超时兜底可能不再生效')
     }
   }
@@ -2069,6 +2238,11 @@ function hideHostWaitText(root: HTMLElement): void {
       if (card instanceof HTMLElement) {
         const identity = parseCardKey(card.getAttribute('data-question-key'))
         if (identity !== undefined) {
+          /*
+           * 顺手登记调用归属: 只点过选项、没有走到装饰与上报的调用也要能被
+           * pruneCallStates 按最近使用时间回收, 否则这张交互表只增不减。
+           */
+          rememberCallSession(identity)
           const index = readProgress(card)?.index ?? 0
           const touched = optionInteractions.get(identity.callId) ?? new Set<number>()
           touched.add(index)
@@ -2141,7 +2315,10 @@ function hideHostWaitText(root: HTMLElement): void {
     pruneCallStates()
     /* 本轮只做一次全文档查询: 宿主持久化草稿缓存也以这一刻为界 */
     const containers = sessionContainers()
+    /* 本轮只读一次卡片增强开关: 每张卡片重复取配置快照没有意义 */
+    const enhancementOn = options().cardEnhancements !== false
     nextHostDraftRound()
+    syncEnhancementsClass()
     ensureAutoInfiniteButton(containers)
     for (const evaluate of polledSessions.values()) evaluate()
     const visibleSessions = new Set(visibleSessionIds(containers))
@@ -2164,6 +2341,9 @@ function hideHostWaitText(root: HTMLElement): void {
       subscriptions.delete(sessionId)
       subscriptionMissing.delete(sessionId)
       subscriptionSeen.delete(sessionId)
+      /* 告警去重随订阅一起回收: 会话重新出现时若仍缺服务, 还能再留一条日志 */
+      subscribeWarned.delete(sessionId)
+      evaluateWarned.delete(sessionId)
     }
     /* 卡片查询按会话容器收敛; 宿主把卡片挂在会话容器里, 容器缺失时退回全文档 */
     const roots = containers.length > 0 ? containers : [document]
@@ -2196,7 +2376,7 @@ function hideHostWaitText(root: HTMLElement): void {
        * 顺序反了会让第一轮扫描里的上报被当成"历史卡片"跳过。
        */
       ensureSubscription(identity.sessionId)
-      if (options().cardEnhancements && callActive.has(identity.callId)) {
+      if (enhancementOn && callActive.has(identity.callId)) {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
@@ -2212,14 +2392,20 @@ function hideHostWaitText(root: HTMLElement): void {
           ),
         )
       }
-      if (options().cardEnhancements) decorateCard(element, identity)
+      /*
+       * 装饰受卡片增强开关门控, 超时收尾不受: 关闭增强时撤掉已经存在的装饰,
+       * 但锁定与收起每轮都会补回, 宿主重渲染换节点后卡片不会再变回可作答。
+       */
+      if (enhancementOn) decorateCard(element, identity)
+      else restoreCardOnce(element, QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId)
+      enforceTimeoutOutcome(element, identity)
       /*
        * 提问还没超时的时候就把草稿持续交给服务端: 工具到期时直接从服务端取这份快照,
        * 随 pending 返回值一起交给模型, 不再依赖事后的晚回复通道。
        */
       reportCurrentDraft(identity, element)
     }
-    if (options().cardEnhancements) {
+    if (enhancementOn) {
       for (const root of roots) {
         for (const row of Array.from(root.querySelectorAll(ASK_ROW_SELECTOR))) {
           if (row instanceof HTMLElement) decorateRow(row)
@@ -2311,8 +2497,16 @@ function hideHostWaitText(root: HTMLElement): void {
       element.remove()
     }
     releaseStyle()
+    /*
+     * 卡片增强根类名按使用者计数移除: 热更新时新旧实例短暂并存,
+     * 旧实例卸载不能把新实例还要用的开关类一起删掉。
+     */
+    enhancementUsers -= 1
+    if (enhancementUsers <= 0) document.documentElement.classList.remove(CARD_ENHANCEMENTS_CLASS)
     syncUnavailable.clear()
     autoInfiniteAttempted.clear()
     dismissedCallIds.clear()
+    subscribeWarned.clear()
+    evaluateWarned.clear()
   }
 }

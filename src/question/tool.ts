@@ -414,8 +414,15 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 草稿只能取一次: 到期结果可能同时被竞态的两条臂生成, 而 awaitDraft 取走即删除,
        * 第二条臂会拿到 undefined, 于是模型收到的超时结果里没有草稿。
        * 这里按 callId 缓存同一个承诺, 多条臂共享同一份结果。
+       * 缓存必须可撤销: awaitDraft 因「无限等待」提前返回的 undefined 不等于"没有快照",
+       * 把它留在缓存里, 下一次取草稿的出口就会复用它并误报 draftMissing,
+       * 随后 finally 里的 clearDraft 还会把通道里真实的快照一起删掉。
        */
       const draftCache = new Map<string, Promise<Awaited<ReturnType<typeof awaitDraft>>>>()
+      /* 撤销缓存: 下一次取草稿重新调用 awaitDraft, 读通道里真正的最新快照 */
+      const forgetDraft = (callId: string): void => {
+        draftCache.delete(callId)
+      }
       const loadDraft = (callId: string): Promise<Awaited<ReturnType<typeof awaitDraft>>> => {
         const cached = draftCache.get(callId)
         if (cached !== undefined) return cached
@@ -434,7 +441,11 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         /*
          * 「无限等待」的判定要先做: 它只查状态通道, 不需要等草稿快照。
          */
-        if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) return null
+        if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) {
+          /* 不结算就不会再有出口取草稿, 顺手撤掉可能残留的缓存承诺 */
+          forgetDraft(callId)
+          return null
+        }
         /*
          * 草稿兜底关闭时客户端从一开始就不上报草稿, 也不接管卡片: 既不等宽限期,
          * 也不能把「没有快照」说成通道不可达, 直接返回纯超时说明。
@@ -467,9 +478,14 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         /*
          * 宽限期内到达的「无限等待」也要认: 用户是在到期那一刻点的,
          * 界面已经冻结成「已暂停」, 这时再按超时结算会让界面与模型状态对不上。
-         * 这里返回 null 表示不结算, 调用方会回到等待里。
+         * 这里返回 null 表示不结算, 调用方会回到等待里; 同时撤掉缓存:
+         * 这份 undefined 是"因无限等待提前返回", 不是"一次快照都没收到",
+         * 留着它, 之后按超时结算的出口会复用它并误报 draftMissing, 已送达的草稿随之丢失。
          */
-        if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) return null
+        if (checkInfinite && infiniteEnabled && isInfiniteWait(callId)) {
+          forgetDraft(callId)
+          return null
+        }
         if (draft === undefined) {
           /*
            * 宽限期内一次快照都没收到: 通道不可达或页面没打开。
@@ -601,6 +617,16 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          */
         const again = await wait
         if (!('pending' in again)) return toAnswers(again)
+        /*
+         * 冻结后用户关页或刷新, 宿主把这一轮结算成 pending, 已无可再等:
+         * 冻结登记此刻不再代表还有人在等, 先撤掉它, 否则 awaitDraft 见到登记会直接
+         * 返回 undefined, 已送达的草稿快照就被误报成「没有快照」并在 finally 里删掉。
+         * 登记在场时缓存里的承诺也可能已经因它提前返回, 一并撤掉缓存重新取一份;
+         * 没有登记就不动缓存, 竞态里另一条臂可能正与这里共享同一个承诺。
+         */
+        const frozen = isInfiniteWait(exec.callId)
+        clearInfiniteWait(exec.callId)
+        if (frozen) forgetDraft(again.callId)
         return await pendingResult(again.callId, false)
       } finally {
         /* 释放宿主那边还没结算的前台等待 */
@@ -610,6 +636,8 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         clearCallQuestions(exec.callId)
         /* 草稿快照随这次调用结束而失效, 不留在服务端等下一轮复用 */
         clearDraft(exec.callId)
+        /* 取草稿的缓存一并作废, 不再有任何出口会读它 */
+        forgetDraft(exec.callId)
         /*
          * 留一条结算标记: 结算之后到达的「无限等待」要按过期处理。
          * 没有它的话, 权威到期时刻已经清掉, 晚到的上报会退回客户端自报的时刻并被当成有效,

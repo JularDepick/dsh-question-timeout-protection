@@ -71,6 +71,10 @@ export interface SettingsContext {
 /* 快照未就绪时的占位 */
 const PENDING: ConfigSnapshot = { status: 'loading', writable: false }
 
+/* 配置服务的有限重试: 宿主服务可能晚到, 也可能整个部署就没有暴露它 */
+const SERVICE_RETRY_INTERVAL_MS = 1000
+const SERVICE_RETRY_LIMIT = 5
+
 /* 样式只注入一次, 类名前缀固定为 dqtp- */
 const STYLE_FLAG = 'dqtpSettings'
 const SETTINGS_STYLE = `
@@ -144,11 +148,35 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
 
   useEffect(() => ensureStyle(), [])
 
-  /* 配置服务可能晚于插件就绪, 拿到服务后再取控制器 */
+  /*
+   * 配置服务可能晚于插件就绪, 也可能整个部署就没有暴露它。
+   * 这里做有限次重试并保底写一次不可用: 否则页面会一直停在「正在读取配置」,
+   * 下面已经按 status 区分好的「当前部署未暴露该配置」永远走不到。
+   */
   useEffect(() => {
-    if (form !== undefined || forms === undefined) return
-    setForm(forms.get(SETTINGS_NAMESPACE))
-  }, [form, forms])
+    if (form !== undefined) return
+    const current = readClientService<FormsLike>(host, 'configForms')
+    if (current !== undefined) {
+      setForm(current.get(SETTINGS_NAMESPACE))
+      return
+    }
+    let attempts = 0
+    const timer = window.setInterval(() => {
+      attempts += 1
+      const late = readClientService<FormsLike>(host, 'configForms')
+      if (late !== undefined) {
+        window.clearInterval(timer)
+        setForm(late.get(SETTINGS_NAMESPACE))
+        return
+      }
+      if (attempts < SERVICE_RETRY_LIMIT) return
+      window.clearInterval(timer)
+      setSnapshot((currentSnapshot: ConfigSnapshot) =>
+        currentSnapshot.status === 'loading' ? { status: 'unavailable', writable: false } : currentSnapshot,
+      )
+    }, SERVICE_RETRY_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [form, host])
 
   /* 跟随宿主快照 */
   useEffect(() => {
