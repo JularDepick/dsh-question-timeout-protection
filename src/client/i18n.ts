@@ -8,7 +8,7 @@
 const ZH = {
   settingsSummary: '提问超时保护',
   fallbackSection: '超时兜底',
-  fallbackNote: '回答超时后如何处理已经输入的内容',
+  fallbackNote: '提问超时后如何处理已经输入的内容',
   injectLabel: '注入到上下文',
   injectDesc: '超时前把草稿快照交给服务端, 到期时随工具结果按题带回模型上下文, 由模型自行决定是否重新提问',
   fixedSection: '固定特性',
@@ -37,7 +37,7 @@ const EN: Record<keyof typeof ZH, string> = {
   fixedKeepLabel: 'Keep the draft in the UI',
   fixedKeepDesc: 'At timeout, records the selected options and typed text into the question bubble, where they can be viewed read-only',
   cardEnhancementsLabel: 'Card enhancements',
-  cardEnhancementsDesc: 'Top-right countdown with warning blink, filled radio marker and question bubble; affects decoration only',
+  cardEnhancementsDesc: 'Top-right countdown with warning blink, selected-option background and question bubble; affects decoration only',
   infiniteWaitLabel: 'Wait indefinitely',
   infiniteWaitDesc: 'Adds a "Wait indefinitely" button next to the countdown; clicking it pauses the countdown of this question until the user submits',
   draftFallbackLabel: 'Draft fallback at timeout',

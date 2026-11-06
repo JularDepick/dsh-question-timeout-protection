@@ -2,15 +2,18 @@
 /*
  * 翻译文件一致性检查
  *
- * 以中文版为基准做四件事:
+ * 以中文版为基准做六件事:
  * 1. 全部 ini 的键集, 重复键, 空值, 占位符是否一致;
- * 2. 配置页字典的键与 ini 的 settings.* 是否一一对应;
- * 3. 界面常量里的中英文案是否都有对应 ini 键且取值一致;
- * 4. [meta] 的版本号与语言标识是否与包清单和文件名相符。
+ * 2. 取值的语言与字符集: 非中文文件不得出现汉字, 中文文件不得整条漏译;
+ * 3. 配置页字典的键与 ini 的 settings.* 是否一一对应;
+ * 4. 界面常量里的中英文案是否都有对应 ini 键且取值一致;
+ * 5. [meta] 的版本号与语言标识是否与包清单和文件名相符;
+ * 6. [meta] 的 endtime 是否与文案改动落在同一次改动里, 且不晚于当前时间。
  * 任何不一致都以非零退出。
  * 作者: JularDepick
  */
 
+import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -357,6 +360,37 @@ for (const file of FILES) {
     for (const key of sameKeys) {
       if (SAME_AS_BASELINE.has(key)) continue
       problems.push(file + ' 的 ' + key + ' 与 ' + other + ' 逐字相同, 看起来没有翻译')
+    }
+  }
+}
+
+/*
+ * 取值的语言与字符集: 键集与占位符一致不代表语言正确。
+ * 非中文文件的取值里出现汉字, 说明整条抄了中文或译文混进了中文, 界面上会中英混排;
+ * 中文文件的取值里一个汉字都没有, 说明这条根本没翻译, 而「与中文版逐字相同」拦不住它。
+ */
+const CJK_IDEOGRAPH = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
+const CJK_PUNCTUATION = /[\u3000-\u303f\uff01-\uff60\uffe0-\uffe6]/
+const LATIN_LETTER = /[A-Za-z]/
+for (const file of FILES) {
+  const parsed = parseIni(readFileSync(join(ROOT, file), 'utf8'))
+  const lang = parsed.entries.get('meta.lang') ?? ''
+  const chinese = lang.toLowerCase().startsWith('zh')
+  for (const key of baseKeys) {
+    const value = parsed.entries.get(key)
+    if (value === undefined) continue
+    /* 占位符里的名称是英文标识, 不算译文, 判定前先摘掉 */
+    const bare = value.replace(/\{[a-zA-Z0-9_]+\}/g, '')
+    const ideographs = bare.match(CJK_IDEOGRAPH)
+    const counted = ideographs === null ? 0 : ideographs.length
+    if (!chinese) {
+      if (counted > 0 || CJK_PUNCTUATION.test(bare)) {
+        problems.push(file + ' 的 ' + key + ' 取值含中日韩字符, 与语言 ' + lang + ' 不符: ' + value)
+      }
+      continue
+    }
+    if (counted === 0 && LATIN_LETTER.test(bare)) {
+      problems.push(file + ' 的 ' + key + ' 取值不含汉字, 看起来没有翻译: ' + value)
     }
   }
 }
@@ -745,8 +779,99 @@ for (const key of sourceKeys) {
   if (!baseKeys.has(key)) problems.push('代码里的来源键 ' + key + ' 在 ini 里缺失')
 }
 
-/* [meta] 校验: for 与包版本一致, lang 与文件名一致, endtime 形如指定格式 */
+/*
+ * endtime 的时效校验: endtime 的定义是「最近维护时间」, 只校验格式拦不住陈旧值,
+ * 文案改过之后 endtime 一直不动的文件照样能通过。
+ * 判定口径是「改了 [translation] 的行就必须在同一次改动里改 endtime」:
+ * 该口径与提交先后和本机时钟都无关, 因此不会把正常提交误判成不通过。
+ */
+const META_KEYS = new Set(['for', 'lang', 'name', 'endtime'])
+const INI_LINE_PATTERN = /^([A-Za-z0-9_.]+)\s*=/
+const COMMIT_HEADER_PATTERN = /^@@([0-9a-f]{40})@@(\S+)$/
+/* endtime 允许比当前时间晚多少毫秒: 容忍抹零到整点的写法, 拦住写死将来时间 */
+const ENDTIME_FUTURE_TOLERANCE_MS = 60 * 60 * 1000
+
+/* 只读执行 git; 失败时返回 undefined, 由调用方跳过校验而不是判成不通过 */
+function gitOutput(args) {
+  try {
+    return execFileSync('git', args, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 16 * 1024 * 1024,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+/* 从一段统一 diff 里读出「改过文案行」与「改过 endtime 行」 */
+function scanIniPatch(patch) {
+  const result = { content: false, endtime: false }
+  for (const raw of patch.split(/\r?\n/)) {
+    const sign = raw.charAt(0)
+    if (sign !== '+' && sign !== '-') continue
+    const match = INI_LINE_PATTERN.exec(raw.slice(1))
+    if (match === null) continue
+    if (META_KEYS.has(match[1])) {
+      if (match[1] === 'endtime') result.endtime = true
+      continue
+    }
+    result.content = true
+  }
+  return result
+}
+
+/* 把 +HH:mm 偏移的 endtime 换算成时间戳; 格式不合规时返回 undefined */
+function endtimeTimestamp(text) {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\+(\d{2}):(\d{2})$/.exec(text)
+  if (match === null) return undefined
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = match.slice(1).map(Number)
+  const offsetMs = (offsetHour * 60 + offsetMinute) * 60 * 1000
+  return Date.UTC(year, month - 1, day, hour, minute, second) - offsetMs
+}
+
+/*
+ * 一份 ini 的 endtime 时效结论: 有未提交改动时看这次改动本身,
+ * 没有则回溯最后一次改文案的提交; 取不到 git 数据时 checked 为 false。
+ */
+function endtimeFreshness(file) {
+  const pendingDiff = gitOutput(['diff', '--no-color', '--', file])
+  if (pendingDiff === undefined) return { checked: false, problems: [] }
+  const pending = scanIniPatch(pendingDiff)
+  if (pending.content) {
+    if (pending.endtime) return { checked: true, problems: [] }
+    return { checked: true, problems: [file + ' 的待提交改动改了文案, 却没有同步更新 meta.endtime'] }
+  }
+  const history = gitOutput(['log', '-p', '-n', '40', '--no-color', '--format=@@%H@@%cI', '--', file])
+  if (history === undefined) return { checked: false, problems: [] }
+  const commits = []
+  let current
+  for (const line of history.split(/\r?\n/)) {
+    const header = COMMIT_HEADER_PATTERN.exec(line)
+    if (header !== null) {
+      if (current !== undefined) commits.push({ sha: current.sha, date: current.date, patch: current.patch.join('\n') })
+      current = { sha: header[1], date: header[2], patch: [] }
+      continue
+    }
+    if (current !== undefined) current.patch.push(line)
+  }
+  if (current !== undefined) commits.push({ sha: current.sha, date: current.date, patch: current.patch.join('\n') })
+  for (const commit of commits) {
+    const summary = scanIniPatch(commit.patch)
+    if (!summary.content) continue
+    if (summary.endtime) return { checked: true, problems: [] }
+    return {
+      checked: true,
+      problems: [file + ' 的文案改动提交 ' + commit.sha.slice(0, 7) + ' (' + commit.date + ') 没有同步更新 meta.endtime'],
+    }
+  }
+  return { checked: false, problems: [] }
+}
+
+/* [meta] 校验: for 与包版本一致, lang 与文件名一致, endtime 形如指定格式且与文案改动同步 */
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+let endtimeCheckedFiles = 0
 for (const file of FILES) {
   const parsed = parseIni(readFileSync(join(ROOT, file), 'utf8'))
   const forValue = parsed.entries.get('meta.for')
@@ -759,7 +884,19 @@ for (const file of FILES) {
   const endtime = parsed.entries.get('meta.endtime') ?? ''
   if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\+\d{2}:\d{2}$/.test(endtime)) {
     problems.push(file + ' 的 meta.endtime 格式不合规: ' + endtime)
+  } else {
+    const timestamp = endtimeTimestamp(endtime)
+    if (timestamp !== undefined && timestamp > Date.now() + ENDTIME_FUTURE_TOLERANCE_MS) {
+      problems.push(file + ' 的 meta.endtime 晚于当前时间: ' + endtime)
+    }
   }
+  const freshness = endtimeFreshness(file)
+  if (freshness.checked) endtimeCheckedFiles += 1
+  for (const problem of freshness.problems) problems.push(problem)
+}
+if (endtimeCheckedFiles < FILES.length) {
+  const skipped = FILES.length - endtimeCheckedFiles
+  console.warn('meta.endtime 的时效校验已跳过 ' + String(skipped) + ' 个文件, git 数据不可用')
 }
 
 if (problems.length > 0) {

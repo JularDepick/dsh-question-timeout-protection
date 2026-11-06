@@ -81,14 +81,14 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
  * 语义要点: 只说明本轮提问已超时、用户没有正式提交, 不对草稿做任何断言 ——
  * 草稿为空时不该告诉模型"草稿保留了下来"; 有草稿时草稿走 draft 字段随本结果一起回来。
  */
-export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式提交。'
+export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式提交; 请在回复末尾告知用户这一点。'
 
 /**
  * 没有收到任何草稿快照时的说明。
  * 与「收到空草稿」不同: 后者表示用户确实没写, 前者是快照没送达, 模型不能据此断定用户没输入。
  */
 export const TIMEOUT_PENDING_MISSING_NOTICE =
-  '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入。'
+  '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入, 并在回复末尾告知用户这次提问已超时。'
 
 /**
  * 有草稿时随 pending 结果返回给模型的说明。
@@ -103,7 +103,7 @@ export const TIMEOUT_PENDING_DRAFT_NOTICE =
  * 与「草稿无法送达」不同: 那条说的是通道不可用, 这条说的是内容本身太大, 用户需要知道该删减。
  */
 export const DRAFT_TOO_LARGE_TEXT_ZH = '草稿过长, 未送达'
-export const DRAFT_TOO_LARGE_TEXT_EN = 'Draft too large to deliver'
+export const DRAFT_TOO_LARGE_TEXT_EN = 'Draft too large; not delivered'
 
 /** 草稿文本里已选选项行的前缀 */
 export const DRAFT_SELECTED_LABEL_ZH = '已选: {items}'
@@ -170,8 +170,8 @@ export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
 /** 判定宿主是否停在暂停态的文案特征: 暂停态下的剩余秒数不是真实到期时间 */
 export const PAUSED_TEXT_PATTERNS: readonly RegExp[] = [/已暂停/, /Paused/]
 
-/** 「问答无限等待」常开开关的文案(中文与英文) */
-export const AUTO_INFINITE_LABEL_ZH = '问答无限等待'
+/** 「问答自动无限等待」常开开关的文案(中文与英文): 中文侧带「自动」, 与英文的 Auto 对齐 */
+export const AUTO_INFINITE_LABEL_ZH = '问答自动无限等待'
 export const AUTO_INFINITE_LABEL_EN = 'Auto wait indefinitely'
 
 /** 常开开关的开启与关闭状态文案(中文与英文) */
@@ -313,6 +313,13 @@ export const COUNTDOWN_PAUSED_CLASS = 'dqtp-countdown-paused'
 /** 超时锁定卡片时附加的类名 */
 export const CARD_LOCKED_CLASS = 'dqtp-card-locked'
 
+/*
+ * 卡片增强生效时挂在 documentElement 上的类名。
+ * 单选选中底色写在静态样式里, 只有挂上这个类才匹配;
+ * 关闭卡片增强后连底色也不再出现, 与其它装饰保持同一开关。
+ */
+export const CARD_ENHANCEMENTS_CLASS = 'dqtp-card-enhancements'
+
 /** 注入样式所用 style 元素的 id */
 export const COUNTDOWN_STYLE_ID = 'dqtp-countdown-warning-style'
 
@@ -372,17 +379,17 @@ export const DRAFT_PANEL_TITLE_ZH = '超时草稿'
 /** 只读草稿面板标题(英文) */
 export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft'
 
-/** 只读草稿面板的说明(中文),提示该次提问已结束 */
-export const DRAFT_PANEL_NOTE_ZH = '该次提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容'
+/** 只读草稿面板的说明(中文),提示这一轮提问已结束 */
+export const DRAFT_PANEL_NOTE_ZH = '这一轮提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容'
 
 /** 只读草稿面板的说明(英文) */
-export const DRAFT_PANEL_NOTE_EN = 'This set of questions timed out and can no longer be answered; the content below is only the draft as it stood at the timeout.'
+export const DRAFT_PANEL_NOTE_EN = 'This round of questions timed out and can no longer be answered; the content below is only the draft as it stood at the timeout'
 
 /** 只读草稿面板没有可展示内容时的提示(中文) */
 export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输入内容'
 
 /** 只读草稿面板没有可展示内容时的提示(英文) */
-export const DRAFT_PANEL_EMPTY_EN = 'No option was selected and no text had been entered at the timeout.'
+export const DRAFT_PANEL_EMPTY_EN = 'No option was selected and no text had been entered at the timeout'
 
 /** 只读草稿面板里某题没有作答时的提示(中文) */
 export const DRAFT_PANEL_UNANSWERED_ZH = '未作答'
