@@ -25,7 +25,7 @@ This plugin adds three things: you can see how long is left, you can pause the w
 |:---:|:---:|
 | Countdown | The question card shows the remaining seconds at its top right, ticking down |
 | Warning | In the last seconds the number turns red and blinks |
-| Wait indefinitely | A button next to the countdown; one click removes the deadline until you submit |
+| Wait indefinitely | A button next to the countdown; one click removes the deadline until you submit, or the page or session ends |
 | Auto wait indefinitely | A toolbar switch that puts every new question into indefinite wait |
 | Selection fill | A chosen single-choice option fills the square marker in front of it |
 | Timeout draft | The options you selected and the text you typed are kept at the moment of the timeout |
@@ -49,7 +49,7 @@ pnpm pack
 dsh plugin --profile <profile> add <tarball>
 ```
 
-`pnpm pack` builds first, then puts the tarball into the build output directory under a name like `dsh-question-timeout-protection-0.1.1.tgz`. Replace it with the real path.
+`pnpm pack` builds first, then puts the tarball into the pack output directory under a name like `dsh-question-timeout-protection-0.1.1.tgz`. Locate it by that file name and use the real path.
 
 ### Option B: install from the GitHub source
 
@@ -152,15 +152,15 @@ It depends on the "Inject into the context" checkbox. When checked the draft rea
 
 **Why did the card disappear**
 
-Because that question timed out and the plugin took it over. The plugin withdraws and locks the card so it does not leave a dialog you can no longer answer. To review what you had entered, use the bubble button on the question row.
+Because that question timed out and the plugin took it over. The plugin withdraws and locks the card so it does not leave a dialog you can no longer answer. To review what you had entered, use the bubble button on the question row; when nothing was selected or typed at the timeout no bubble appears.
 
 **Why is there no countdown on my screen**
 
-Three common reasons: card enhancements are off; that question was a blocking one the model marked with `-1`; or your UI language is neither Chinese nor English. Also, on a page refresh, when the card is already in its editing or waiting state the plugin cannot restore the deadline, so no countdown appears until the card returns to counting.
+Common reasons include: card enhancements are off; that question was a blocking one the model marked with `-1`; or your UI language is neither Chinese nor English. Also, on a page refresh, when the card is already in its editing or waiting state the plugin cannot restore the deadline, so no countdown appears until the card returns to counting.
 
 **What happens after I click "Wait indefinitely"**
 
-This question no longer has a deadline and the model keeps waiting until you submit. If the state channel is unavailable the button does not take effect: the card returns to counting and reads "Cannot wait indefinitely".
+This question no longer has a deadline and the model keeps waiting until you submit, or the page or session ends. If the state channel is unavailable the button does not take effect: the card returns to counting and reads "Cannot wait indefinitely".
 
 **The bubble is gone after a refresh**
 
@@ -182,7 +182,7 @@ Cards and tool rows are located through host class-name suffixes, `data-question
 
 **Depends on the host question projection**
 
-The client relies on the userQuestions projection of the host sessions service to tell whether a question entered the continued state; draft reporting, the timeout wrap-up and the bubble all follow it. If that service is missing or the interface is renamed the plugin logs a single console.warn: the countdown and card decoration stay, but no draft is reported, the wrap-up does not run and no bubble appears.
+The client relies on the userQuestions projection of the host sessions service to tell whether a question entered the continued state; draft reporting, the timeout wrap-up and the bubble all follow it. If that service is missing or the interface is renamed the plugin logs one console.warn per session: the countdown and card decoration stay, but no draft is reported, the wrap-up does not run and no bubble appears.
 
 **Session subscription cap**
 
@@ -198,14 +198,14 @@ Both share one token-protected channel mounted on the host's own HTTP service, s
 
 **UI languages**
 
-dsh 0.2.2 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and is hidden, while the Japanese wait text stays visible and contradicts the withdrawn card. Card dismissal degrades to CSS hiding there and submit buttons stay enabled.
+dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and is hidden, while the Japanese wait text stays visible and contradicts the withdrawn card; in the remaining locales the host answer entry and its wait text mostly stay visible. Under Japanese, a timeout with an empty draft produces no plugin bubble while the host entry is already hidden by its label, so that round offers no entry to reopen. Card dismissal degrades to CSS hiding there and submit buttons stay enabled.
 
 **Other**
 
 - The plugin times the wait itself: on expiry it settles the timeout and releases the host-side foreground wait, and an answer you actually submitted before that moment still wins
 - With several tabs on the same session the server keeps one draft snapshot per call id, so a later tab overwrites the one reported earlier
 - Only the latest 200 draft records in bubbles are kept, so older bubbles can no longer be opened
-- dsh 0.2.2 pre-selects recommended options when a card opens, and the plugin strips those presets by matching the original option labels from the projection; in multiple choice, once you click any option the remaining presets are kept under the host's own submit semantics
+- dsh 0.2.2-rc.1 pre-selects recommended options when a card opens, and the plugin strips those presets by matching the original option labels from the projection; in multiple choice, once you click any option the remaining presets are kept under the host's own submit semantics
 - Skipping every question without any selection or typed text counts as an empty draft, so that timeout closes the card
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
 - The timeout notice injected for the model is Chinese-only, so on an English UI the model still receives Chinese text
@@ -220,7 +220,12 @@ dsh plugin --profile <profile> remove dsh-question-timeout-protection
 dsh plugin --profile <profile> add <new package or tarball>
 ```
 
-To disable without uninstalling, disable the plugin row in that profile's `cordis.patch.yml`.
+To disable without uninstalling, disable the plugin row by id in that profile's `cordis.patch.yml`:
+
+```
+- id: question-timeout-protection
+  disabled: true
+```
 
 ## Development
 
@@ -232,6 +237,8 @@ pnpm run check:translation
 ```
 
 `pnpm run check:translation` verifies the three translation files, the config-page dictionary and the visible UI text constants against each other, and checks that a text change also updates the maintenance timestamp.
+
+`src/translation/*.ini` mirrors one set of wording and is not read by the UI: visible text comes from `src/constants.ts` and `src/client/i18n.ts`, so a wording change must update those and the three ini files together.
 
 ## License
 

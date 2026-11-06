@@ -1921,6 +1921,11 @@ function hideHostWaitText(root: HTMLElement): void {
      */
     if (!current.draftFallback) return
     /*
+     * 已经判定通道不可用并交还宿主的那一轮不再上报:
+     * 继续每轮发送只会产生无人取走的请求, 也改变不了这一轮的结算结果。
+     */
+    if (draftSyncFailed.has(identity.callId)) return
+    /*
      * 收到 ignored 后只冷却一段时长: 服务端登记恢复(热替换完成或重启后)时
      * 必须能重新上报, 否则这一轮提问的草稿就彻底送不出去了。
      */
