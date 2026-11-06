@@ -807,10 +807,15 @@ async function resolveToken(): Promise<string | undefined> {
 async function reportInfiniteWait(
   identity: CardIdentity,
   deadline: number | undefined,
+  infinite = true,
 ): Promise<StateReply> {
+  /*
+   * infinite 为 false 时是撤销登记: 客户端放弃冻结后必须告诉服务端,
+   * 否则服务端继续把这轮当成有人在等, 工具到期不返回, 界面却已经交还宿主。
+   */
   const body = {
     callId: identity.callId,
-    infinite: true,
+    infinite,
     ...(deadline === undefined ? {} : { deadline }),
   }
   return postStateWithToken(body)
@@ -1190,7 +1195,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     if (controls instanceof HTMLElement) {
       warnAutoInfiniteOnce(
         'fallback',
-        '模型选择控件的无障碍标签与预期不符, 「问答自动无限等待」开关改用工具栏容器内的结构定位',
+        '工具栏里暂时没有模型选择控件(尚未挂载或无障碍标签不符), 「问答自动无限等待」开关改用容器内的结构定位',
       )
       return { host: controls, anchor: structuralAnchor(controls) }
     }
@@ -1442,6 +1447,13 @@ function hideHostWaitText(root: HTMLElement): void {
      * 这轮调用的登记就会被当成"很久没出现"的残留清掉, 卡片随后被重新装饰。
      */
     rememberCallSession(identity)
+    /*
+     * 界面语言不是中文或英文时不挂任何装饰: 宿主控件的识别标签只有中英两套,
+     * 读不到倒计时就登记不了截止时间, 倒计时与「无限等待」只会以英文出现却不起作用,
+     * 界面语言热切换后还会留下残留控件。收尾由 enforceTimeoutOutcome 独立处理,
+     * 这里提前返回不影响该收的卡片被收起与锁定。
+     */
+    if (!isRecognisedLocale()) return
     /* 草稿为空的超时不接管, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
     /* 首次读到的剩余时长记为插件自己的截止时间 */
@@ -1489,6 +1501,7 @@ function hideHostWaitText(root: HTMLElement): void {
       live
       && !expired
       && autoInfinite
+      && isRecognisedLocale()
       && deadline !== undefined
       && frozen === undefined
       && options().infiniteWait
@@ -1634,6 +1647,11 @@ function hideHostWaitText(root: HTMLElement): void {
         if (clickHostTakeTime(identity)) return
         paused.delete(identity.callId)
         syncUnavailable.add(identity.callId)
+        /*
+         * 除了撤掉本地冻结, 还要把登记从服务端撤销: 只撤本地的话服务端仍以为有人在等,
+         * 工具到期会继续阻塞, 而界面已经显示「无法无限等待」并把这一轮交还宿主。
+         */
+        void reportInfiniteWait(identity, undefined, false)
         console.warn(
           '[question-timeout-protection] 宿主没有可用的暂停控件, 「无限等待」无法让宿主停止计时, 本次问答改由宿主原版处理',
         )
@@ -1843,7 +1861,16 @@ function hideHostWaitText(root: HTMLElement): void {
      */
     const plain = !timedOut.has(callId) && !passive.has(callId) && !drafts.has(callId)
     const bubblePresent = row.querySelector('button.' + BUBBLE_BUTTON_CLASS) !== null
-    const signature = callId + (bubblePresent ? '1' : '0')
+    /*
+     * 指纹必须带上超时与交还状态: 结算后这两个状态会从有到无,
+     * 只按 callId 与气泡节点比对时指纹不变, 快路径会提前返回,
+     * 宿主的「回答」入口就再也恢复不回来。
+     */
+    const signature =
+      callId
+      + (bubblePresent ? '1' : '0')
+      + (timedOut.has(callId) ? 'T' : '-')
+      + (passive.has(callId) ? 'P' : '-')
     if (plain && decoratedRows.get(row) === signature) return
     /* 该调用不在超时接管状态时, 宿主入口必须恢复可见 */
     if (!timedOut.has(callId)) showHostReopen(row)

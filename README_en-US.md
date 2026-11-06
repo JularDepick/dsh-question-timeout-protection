@@ -41,7 +41,9 @@ This plugin adds three things: you can see how long is left, you can pause the w
 
 ### Option A: install from npm
 
-The package is not published to npm yet. Once it is, dsh installs plugins from npm natively with one command:
+dsh installs plugins from npm natively, but the package currently on npm is only a publishing placeholder with no plugin code and cannot be installed: the command below fetches that placeholder, dsh logs a warning and skips the plugin, and none of this plugin's features appear.
+
+It becomes usable once this project is published to npm and latest points at a real release. At that point one command is all you need:
 
 ```
 dsh plugin --profile <profile> add dsh-question-timeout-protection

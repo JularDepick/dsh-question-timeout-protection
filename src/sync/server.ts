@@ -438,6 +438,12 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
       /* 客户端据此显示「草稿过长」而不是把它算成通道故障 */
       response.writeHead(413, { 'content-type': 'application/json' })
       response.end(JSON.stringify({ ok: false, reason: 'too-large' }))
+      /*
+       * 客户端还在继续发就已经超限, 这里主动断开连接停止接收:
+       * 只回响应不终止流的话, 剩余字节会被一直读进内存直到上传结束。
+       */
+      chunks.length = 0
+      request.destroy()
     }
   })
   /*
@@ -465,7 +471,14 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
         response.end()
         return
       }
-      if (parsed.infinite === true) {
+      if (parsed.infinite === false) {
+        /*
+         * 客户端放弃冻结(宿主暂停控件缺失或通道回执异常)时撤销登记。
+         * 留着这条登记会让工具到期后继续阻塞, 而界面已经把这一轮交还宿主,
+         * 模型与界面的结论就对不上了。
+         */
+        clearInfiniteWait(parsed.callId)
+      } else if (parsed.infinite === true) {
         /*
          * 到期判定以服务端的权威时刻为准: 工具执行时登记的截止时刻。
          * 客户端自报的截止时刻只作兜底 —— 它由卡片倒计时反推, 起点比工具计时晚,

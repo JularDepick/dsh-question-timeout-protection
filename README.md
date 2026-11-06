@@ -41,7 +41,9 @@ dsh 默认的提问是阻塞式的: 模型问完就一直等, 你离开一会儿
 
 ### 方式一: 从 npm 安装
 
-包尚未发布到 npm. 发布后 dsh 原生支持从 npm 安装, 一条命令即可:
+dsh 原生支持从 npm 安装插件, 但 npm 上的同名包目前只是一个发布占位, 里面没有插件代码, 不能安装: 按下面的命令会装到占位包, dsh 只会打一条警告并跳过该插件, 界面上不会出现任何本插件的功能.
+
+真正可用的前提是本项目发布到 npm 且 latest 指向正式版本. 到那时一条命令即可:
 
 ```
 dsh plugin --profile <profile> add dsh-question-timeout-protection
