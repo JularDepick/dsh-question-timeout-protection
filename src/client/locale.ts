@@ -29,3 +29,14 @@ export function uiUsesChinese(): boolean {
 export function pick(zh: string, en: string): string {
   return uiUsesChinese() ? zh : en
 }
+
+/*
+ * 界面语言是否为中文或英文。
+ * 插件只识别这两套宿主文案: 其他语言下读不到宿主的倒计时与等待文案,
+ * 依赖它们的增强(自动冻结, 冻结态校验)不可能生效, 因此按语言直接不渲染这些控件,
+ * 而不是渲染出来却点不动。
+ */
+export function isRecognisedLocale(): boolean {
+  const language = browserLanguage().split('-')[0]
+  return language === 'zh' || language === 'en'
+}

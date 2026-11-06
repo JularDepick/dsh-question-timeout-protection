@@ -9,7 +9,7 @@
  * 作者: JularDepick
  */
 
-import { pick } from './locale'
+import { isRecognisedLocale, pick } from './locale'
 import {
   ASK_REOPEN_LABELS,
   AUTO_INFINITE_BUTTON_CLASS,
@@ -1262,7 +1262,15 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
      * 只有明确读到 false 才移除: 读不到宿主配置时会退回 schema 默认值(true),
      * 若按假值处理, 一次配置读取失败就会把用户打开的开关静默摘掉。
      */
-    if (options().infiniteWait === false || options().cardEnhancements === false) {
+    /*
+     * 界面语言不是中文或英文时必须移除: 自动冻结依赖读取宿主倒计时,
+     * 而这些语言的宿主文案插件认不出来, 开关会渲染出来却永远不生效。
+     */
+    if (
+      options().infiniteWait === false
+      || options().cardEnhancements === false
+      || !isRecognisedLocale()
+    ) {
       const roots = containers.length > 0 ? containers : [document]
       for (const root of roots) {
         for (const element of Array.from(root.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
