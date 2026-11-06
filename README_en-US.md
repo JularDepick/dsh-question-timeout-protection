@@ -39,7 +39,17 @@ This plugin adds three things: you can see how long is left, you can pause the w
 - dsh within `>=0.2.1-rc.1 <=0.2.2-rc.1`; installation and startup refuse anything outside it
 - Node.js >= 20
 
-### Option A: build from source
+### Option A: install from npm
+
+The package is not published to npm yet. Once it is, dsh installs plugins from npm natively with one command:
+
+```
+dsh plugin --profile <profile> add dsh-question-timeout-protection
+```
+
+Until then, use one of the options below.
+
+### Option B: build from source
 
 For using the plugin straight from this repository:
 
@@ -51,7 +61,7 @@ dsh plugin --profile <profile> add <tarball>
 
 `pnpm pack` builds first, then puts the tarball into the pack output directory under a name like `dsh-question-timeout-protection-0.1.1.tgz`. Locate it by that file name and use the real path.
 
-### Option B: install from the GitHub source
+### Option C: install from the GitHub source
 
 Use `github:JularDepick/dsh-question-timeout-protection#<commit>` as the package name; `prepare` runs the build.
 
@@ -64,7 +74,7 @@ allowBuilds:
 
 Then run `add` again. Without this step the install lands with no build output and the plugin does not work.
 
-### Option C: install from a release tarball
+### Option D: install from a release tarball
 
 Download the tarball for the version you want and install it directly:
 

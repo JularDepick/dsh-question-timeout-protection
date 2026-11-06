@@ -39,7 +39,17 @@ dsh 默认的提问是阻塞式的: 模型问完就一直等, 你离开一会儿
 - dsh 版本在 `>=0.2.1-rc.1 <=0.2.2-rc.1` 之内, 不满足会被安装与启动阶段拒绝
 - Node.js >= 20
 
-### 方式一: 从源码构建后安装
+### 方式一: 从 npm 安装
+
+包尚未发布到 npm. 发布后 dsh 原生支持从 npm 安装, 一条命令即可:
+
+```
+dsh plugin --profile <profile> add dsh-question-timeout-protection
+```
+
+在此之前请用下面的方式二至方式四.
+
+### 方式二: 从源码构建后安装
 
 适合从这个仓库直接使用:
 
@@ -51,7 +61,7 @@ dsh plugin --profile <profile> add <tarball>
 
 `pnpm pack` 会先构建, 完成后把 tarball 放进打包输出目录, 文件名形如 `dsh-question-timeout-protection-0.1.1.tgz`. 按文件名定位后换成实际路径即可.
 
-### 方式二: 直接从 GitHub 源码安装
+### 方式三: 直接从 GitHub 源码安装
 
 把包名换成 `github:JularDepick/dsh-question-timeout-protection#<提交>`, 由 `prepare` 负责构建.
 
@@ -64,7 +74,7 @@ allowBuilds:
 
 然后重新执行 `add`. 跳过这一步装上去没有构建产物, 插件不会工作.
 
-### 方式三: 从 Release 的 tarball 安装
+### 方式四: 从 Release 的 tarball 安装
 
 下载对应版本的 tarball 后直接:
 
