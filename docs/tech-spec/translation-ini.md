@@ -27,12 +27,14 @@
   - 带占位符的文案使用 `{名称}` 形式, 如 `countdown.remaining` 的 `{seconds}` 与 `draft.selected` 的 `{items}`; 占位符名称在各语言版本中保持一致, 由调用方在取到文案后按名替换, `TranslationManager.translate()` 只做键查找与回退, 不替换占位符.
 - 新增翻译文件时, 以 `src/translation/.example_zh-CN.ini` 为基准模板(简体中文版复刻), 从该模板翻译更新为 `xx-YY.ini`, 改写 `[meta]` 各键后翻译 `[translation]` 键值.
 - 新增语言文件后无需另行登记: `pnpm run check:translation` 按 `src/translation/` 目录的实际内容枚举全部 ini, 逐个比对键集与占位符; 与另一种已收录语言整份相同时按整份报一条, 与中文版逐键相同则按键逐个报出(单键漏译不会被漏过), 全部取值写成同一个字符串另报一条.
+- 检查脚本按 `[meta]` 的 `lang` 判定语言: 非中文文件的取值里出现中日韩字符即报错, 中文文件的取值整条不含汉字也报错.
 
 ## 模板维护流程
 
 - `src/translation/.example_zh-CN.ini` 是翻译文件的基准模板, 内容即简体中文版, 与 `zh-CN.ini` 保持一致.
 - 版本迭代时直接维护该基准模板(补充, 调整 `[translation]` 键值), 并保持 `zh-CN.ini` 与基准模板一致.
 - 模板更新后, 其余语言版本(如 `en-US.ini`)从模板翻译更新, 保持各语言键集一致.
+- 任一 `[translation]` 取值改动时, 必须在同一次提交内更新对应 ini 的 `meta.endtime`; 三份文件同步改文案时三份的 `endtime` 一并更新. 检查脚本按 git 提交校验该一致性, endtime 晚于当前时间也会报错.
 
 ## 键名与代码的对应
 
@@ -55,7 +57,7 @@
 | `countdown.remaining` / `countdown.paused` / `countdown.unavailable` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN`, `COUNTDOWN_PAUSED_TEXT_*`, `SYNC_UNAVAILABLE_TEXT_*` | 插件自绘倒计时的运行态, 暂停态与通道不可用替代文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
-| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` / `control.autoInfiniteTitle` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*`, `AUTO_INFINITE_TITLE_*` | 对话框工具栏「问答无限等待」常开开关的文案: 标签与开启, 关闭两个状态词渲染成「标签(中点)状态」, 悬停提示说明开启与关闭各自的行为 |
+| `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` / `control.autoInfiniteTitle` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*`, `AUTO_INFINITE_TITLE_*` | 对话框工具栏「问答自动无限等待」常开开关的文案: 标签与开启, 关闭两个状态词渲染成「标签(中点)状态」, 悬停提示说明开启与关闭各自的行为 |
 | `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板, 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
 | `draft.deliveryFailed` | `src/constants.ts` 的 `DRAFT_SYNC_FAILED_TEXT_ZH`/`DRAFT_SYNC_FAILED_TEXT_EN` | 草稿快照连续上报失败时显示在提问卡片倒计时位置的提示, 不属于草稿悬浮卡片里的标签 |
@@ -64,9 +66,9 @@
 
 ## 语言选择机制
 
-- 插件自身不提供语言切换入口: 配置页与卡片控件共用同一套判定(`src/client/locale.ts`), 先取 `document.documentElement.lang`, 缺失时取 `navigator.language`, 都没有则按中文处理; 判定的结果在 `src/client/i18n.ts` 的内置字典里二选一. `0.2.2-rc.1` 起宿主在设置页提供语言行, 选择后会同步 `<html lang>`, 卡片控件随扫描热切换文案, 配置页在下次重绘后生效.
+- 插件自身不提供语言切换入口: 配置页与卡片控件共用同一套判定(`src/client/locale.ts`), 先取 `document.documentElement.lang`, 缺失时取 `navigator.language`, 都没有则按中文处理; 判定的结果在 `src/client/i18n.ts` 的内置字典里二选一. `0.2.2-rc.1` 起宿主在设置页提供语言行, 选择后会同步 `<html lang>`, 卡片控件随扫描热切换文案, 配置页在下次重绘后生效. 客户端判定先按与 `TranslationManager` 相同的规则归一(`src/client/locale.ts` 的 `normalizeLocale`, 规则与加载器保持一致), 空白串与非法语言码按默认语言处理, 与加载器的回退结论一致.
 - `0.2.2-rc.1` 起宿主界面扩到 8 种语言(`zh`, `en`, `ja`, `es`, `fr`, `de`, `ru`, `pt`), 插件只注册 `zh`/`en` 两套字典, 其余语言经宿主回退链落到英文, 插件自绘文案显示英文.
-- 宿主控件的识别标签(倒计时文案, 等待文案, 收起/关闭按钮, 模型选择按钮, 慢慢回答, 回答入口)只有中英两套; 其余语言界面下这些增强会跳过: 倒计时, 无限等待按钮与工具栏开关不出现, 插件自绘气泡与配置页文案回退英文; ja 的「回答」与中文同形会被隐藏, 其余语言下宿主「回答」入口与等待文案大多保持可见; 卡片关闭退化为只加隐藏类, 提交/跳过按钮也不会被锁定; 服务端超时结算与草稿上报不受影响.
+- 宿主控件的识别标签(倒计时文案, 等待文案, 收起/关闭按钮, 模型选择按钮, 慢慢回答, 回答入口)只有中英两套; 其余语言界面下这些增强会跳过: 倒计时, 无限等待按钮与工具栏开关不出现, 插件自绘气泡与配置页文案回退英文; ja 的「回答」与中文同形会被隐藏, 但 ja 的等待文案(如「作業は続行されました — まだ回答できます」)仍会保留, 与被收起卡片的状态不一致; 其余语言下宿主「回答」入口与等待文案大多保持可见; 卡片关闭退化为只加隐藏类, 提交/跳过按钮也不会被锁定; 服务端超时结算与草稿上报不受影响.
 - 插件运行路径不读取本目录的 ini; ini 只作为同一套措辞的镜像, 并由 `TranslationManager` 提供给后续多语言接入.
 - `TranslationManager` 未命中当前语言时回退到兜底语言(`FALLBACK_LANGUAGE`, 当前取值 `zh-CN`), 再未命中则返回键名.
 
