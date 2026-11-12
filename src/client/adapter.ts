@@ -370,6 +370,26 @@ function parseRemainingSeconds(text: string): number | undefined {
   return undefined
 }
 
+/*
+ * 宿主是否仍把这轮提问当作进行中。
+ * 倒计时、暂停态与「会一直等你回答」三种文案都算: 用户一开始编辑卡片, 宿主就把倒计时
+ * 换成等待文案, 只看倒计时会在最需要上报的那一刻判成"已结束"。
+ *
+ * 这条判据不是投影的替代品: 宿主的提问投影在 PTC 子调用超时前根本不含这一行
+ * (只有 tool/ptc-dispatch 带回 pending 时才把子调用加进去), 提问进行中整段时间
+ * 投影里都没有它, 只靠投影会让 PTC 模式的草稿快照一条也发不出去。
+ */
+function hostStillWaiting(card: HTMLElement): boolean {
+  for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
+    const text = (element.textContent ?? '').trim()
+    if (text === '') continue
+    if (parseRemainingSeconds(text) !== undefined) return true
+    if (PAUSED_TEXT_PATTERNS.some((pattern) => pattern.test(text))) return true
+    if (HOST_WAIT_PATTERNS.some((pattern) => text.includes(pattern))) return true
+  }
+  return false
+}
+
 /* 读取常开开关的持久化状态 */
 function readAutoInfinite(): boolean {
   try {
@@ -2023,8 +2043,10 @@ function hideHostWaitText(root: HTMLElement): void {
     /*
      * 只上报仍在进行的提问: 已结算的历史卡片也会被扫描到,
      * 为它们持续上报只会产生无人取走的请求, 而且拿不到任何回执信息。
+     * 判据取并集: 投影里的活动行覆盖原生调用, 卡片上的宿主等待状态覆盖 PTC 子调用 ——
+     * 后者的投影要等超时后的 pending 结果才建行, 只认投影等于提问期间一次都不上报。
      */
-    if (!callActive.has(identity.callId)) return
+    if (!callActive.has(identity.callId) && !hostStillWaiting(card)) return
     rememberCallSession(identity)
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
@@ -2512,16 +2534,18 @@ function hideHostWaitText(root: HTMLElement): void {
        * 连首次读取宿主倒计时并登记截止时间的机会都没有, 倒计时, 无限等待与宿主控件隐藏会一并消失。
        * decorateCard 自己按卡片状态判定: 读到宿主倒计时才登记 deadlines, 之后以 deadlines / paused
        * 为「正在进行」的依据; 历史卡片与已结算只读卡片没有这两种状态, 一律还原宿主原样且不挂控件。
-       * callActive 只留在这条与草稿相关的分支里, 以及 reportCurrentDraft 自己的门里,
+       * 活性判据只留在这条与草稿相关的分支里, 以及 reportCurrentDraft 自己的门里,
        * 不往已结算调用写工作副本, 也不发无人取走的上报请求。
+       * 判据是并集: 投影的活动行之外还认宿主卡片上的等待状态, 因为 PTC 子调用在超时前
+       * 不会进入投影(宿主只在 tool/ptc-dispatch 返回 pending 时才把它加进去)。
        */
       subscriptionSeen.set(identity.sessionId, Date.now())
       /*
-       * 先订阅再上报: 订阅会立刻求值一次投影, 草稿上报靠投影里的活动行判定,
+       * 先订阅再上报: 订阅会立刻求值一次投影, 原生调用的草稿上报靠投影里的活动行判定,
        * 顺序反了会让第一轮扫描里的上报被当成"历史卡片"跳过。
        */
       ensureSubscription(identity.sessionId)
-      if (enhancementOn && callActive.has(identity.callId)) {
+      if (enhancementOn && (callActive.has(identity.callId) || hostStillWaiting(element))) {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
         const count = Math.max(progress?.count ?? 1, previous?.length ?? 1)
