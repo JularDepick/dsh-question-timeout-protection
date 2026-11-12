@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.1.1-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.1.2-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -60,7 +60,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <绝对路径>
 ```
 
-`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.1.1.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
+`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.1.2.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
 
 ### 方式三: 直接从 GitHub 源码安装
 
