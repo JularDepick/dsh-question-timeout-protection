@@ -36,20 +36,18 @@ This plugin adds three things: you can see how long is left, you can pause the w
 
 ### Requirements
 
-- dsh within `>=0.2.1-rc.1 <=0.2.2-rc.1`; installation and startup refuse anything outside it
+- dsh within `>=0.2.1-rc.1 <=0.2.2-rc.2`; installation and startup refuse anything outside it
 - Node.js >= 20
 
 ### Option A: install from npm
 
-dsh installs plugins from npm natively, but the package currently on npm is only a publishing placeholder with no plugin code and cannot be installed: the command below fetches that placeholder, dsh logs a warning and skips the plugin, and none of this plugin's features appear.
-
-It becomes usable once this project is published to npm and latest points at a real release. At that point one command is all you need:
+dsh installs plugins from npm natively:
 
 ```
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-Until then, use one of the options below.
+The npm latest tag currently points at 0.1.1, which declares dsh support only up to 0.2.2-rc.1, so installation and startup reject it on 0.2.2-rc.2. For this version (0.1.2) use Options B to D below; once latest points at 0.1.2 the command above installs this version directly.
 
 ### Option B: build from source
 
@@ -58,10 +56,11 @@ For using the plugin straight from this repository:
 ```
 pnpm install
 pnpm pack
-dsh plugin --profile <profile> add <tarball>
+dsh plugin --profile <profile> add ./release/<tarball>
+dsh plugin --profile <profile> add <absolute path>
 ```
 
-`pnpm pack` builds first, then puts the tarball into the pack output directory under a name like `dsh-question-timeout-protection-0.1.1.tgz`. Locate it by that file name and use the real path.
+`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.1.1.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
 
 ### Option C: install from the GitHub source
 
@@ -74,6 +73,8 @@ allowBuilds:
   dsh-question-timeout-protection: true
 ```
 
+`allowBuilds` is available from pnpm 10.26; on earlier 10.x put the same package key into an `onlyBuiltDependencies` list.
+
 Then run `add` again. Without this step the install lands with no build output and the plugin does not work.
 
 ### Option D: install from a release tarball
@@ -81,7 +82,8 @@ Then run `add` again. Without this step the install lands with no build output a
 Download the tarball for the version you want and install it directly:
 
 ```
-dsh plugin --profile <profile> add <tarball>
+dsh plugin --profile <profile> add ./release/<tarball>
+dsh plugin --profile <profile> add <absolute path>
 ```
 
 No build is needed and the pnpm build-script policy does not apply.
@@ -124,7 +126,7 @@ The draft lives only in memory, so a page refresh loses the bubbles and their re
 
 ### Context injection
 
-This is on by default. While you are answering, the plugin keeps reporting draft snapshots to the server; at expiry it takes the latest one and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes.
+This is on by default. While you are answering, the client always reports draft snapshots to the server (it cannot read the plugin configuration); the server decides whether to use them. When on, expiry takes the latest snapshot and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes; when off, the snapshot stays on the server and is cleared when the call ends.
 
 The timeout notice and the draft share that one result, and the model is explicitly told to report the timeout at the end of its reply, plus what it intends to do with the draft when one came back.
 
@@ -132,22 +134,24 @@ With this off, the plugin only withdraws the card and hands the model no draft.
 
 ### Configuration
 
-The config page sits at the **top of the plugin detail view**, not inside "Included components". Only "Inject into the context" can be changed, and a toggle writes immediately without any save or refresh.
+The config page sits at the **top of the plugin detail view**, not inside "Components". Only "Inject into context" can be changed, and a toggle writes immediately without any save or refresh. Keep the draft in the UI and the three fixed features below are listed as fixed rows for reference; the page offers no switches for them.
 
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---:|
-| `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback. The page only offers "Inject into the context": checked writes `both`, unchecked writes `ui`. Keeping the draft in the UI is always on, so `context` never appears |
-| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, selection fill, question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn still is and locked, and the draft is still reported per the configuration above |
+| `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback. The page only offers "Inject into context": checked writes `both`, unchecked writes `ui`. Keeping the draft in the UI is always on, so `context` never appears |
+| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn and locked, and the draft is still reported per the configuration above |
 | `infiniteWait` | boolean | `true` | Fixed | Provides the "Wait indefinitely" button and the toolbar switch; turning it off removes both |
 | `draftFallback` | boolean | `true` | Fixed | Timeout wrap-up switch. When off the client neither withdraws the card nor reports the draft and hands that question back to the host; the plugin still settles the wait on time |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts, from 1 to 60 |
 | `timeoutSeconds` | number | 120 | Not exposed | Wait seconds used when the model does not pass one explicitly, from 1 to 2147483 |
 
+The last two are not exposed in the UI; write them into this plugin's row under `config` in the profile's `cordis.patch.yml`, for example `config: { timeoutSeconds: 300 }` for a 300-second wait. Out-of-range values fail loudly at load time. The three fixed features are switched off the same way, for example `config: { cardEnhancements: false }`; restate every key that row needs rather than only the changed one.
+
 ## Compatibility
 
 | Item | Version |
 |:---:|:---:|
-| dsh | `>=0.2.1-rc.1 <=0.2.2-rc.1` |
+| dsh | `>=0.2.1-rc.1 <=0.2.2-rc.2` |
 | Node.js | >= 20 |
 
 The Node.js requirement of the host dsh itself follows the release notes of the matching version.
@@ -160,7 +164,7 @@ Not on this page. At the timeout the plugin keeps your selections and typed text
 
 **Can the model see what I typed**
 
-It depends on the "Inject into the context" checkbox. When checked the draft reaches the model context with the tool result; when unchecked it stays in the UI only.
+It depends on the "Inject into context" checkbox. When checked the draft reaches the model context with the tool result; when unchecked it stays in the UI only.
 
 **Why did the card disappear**
 
@@ -190,7 +194,7 @@ No. A timeout never selects an option and never submits a draft as a formal answ
 
 **Depends on the host UI**
 
-Cards and tool rows are located through host class-name suffixes, `data-question-key`, `data-chat-call-id` and `aria-checked`; host controls are recognised by their Chinese or English labels. The toolbar switch prefers the model selector's accessible name, falls back to structural placement inside the composer toolbar, then to a document-wide lookup, and logs one console.warn per reason instead of failing silently. If the host changes those structures or labels the matching enhancement stops working; the recognition labels and selectors live in the source constants file.
+Cards and tool rows are located through host class-name suffixes, `data-question-key`, `data-chat-call-id` and `aria-checked`; host controls are recognised by their Chinese or English labels (the Japanese `回答` is identical to the Chinese one, so that entry matches too); when restoring the host entry after settlement the plugin also recognises `查看回答` / `View answers` / `回答を表示`. The toolbar switch prefers the model selector's accessible name, falls back to structural placement inside the composer toolbar, then to a document-wide lookup, and logs one console.warn per reason instead of failing silently. If the host changes those structures or labels the matching enhancement stops working; the recognition labels and selectors live in the source constants file.
 
 **Depends on the host question projection**
 
@@ -220,6 +224,7 @@ dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and 
 - dsh 0.2.2-rc.1 pre-selects recommended options when a card opens, and the plugin strips those presets by matching the original option labels from the projection; in multiple choice, once you click any option the remaining presets are kept under the host's own submit semantics
 - Skipping every question without any selection or typed text counts as an empty draft, so that timeout closes the card
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
+- On the macOS desktop app, dsh 0.2.2-rc.2 allows window dragging only inside header rows carrying `data-window-drag`, and the host automatically excludes drag on controls inside a `data-window-drag-controls` container; a custom overlay covering a drag row must declare `data-window-drag-exclude` to stay interactive, and `--dsh-frame-top-clearance` reserves a strip at the top. The plugin's draft panel is attached to the body and declares neither, so near the top of the window it may fall into the reserved strip. The panel holds no clickable controls, so the effect is positional only; the web client is unaffected
 - The timeout notice injected for the model is Chinese-only, so on an English UI the model still receives Chinese text
 - A draft over the 256 KiB per-report limit makes the UI read "Draft too large; not delivered", which does not count towards consecutive failures; after three consecutive failures that question is judged channel-unavailable, the plugin stops taking it over and the card returns to the host and stays answerable
 

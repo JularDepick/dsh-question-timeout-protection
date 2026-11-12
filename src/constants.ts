@@ -183,7 +183,7 @@ export const AUTO_INFINITE_OFF_TEXT_EN = 'Off'
 /** 常开开关的悬停提示(中文与英文) */
 export const AUTO_INFINITE_TITLE_ZH = '开启后每次提问都自动进入无限等待, 关闭后回到插件的计时行为'
 export const AUTO_INFINITE_TITLE_EN =
-  'When on, every question waits indefinitely; when off, the plugin countdown applies'
+  'When on, every question enters indefinite wait automatically; when off, the plugin countdown applies'
 
 /** 常开开关按钮的类名与状态属性 */
 export const AUTO_INFINITE_BUTTON_CLASS = 'dqtp-auto-infinite'
@@ -196,7 +196,7 @@ export const AUTO_INFINITE_STORAGE_KEY = 'dsh.question-timeout-protection.auto-i
 
 /*
  * 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希。
- * 取值不改: 宿主 0.2.2-rc.1 的 trigger.aria 是「选择模型，当前 {model}」与「Select model, current {model}」,
+ * 取值不改: 宿主 0.2.2-rc.1 与 0.2.2-rc.2 的 trigger.aria 都是「选择模型，当前 {model}」与「Select model, current {model}」,
  * 前缀匹配成立; scripts/check-translation.mjs 对这两个前缀与宿主标签有显式断言, 改动时同步那处登记。
  */
 export const MODEL_SELECTOR_BUTTON = 'button[aria-label^="选择模型"], button[aria-label^="Select model"]'
@@ -237,6 +237,12 @@ export const SYNC_REQUEST_TIMEOUT_MS = 8000
  */
 export const DRAFT_SYNC_FAILURE_THRESHOLD = 3
 
+/**
+ * 草稿超出通道上限后的重试间隔。
+ * 用户删减内容后要能恢复上报, 但持续超限时不能每轮都重发一遍同样的长文。
+ */
+export const DRAFT_TOO_LARGE_RETRY_MS = 5000
+
 /** 草稿无法送达时在卡片上给出的可见提示 */
 export const DRAFT_SYNC_FAILED_TEXT_ZH = '草稿无法送达'
 export const DRAFT_SYNC_FAILED_TEXT_EN = 'Draft cannot be delivered'
@@ -274,6 +280,12 @@ export const DRAFT_PANEL_MARGIN = 8
 
 /** 隐藏宿主控件时附加的类名 */
 export const HIDDEN_CONTROL_CLASS = 'dqtp-host-control-hidden'
+
+/**
+ * 被插件按文案隐藏的宿主节点标记。
+ * 还原时只认这个标记, 不再复判当前文案: 宿主复用同一节点改写文案时也能还原。
+ */
+export const HIDDEN_WAIT_ATTRIBUTE = 'data-dqtp-host-wait'
 
 /** 提问工具调用行的选择器(宿主 tool 行根节点) */
 export const ASK_ROW_SELECTOR = 'div[data-tool="ask_user_question"]'

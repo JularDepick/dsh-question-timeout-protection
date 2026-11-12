@@ -79,8 +79,10 @@ import {
   DRAFT_SYNC_FAILED_TEXT_ZH,
   DRAFT_SYNC_FAILURE_THRESHOLD,
   DRAFT_SELECTED_LABEL_ZH,
+  DRAFT_TOO_LARGE_RETRY_MS,
   HEADER_ACTIONS_SELECTOR,
   HIDDEN_CONTROL_CLASS,
+  HIDDEN_WAIT_ATTRIBUTE,
   HOST_DRAFT_STORAGE_PREFIX,
   INFINITE_BUTTON_CLASS,
   INFINITE_WAIT_LABEL_EN,
@@ -868,7 +870,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const handled = new Set<string>()
   /* 已超时的调用, 卡片一律锁定并收起 */
   const timedOut = new Set<string>()
-  /* 超时时草稿为空的调用, 交还宿主原版超时路径, 插件不再改卡片与工具行 */
+  /* 已交还宿主的调用(兜底关闭或通道不可用): 卡片保持可继续作答, 插件不改卡片与工具行 */
   const passive = new Set<string>()
   /* 「无限等待」上报失败的调用: 通道不可达时同样交还宿主, 绝不能按超时提交草稿 */
   const syncUnavailable = new Set<string>()
@@ -911,6 +913,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const callTouchedAt = new Map<string, number>()
   /* 草稿快照超过通道上限的调用: 界面需要显示「草稿过长」而不是笼统的通道故障 */
   const draftTooLarge = new Set<string>()
+  /* 超限判定时刻: 只按固定间隔重试, 不每轮重发同一份长文 */
+  const draftTooLargeAt = new Map<string, number>()
 
   /*
    * 每个 callId 属于哪个会话。
@@ -980,6 +984,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     /* 回执映射与 dismiss 幂等登记也可能只剩这些键: 纳入清理范围, 免得留下无界残留 */
     for (const id of draftSyncFailures.keys()) ids.add(id)
     for (const id of draftTooLarge.keys()) ids.add(id)
+    for (const id of draftTooLargeAt.keys()) ids.add(id)
     for (const id of dismissedCallIds.keys()) ids.add(id)
     /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
     for (const id of optionInteractions.keys()) ids.add(id)
@@ -1010,6 +1015,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     callActive.delete(callId)
     callTouchedAt.delete(callId)
     draftTooLarge.delete(callId)
+    draftTooLargeAt.delete(callId)
     dismissedCallIds.delete(callId)
     /* lastDrafts 只是工作副本, 气泡用的快照在 drafts 里, 这里可以一并清掉 */
     lastDrafts.delete(callId)
@@ -1124,6 +1130,16 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     element.setAttribute(COUNTDOWN_ATTRIBUTE, key)
     actions.insertBefore(element, actions.firstChild)
     return element
+  }
+
+  /* 插不进自绘倒计时只告警一次: 每轮扫描都会在同一处落空, 不能每秒刷一条同样的日志 */
+  let countdownWarned = false
+  const warnCountdownOnce = (): void => {
+    if (countdownWarned) return
+    countdownWarned = true
+    console.warn(
+      '[question-timeout-protection] 卡片右上角找不到操作区, 无法插入倒计时, 这张卡片保持宿主原样',
+    )
   }
 
   /* 在倒计时右侧确保「无限等待」按钮存在 */
@@ -1397,6 +1413,10 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const element of Array.from(card.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
       element.classList.remove(HIDDEN_CONTROL_CLASS)
     }
+    /* 按文案隐藏的节点带自有标记, 还原时一并清掉, 免得下次复判拿不到依据 */
+    for (const element of Array.from(card.querySelectorAll('[' + HIDDEN_WAIT_ATTRIBUTE + ']'))) {
+      element.removeAttribute(HIDDEN_WAIT_ATTRIBUTE)
+    }
     for (const element of Array.from(
       card.querySelectorAll('[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS),
     )) {
@@ -1437,6 +1457,7 @@ function hideHostWaitText(root: HTMLElement): void {
     if (text === '' || text.length > 40) continue
     if (!HOST_WAIT_PATTERNS.some((pattern) => text.includes(pattern))) continue
     element.classList.add(HIDDEN_CONTROL_CLASS)
+    element.setAttribute(HIDDEN_WAIT_ATTRIBUTE, '')
   }
 }
 
@@ -1454,7 +1475,7 @@ function hideHostWaitText(root: HTMLElement): void {
      * 这里提前返回不影响该收的卡片被收起与锁定。
      */
     if (!isRecognisedLocale()) return
-    /* 草稿为空的超时不接管, 卡片保持宿主原样 */
+    /* 已交还宿主的调用不挂装饰, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
     /* 首次读到的剩余时长记为插件自己的截止时间 */
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
@@ -1538,10 +1559,19 @@ function hideHostWaitText(root: HTMLElement): void {
     }
     /* 卡片重新进入进行中状态: 清掉还原指纹, 下次退回历史态时才会重新还原 */
     restoredCards.delete(card)
+    const countdown = ensureCountdown(card, key)
+    if (countdown === undefined) {
+      /*
+       * 先把宿主藏掉再插插件控件会两头落空: 宿主容器改版时用户既看不到剩余时间,
+       * 也没有「无限等待」入口, 比只少一个装饰更差。插不进去就还原宿主原样。
+       */
+      warnCountdownOnce()
+      restoreCardOnce(card, key, 'no-countdown')
+      return
+    }
     hideHostWaitStatus(card)
     hideHostWaitText(card)
     hideHostControls(card)
-    const countdown = ensureCountdown(card, key)
     if (countdown !== undefined) {
       let remainingMs: number | undefined
       if (frozen !== undefined) remainingMs = frozen
@@ -1842,6 +1872,22 @@ function hideHostWaitText(root: HTMLElement): void {
     if (button !== undefined) button.classList.remove(HIDDEN_CONTROL_CLASS)
   }
 
+  /*
+   * 恢复宿主写在工具行里的等待文案: 结算后宿主可能复用同一行节点,
+   * 只隐藏不还原会让「已继续工作, 仍可回答」永久不可见。
+   */
+  const showHostWaitText = (row: HTMLElement): void => {
+    /*
+     * 按隐藏时打的标记还原, 不再复判当前文案: 宿主若复用同一节点改写了措辞,
+     * 复判会让这个节点永久保持隐藏。
+     */
+    for (const element of Array.from(row.querySelectorAll('[' + HIDDEN_WAIT_ATTRIBUTE + ']'))) {
+      if (!(element instanceof HTMLElement)) continue
+      element.classList.remove(HIDDEN_CONTROL_CLASS)
+      element.removeAttribute(HIDDEN_WAIT_ATTRIBUTE)
+    }
+  }
+
   /* 已装饰过的工具行及其状态指纹: 状态没变就不重复遍历行内按钮 */
   const decoratedRows = new WeakMap<HTMLElement, string>()
 
@@ -1872,8 +1918,11 @@ function hideHostWaitText(root: HTMLElement): void {
       + (timedOut.has(callId) ? 'T' : '-')
       + (passive.has(callId) ? 'P' : '-')
     if (plain && decoratedRows.get(row) === signature) return
-    /* 该调用不在超时接管状态时, 宿主入口必须恢复可见 */
-    if (!timedOut.has(callId)) showHostReopen(row)
+    /* 该调用不在超时接管状态时, 宿主入口与等待文案都必须恢复可见 */
+    if (!timedOut.has(callId)) {
+      showHostReopen(row)
+      showHostWaitText(row)
+    }
     const button = ensureBubble(row)
     if (button === undefined) return
     /* 已交还宿主的行不出现插件气泡, 宿主「回答」入口保持可见 */
@@ -1961,6 +2010,15 @@ function hideHostWaitText(root: HTMLElement): void {
       if (Date.now() - ignoredAt < DRAFT_IGNORED_RETRY_MS) return
       draftIgnored.delete(identity.callId)
     }
+    /*
+     * 草稿超出通道上限后按固定间隔重试: 用户删减内容要能恢复上报,
+     * 但持续超限时不能每轮都把同一份长文重新序列化并上传一遍。
+     */
+    const tooLargeAt = draftTooLargeAt.get(identity.callId)
+    if (tooLargeAt !== undefined) {
+      if (Date.now() - tooLargeAt < DRAFT_TOO_LARGE_RETRY_MS) return
+      draftTooLargeAt.delete(identity.callId)
+    }
     if (timedOut.has(identity.callId) || passive.has(identity.callId)) return
     /*
      * 只上报仍在进行的提问: 已结算的历史卡片也会被扫描到,
@@ -2025,6 +2083,7 @@ function hideHostWaitText(root: HTMLElement): void {
          * 成功上报说明当前草稿已经送达, 之前那条「草稿过长」的提示必须撤掉;
          * 服务端没有可用登记(调用已结算或本来就不限时)时同样不必保留提示。
          */
+        draftTooLargeAt.delete(callId)
         if (draftTooLarge.delete(callId)) {
           const card = findCard(identity)
           if (card !== undefined) decorateCard(card, identity)
@@ -2037,6 +2096,7 @@ function hideHostWaitText(root: HTMLElement): void {
          * 内容本身超出通道上限, 与通道故障无关: 不计入连续失败次数,
          * 否则一份长文草稿会连带把整条通道判成不可用。
          */
+        draftTooLargeAt.set(identity.callId, Date.now())
         if (!draftTooLarge.has(identity.callId)) {
           draftTooLarge.add(identity.callId)
           console.warn('[question-timeout-protection] 草稿快照超过通道上限, 本次未能送达')
@@ -2494,6 +2554,22 @@ function hideHostWaitText(root: HTMLElement): void {
       for (const root of roots) {
         for (const row of Array.from(root.querySelectorAll(ASK_ROW_SELECTOR))) {
           if (row instanceof HTMLElement) decorateRow(row)
+        }
+      }
+    } else {
+      /*
+       * 卡片增强在运行中被关掉时, 先前挂在工具行上的隐藏类必须还原:
+       * 行级装饰整体被这个开关门控, 没有装饰就不再有还原点,
+       * 否则宿主「回答」入口与等待文案会一直藏着, 直到页面重载或插件卸载。
+       */
+      for (const root of roots) {
+        for (const row of Array.from(root.querySelectorAll(ASK_ROW_SELECTOR))) {
+          if (!(row instanceof HTMLElement)) continue
+          showHostReopen(row)
+          showHostWaitText(row)
+          for (const bubble of Array.from(row.querySelectorAll('button.' + BUBBLE_BUTTON_CLASS))) {
+            bubble.remove()
+          }
         }
       }
     }

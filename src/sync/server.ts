@@ -451,9 +451,12 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
    * 此时响应已不可写, 只留诊断日志, 不再尝试 end。
    */
   request.on('error', (error: unknown) => {
+    /* 超限后的断开是服务端自己发起的, 再报「客户端中断」会把事实说反 */
+    if (oversized) return
     console.warn('[question-timeout-protection] 状态上报请求体读取失败, 本次上报已丢弃', String(error))
   })
   request.on('aborted', () => {
+    if (oversized) return
     console.warn('[question-timeout-protection] 状态上报请求被客户端中断, 本次上报已丢弃')
   })
   request.on('end', () => {

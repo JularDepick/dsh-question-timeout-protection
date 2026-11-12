@@ -476,7 +476,7 @@ const HOST_LABEL_BASELINE = {
  * 取值逐字取自 dsh-client-ui-user-questions 的 wait.countdown 与 wait.paused:
  * 0.2.1-rc.2 与 0.2.2-rc.1 的中英文版均为
  * 「{seconds} 秒后继续工作」「已暂停 · 剩余 {seconds} 秒」
- * 「Continuing in {seconds}s」「Paused · {seconds}s remaining」, 两版逐字一致。
+ * 「Continuing in {seconds}s」「Paused · {seconds}s remaining」, 0.2.2-rc.2 亦为同四句, 三个版本逐字一致。
  * 宿主改一处措辞, 装饰整链会静默失效, 因此这里按源码里的正则模式逐字对账。
  */
 const HOST_PATTERN_BASELINE = {
@@ -491,7 +491,7 @@ const HOST_PATTERN_BASELINE = {
 
 /*
  * 宿主 wait.countdown / wait.paused 的原始文案, 逐字取自两个受支持版本:
- * temp/pkg-022/ex 下 0.2.2-rc.1 与 temp/ref-pkgs/extracted 下 0.2.1-rc.2 的中英文取值完全相同。
+ * temp/pkg-022/ex 下 0.2.2-rc.1 与 temp/ref-pkgs/extracted 下 0.2.1-rc.2 的中英文取值完全相同, 0.2.2-rc.2 亦相同。
  * 用它们渲染成实际界面文本, 再要求识别正则能读出秒数并正确区分暂停态:
  * 只比对正则自身是否改动不够, 宿主措辞一变这里就会先报出来。
  */
@@ -505,7 +505,7 @@ const HOST_WAIT_SAMPLE_SECONDS = '12'
 
 /*
  * 宿主模型选择控件的无障碍标签前缀。
- * 已核实 dsh-client-ui-model-selection@0.2.2-rc.1 的 trigger.aria 为
+ * 已核实 dsh-client-ui-model-selection 在 0.2.2-rc.1 与 0.2.2-rc.2 的 trigger.aria 均为
  * 「选择模型，当前 {model}」与「Select model, current {model}」,
  * MODEL_SELECTOR_BUTTON 按这两个前缀做选择器匹配, 取值不改, 但必须显式断言前缀没有漂移。
  */

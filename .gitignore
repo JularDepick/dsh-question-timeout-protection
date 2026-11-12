@@ -5,6 +5,7 @@ node_modules/
 .agent/
 temp/
 .env
+.npmrc
 
 # 构建与打包产物
 dist/
