@@ -1,10 +1,10 @@
-# Agent 阅读指南 —— dsh 插件开发文档(v0.2.1-rc.1 至 v0.2.2-rc.1)
+# Agent 阅读指南 —— dsh 插件开发文档(v0.2.1-rc.1 至 v0.2.2-rc.3)
 
 本文档是给 Agent(自动编程代理)看的使用索引:说明这份文档集装了什么、各篇回答什么问题、在涉及 dsh 插件开发的常见任务中该查哪篇。用户一般不读本文档。
 
 ## 这份文档集是什么
 
-本目录 `docs/dsh-dev-docs/dsh-0.2.1-rc.1/` 收录了 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 0.2.1-rc.1(对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版插件开发文档(共 10 篇 + 本索引与增量说明;英文原版见各 `.md`,中文见 `.zh.md`;30 个上游文件已与该标签逐字节核对一致),并作为 `0.2.1-rc.1` 至 `0.2.2-rc.1` 的区间收录: 已按同一路径核对标签 `dsh-v0.2.2-rc.1`,30 个文件里 24 个字节一致,6 个有变化(2 篇正文各 1 句文案,中英各一份,另有 2 份 `.i18n.yaml` 只同步哈希),差异记录在 [`CHANGES-0.2.2-rc.1.md`](CHANGES-0.2.2-rc.1.md)。它只覆盖 `docs/user/develop/` 路径;原文档中指向仓其他位置的链接(根 `README.zh.md`、`cookbook/`、`subsystems/`、`apps/cli/`、`packages/`、`capability-seams.md` 等)未随本目录下载,需要时回[官方仓库](https://github.com/deepseek-ai/deepseek-harness)查看。各篇同目录的 `.i18n.yaml` 是上游的双语一致性记录(按标题分节记录中英哈希),原样收录,与本项目自身的翻译机制无关。
+本目录 `docs/dsh-dev-docs/dsh-0.2.1-rc.1/` 收录了 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 0.2.1-rc.1(对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版插件开发文档(共 10 篇 + 本索引与增量说明;英文原版见各 `.md`,中文见 `.zh.md`;30 个上游文件已与该标签逐字节核对一致),并作为 `0.2.1-rc.1` 至 `<0.2.3-rc.1` 的区间收录: 已按同一路径核对标签 `dsh-v0.2.2-rc.1`(30 个文件里 24 个字节一致,6 个有变化,差异记录在 [`CHANGES-0.2.2-rc.1.md`](CHANGES-0.2.2-rc.1.md))、标签 `dsh-v0.2.2-rc.2`(只有 `practice/llm-adapter.*` 变化,见 [`CHANGES-0.2.2-rc.2.md`](CHANGES-0.2.2-rc.2.md))与标签 `dsh-v0.2.2-rc.3`(与本目录正文逐字节一致,见 [`CHANGES-0.2.2-rc.3.md`](CHANGES-0.2.2-rc.3.md))。它只覆盖 `docs/user/develop/` 路径;原文档中指向仓其他位置的链接(根 `README.zh.md`、`cookbook/`、`subsystems/`、`apps/cli/`、`packages/`、`capability-seams.md` 等)未随本目录下载,需要时回[官方仓库](https://github.com/deepseek-ai/deepseek-harness)查看。各篇同目录的 `.i18n.yaml` 是上游的双语一致性记录(按标题分节记录中英哈希),原样收录,与本项目自身的翻译机制无关。
 
 ## 速查:什么任务查哪篇
 

@@ -1,10 +1,10 @@
-# dsh 插件开发文档(v0.2.1-rc.1 至 v0.2.2-rc.1)
+# dsh 插件开发文档(v0.2.1-rc.1 至 v0.2.2-rc.3)
 
 > 面向 Agent 的利用指南与速查:请查看 `index.agent.md`。
 
 [dsh](https://github.com/deepseek-ai/deepseek-harness) 官方插件开发文档的**中文版**合集索引。
 
-本目录存放 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 **0.2.1-rc.1**(npm 发布包版本号,对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版(`.zh.md`)文档(英文原版见各 `.md`)。目录内 30 个上游文件已与该标签逐字节核对一致,作为本项目开发 dsh 插件时的参考指引;同时作为 `0.2.1-rc.1` 至 `0.2.2-rc.1` 的区间收录,已核对标签 `dsh-v0.2.2-rc.1` 下 30 个文件里 24 个字节一致,6 个有变化(2 篇正文各 1 句文案,中英各一份,另有 2 份 `.i18n.yaml` 只同步哈希),差异见 [`CHANGES-0.2.2-rc.1.md`](CHANGES-0.2.2-rc.1.md)。
+本目录存放 DeepSeek-Harness 官方仓库 `docs/user/develop/` 在版本 **0.2.1-rc.1**(npm 发布包版本号,对应官方仓库标签 `dsh-v0.2.1-rc.1`)的中文版(`.zh.md`)文档(英文原版见各 `.md`)。目录内 30 个上游文件已与该标签逐字节核对一致,作为本项目开发 dsh 插件时的参考指引;同时作为 `0.2.1-rc.1` 至 `<0.2.3-rc.1` 的区间收录: 已核对标签 `dsh-v0.2.2-rc.1` 下 30 个文件里 24 个字节一致,6 个有变化(2 篇正文各 1 句文案,中英各一份,另有 2 份 `.i18n.yaml` 只同步哈希),差异见 [`CHANGES-0.2.2-rc.1.md`](CHANGES-0.2.2-rc.1.md);标签 `dsh-v0.2.2-rc.2` 只有 `practice/llm-adapter.*` 变化,见 [`CHANGES-0.2.2-rc.2.md`](CHANGES-0.2.2-rc.2.md);标签 `dsh-v0.2.2-rc.3` 与本目录正文逐字节一致,见 [`CHANGES-0.2.2-rc.3.md`](CHANGES-0.2.2-rc.3.md)。
 
 | 分块 | 作用 |
 |:---:|:---:|

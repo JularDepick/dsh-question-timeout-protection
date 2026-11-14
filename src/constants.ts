@@ -196,7 +196,7 @@ export const AUTO_INFINITE_STORAGE_KEY = 'dsh.question-timeout-protection.auto-i
 
 /*
  * 定位宿主模型选择控件: 只按无障碍标签识别, 类名带构建哈希。
- * 取值不改: 宿主 0.2.2-rc.1 与 0.2.2-rc.2 的 trigger.aria 都是「选择模型，当前 {model}」与「Select model, current {model}」,
+ * 取值不改: 宿主 0.2.2-rc.1 至 0.2.2-rc.3 的 trigger.aria 都是「选择模型，当前 {model}」与「Select model, current {model}」,
  * 前缀匹配成立; scripts/check-translation.mjs 对这两个前缀与宿主标签有显式断言, 改动时同步那处登记。
  */
 export const MODEL_SELECTOR_BUTTON = 'button[aria-label^="选择模型"], button[aria-label^="Select model"]'
