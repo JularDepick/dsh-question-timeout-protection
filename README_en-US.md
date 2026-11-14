@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.1.3-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -36,7 +36,7 @@ This plugin adds three things: you can see how long is left, you can pause the w
 
 ### Requirements
 
-- dsh within `>=0.2.1-rc.1 <=0.2.2-rc.2`; installation and startup refuse anything outside it
+- dsh within `>=0.2.1-rc.1 <0.2.3-rc.1`; installation and startup refuse anything outside it
 - Node.js >= 20
 
 ### Option A: install from npm
@@ -47,7 +47,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-The npm latest tag currently points at 0.1.1, which declares dsh support only up to 0.2.2-rc.1, so installation and startup reject it on 0.2.2-rc.2. For this version (0.1.2) use Options B to D below; once latest points at 0.1.2 the command above installs this version directly.
+The npm latest tag currently points at 0.1.2, which declares dsh support only up to 0.2.2-rc.2, so installation and startup reject it on dsh 0.2.2-rc.3. For this version (0.1.3, whose upper bound is <0.2.3-rc.1) use Options B to D below; once latest points at 0.1.3 the command above installs this version directly.
 
 ### Option B: build from source
 
@@ -60,7 +60,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <absolute path>
 ```
 
-`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.1.2.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
+`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.1.3.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
 
 ### Option C: install from the GitHub source
 
@@ -151,7 +151,7 @@ The last two are not exposed in the UI; write them into this plugin's row under 
 
 | Item | Version |
 |:---:|:---:|
-| dsh | `>=0.2.1-rc.1 <=0.2.2-rc.2` |
+| dsh | `>=0.2.1-rc.1 <0.2.3-rc.1` |
 | Node.js | >= 20 |
 
 The Node.js requirement of the host dsh itself follows the release notes of the matching version.

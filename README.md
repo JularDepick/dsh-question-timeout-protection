@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.1.3-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -36,7 +36,7 @@ dsh 默认的提问是阻塞式的: 模型问完就一直等, 你离开一会儿
 
 ### 前置条件
 
-- dsh 版本在 `>=0.2.1-rc.1 <=0.2.2-rc.2` 之内, 不满足会被安装与启动阶段拒绝
+- dsh 版本在 `>=0.2.1-rc.1 <0.2.3-rc.1` 之内, 不满足会被安装与启动阶段拒绝
 - Node.js >= 20
 
 ### 方式一: 从 npm 安装
@@ -47,7 +47,7 @@ dsh 原生支持从 npm 安装插件:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-npm 上的 latest 目前是 0.1.1, 它声明的 dsh 上限是 0.2.2-rc.1, 因此在 0.2.2-rc.2 上会被安装与启动阶段拒绝. 想用本版本(0.1.2)请走下面的方式二至方式四; latest 指向 0.1.2 后, 上面的命令即可直接安装本版本.
+npm 上的 latest 目前是 0.1.2, 它声明的 dsh 上限是 0.2.2-rc.2, 因此在 dsh 0.2.2-rc.3 上会被安装与启动阶段拒绝. 想用本版本(0.1.3, 上限为 <0.2.3-rc.1)请走下面的方式二至方式四; latest 指向 0.1.3 后, 上面的命令即可直接安装本版本.
 
 ### 方式二: 从源码构建后安装
 
@@ -60,7 +60,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <绝对路径>
 ```
 
-`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.1.2.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
+`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.1.3.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
 
 ### 方式三: 直接从 GitHub 源码安装
 
@@ -151,7 +151,7 @@ dsh plugin --profile <profile> add <绝对路径>
 
 | 项目 | 版本 |
 |:---:|:---:|
-| dsh | `>=0.2.1-rc.1 <=0.2.2-rc.2` |
+| dsh | `>=0.2.1-rc.1 <0.2.3-rc.1` |
 | Node.js | >= 20 |
 
 宿主 dsh 自身的 Node.js 要求以对应版本的发行说明为准.
