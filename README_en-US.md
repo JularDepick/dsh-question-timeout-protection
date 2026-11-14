@@ -47,7 +47,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-The npm latest tag currently points at 0.1.2, which declares dsh support only up to 0.2.2-rc.2, so installation and startup reject it on dsh 0.2.2-rc.3. For this version (0.1.3, whose upper bound is <0.2.3-rc.1) use Options B to D below; once latest points at 0.1.3 the command above installs this version directly.
+Installing by package name takes whatever the npm latest tag points at. Version 0.1.2 declares dsh support only up to `0.2.2-rc.2`, so installation and startup reject it on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. This version (0.1.3) supports up to `<0.2.3-rc.1`, and Options B to D below install it from source or a tarball.
 
 ### Option B: build from source
 
@@ -134,7 +134,7 @@ With this off, the plugin only withdraws the card and hands the model no draft.
 
 ### Configuration
 
-The config page sits at the **top of the plugin detail view**, not inside "Components". Only "Inject into context" can be changed, and a toggle writes immediately without any save or refresh. Keep the draft in the UI and the three fixed features below are listed as fixed rows for reference; the page offers no switches for them.
+The config page sits at the **top of the plugin detail view**, not inside "Components". Only "Inject into context" can be changed, and a toggle writes immediately without any save or refresh. The page lists "keep the draft in the UI" and the three fixed features below as fixed rows for reference; none of them has a switch.
 
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---:|

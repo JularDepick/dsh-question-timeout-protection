@@ -47,7 +47,7 @@ dsh 原生支持从 npm 安装插件:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-npm 上的 latest 目前是 0.1.2, 它声明的 dsh 上限是 0.2.2-rc.2, 因此在 dsh 0.2.2-rc.3 上会被安装与启动阶段拒绝. 想用本版本(0.1.3, 上限为 <0.2.3-rc.1)请走下面的方式二至方式四; latest 指向 0.1.3 后, 上面的命令即可直接安装本版本.
+按包名安装默认取 npm 上 latest 标签指向的版本. 0.1.2 声明的 dsh 上限是 `0.2.2-rc.2`, 在 dsh `0.2.2-rc.3` 起的宿主上会被安装与启动阶段拒绝; 需要固定版本时用 `dsh plugin --profile <profile> add dsh-question-timeout-protection@<版本>`. 本版本 0.1.3 的上限是 `<0.2.3-rc.1`, 也可以按下面的方式二至方式四从源码或 tarball 安装.
 
 ### 方式二: 从源码构建后安装
 

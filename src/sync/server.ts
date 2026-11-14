@@ -179,6 +179,8 @@ export function markCallSettled(callId: string): void {
     if (oldest.done) break
     settledCalls.delete(oldest.value)
   }
+  /* 空闲期没有新的限时提问时也要回收残留, 不能只靠登记新调用时清扫 */
+  sweepTrackedCalls()
 }
 
 /* 等待一小段时间 */
@@ -442,8 +444,12 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
        * 客户端还在继续发就已经超限, 这里主动断开连接停止接收:
        * 只回响应不终止流的话, 剩余字节会被一直读进内存直到上传结束。
        */
+      /*
+       * 不能在这里销毁请求: 销毁会连带拆掉底层连接, 413 响应来不及刷出,
+       * 客户端只看到连接被重置, 于是"草稿过长"被当成通道故障并计入连续失败。
+       * 剩余字节由上面的 oversized 分支直接丢弃, 内存不会继续增长。
+       */
       chunks.length = 0
-      request.destroy()
     }
   })
   /*

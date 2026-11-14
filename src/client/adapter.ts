@@ -686,12 +686,18 @@ function mergeDrafts(
   const merged: DraftItem[] = []
   for (let i = 0; i < count; i += 1) {
     const hostItem = host?.[i]
-    if (hostItem !== undefined) {
+    const liveItem = live?.[i]
+    const liveUsable = i === liveIndex && liveItem !== undefined && hasItemContent(liveItem)
+    if (hostItem !== undefined && !(liveUsable && !hasItemContent(hostItem))) {
+      /*
+       * 宿主的空条目不能压过当前题的实时值: 宿主对未触碰的题也会先写空条目,
+       * 若它对输入做了防抖, 超时那一刻用户最后敲的内容只存在于卡片里。
+       * 实时值同样为空时仍按宿主记录走, 用户主动清空不会被旧快照顶回来。
+       */
       merged.push({ selected: [...hostItem.selected], custom: hostItem.custom, skipped: hostItem.skipped })
       continue
     }
-    const liveItem = live?.[i]
-    if (i === liveIndex && liveItem !== undefined && hasItemContent(liveItem)) {
+    if (liveUsable && liveItem !== undefined) {
       merged.push({ selected: [...liveItem.selected], custom: liveItem.custom, skipped: liveItem.skipped })
       continue
     }
@@ -1428,6 +1434,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 这样结算前的每轮收起仍不会重复触发宿主 dismiss。
    */
   const restoreCard = (card: HTMLElement): void => {
+    /*
+     * 已被插件收起的卡片不再还原: 宿主 dismiss 没点中时节点仍留在文档里,
+     * 结算后把它还原成可作答状态, 用户就能往一张已经结束的提问里继续输入。
+     */
+    if (card.getAttribute(CARD_DISMISSED_ATTRIBUTE) !== null) return
     /* 收起时隐藏类加在卡片根节点自身, querySelectorAll 不含自身, 必须单独清一次 */
     card.classList.remove(HIDDEN_CONTROL_CLASS)
     for (const element of Array.from(card.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
@@ -2226,7 +2237,17 @@ function hideHostWaitText(root: HTMLElement): void {
   const evaluateProjection = (sessionId: string, snapshot: unknown): void => {
     if (typeof snapshot !== 'object' || snapshot === null) return
     const active = (snapshot as { active?: unknown }).active
-    if (!Array.isArray(active)) return
+    if (!Array.isArray(active)) {
+      /*
+       * 投影面在但结构不符: 这条链路一旦静默返回, 超时接管与收尾就再也不会发生,
+       * 因此按会话去重留一条日志, 便于宿主改结构后定位。
+       */
+      if (!evaluateWarned.has(sessionId)) {
+        evaluateWarned.add(sessionId)
+        console.warn('[question-timeout-protection] 提问投影结构不符, 该会话的超时接管可能不会生效')
+      }
+      return
+    }
     /* 所有仍在 active 的行都保留状态, 只有真正离开 active 才算结算 */
     const live = new Set<string>()
     for (const row of active as ProjectionRow[]) {
@@ -2373,9 +2394,20 @@ function hideHostWaitText(root: HTMLElement): void {
        */
       const evictedSession = oldestSession
       polledSessions.set(evictedSession, () => {
-        const face = resolveProjectionFace(ctx, evictedSession)
-        if (face === undefined) return
-        evaluateProjection(evictedSession, face.getSnapshot?.())
+        /*
+         * 轮询兜底也是"单点出错不能拖停整轮扫描"的位置: 这里抛出会中断 scanOnce,
+         * 让所有卡片的装饰、草稿上报与超时收尾一起停摆。
+         */
+        try {
+          const face = resolveProjectionFace(ctx, evictedSession)
+          if (face === undefined) return
+          evaluateProjection(evictedSession, face.getSnapshot?.())
+        } catch (error) {
+          if (!evaluateWarned.has(evictedSession)) {
+            evaluateWarned.add(evictedSession)
+            console.warn('[question-timeout-protection] 评估提问投影时出错, 该会话的兜底可能受影响', error)
+          }
+        }
       })
       /*
        * 淘汰下来的会话也要进最近出现表, 否则它既不在订阅表也不在最近出现表里,
