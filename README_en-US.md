@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.1.3-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.1.4-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -47,7 +47,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-Installing by package name takes whatever the npm latest tag points at. Version 0.1.2 declares dsh support only up to `0.2.2-rc.2`, so installation and startup reject it on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. This version (0.1.3) supports up to `<0.2.3-rc.1`, and Options B to D below install it from source or a tarball.
+Installing by package name takes whatever the npm latest tag points at. Version 0.1.2 declares dsh support only up to `0.2.2-rc.2`, so installation and startup reject it on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. This version (0.1.4) supports up to `<0.2.3-rc.1`, and Options B to D below install it from source or a tarball.
 
 ### Option B: build from source
 
@@ -60,7 +60,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <absolute path>
 ```
 
-`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.1.3.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
+`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.1.4.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
 
 ### Option C: install from the GitHub source
 
@@ -106,7 +106,7 @@ Historical questions and settled answers never show a countdown.
 
 The "Wait indefinitely" button sits next to the countdown. Clicking it removes the deadline for this question and freezes the countdown as "Paused" until you submit.
 
-The action takes effect only after the server confirms the registration, so a click briefly waits for that reply. If the state channel is unavailable the button does not take effect: the card returns to counting and the countdown slot reads "Cannot wait indefinitely".
+Clicking it freezes the countdown immediately and registers the wait with the server; if that registration fails or the reply times out the freeze is withdrawn, the card returns to counting and the countdown slot reads "Cannot wait indefinitely".
 
 ### Auto wait indefinitely
 
@@ -198,7 +198,7 @@ Cards and tool rows are located through host class-name suffixes, `data-question
 
 **Depends on the host question projection**
 
-The client relies on the userQuestions projection of the host sessions service to tell whether a question entered the continued state; draft reporting, the timeout wrap-up and the bubble all follow it. If that service is missing or the interface is renamed the plugin logs one console.warn per session: the countdown and card decoration stay, but no draft is reported, the wrap-up does not run and no bubble appears.
+The client relies on the userQuestions projection of the host sessions service to tell whether a question entered the continued state; draft reporting, the timeout wrap-up and the bubble all follow it. If that service is missing or the interface is renamed the plugin logs one console.warn per session: the countdown and card decoration stay, and while the card still shows the host waiting state the draft is still reported and still rides the tool result back to the model, but the wrap-up does not run and no bubble appears.
 
 **Session subscription cap**
 
@@ -214,7 +214,7 @@ Both share one token-protected channel mounted on the host's own HTTP service, s
 
 **UI languages**
 
-dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and is hidden, while the Japanese wait text stays visible and contradicts the withdrawn card; in the remaining locales the host answer entry and its wait text mostly stay visible. Under Japanese, a timeout with an empty draft produces no plugin bubble while the host entry is already hidden by its label, so that round offers no entry to reopen. Card dismissal degrades to CSS hiding there and submit buttons stay enabled.
+dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and is hidden, while the Japanese wait text stays visible and contradicts the withdrawn card; in the remaining locales the host answer entry and its wait text mostly stay visible. Under Japanese, a timeout with an empty draft produces no plugin bubble while the host entry is already hidden by its label, so that round offers no entry to reopen. Card dismissal degrades to CSS hiding there: submit, next and skip buttons are disabled together with the inputs, but the whole card is hidden so those states are not visible.
 
 **Bounded by the enclosing program budget in PTC mode**
 
@@ -230,7 +230,7 @@ When the model asks from inside `run_code` (PTC mode), that question lives only 
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
 - On the macOS desktop app, dsh 0.2.2-rc.2 allows window dragging only inside header rows carrying `data-window-drag`, and the host automatically excludes drag on controls inside a `data-window-drag-controls` container; a custom overlay covering a drag row must declare `data-window-drag-exclude` to stay interactive, and `--dsh-frame-top-clearance` reserves a strip at the top. The plugin's draft panel is attached to the body and declares neither, so near the top of the window it may fall into the reserved strip. The panel holds no clickable controls, so the effect is positional only; the web client is unaffected
 - The timeout notice injected for the model is Chinese-only, so on an English UI the model still receives Chinese text
-- A draft over the 256 KiB per-report limit makes the UI read "Draft too large; not delivered", which does not count towards consecutive failures; after three consecutive failures that question is judged channel-unavailable, the plugin stops taking it over and the card returns to the host and stays answerable
+- A draft over the 256 KiB per-report limit makes the UI read "Draft too large; not delivered", which does not count towards consecutive failures and retries at a fixed interval (about five seconds), so trimming the text restores reporting; after three consecutive failures that question is judged channel-unavailable, the plugin stops taking it over and the card returns to the host and stays answerable
 
 ## Update and uninstall
 

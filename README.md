@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.1.3-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.1.4-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -47,7 +47,7 @@ dsh 原生支持从 npm 安装插件:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-按包名安装默认取 npm 上 latest 标签指向的版本. 0.1.2 声明的 dsh 上限是 `0.2.2-rc.2`, 在 dsh `0.2.2-rc.3` 起的宿主上会被安装与启动阶段拒绝; 需要固定版本时用 `dsh plugin --profile <profile> add dsh-question-timeout-protection@<版本>`. 本版本 0.1.3 的上限是 `<0.2.3-rc.1`, 也可以按下面的方式二至方式四从源码或 tarball 安装.
+按包名安装默认取 npm 上 latest 标签指向的版本. 0.1.2 声明的 dsh 上限是 `0.2.2-rc.2`, 在 dsh `0.2.2-rc.3` 起的宿主上会被安装与启动阶段拒绝; 需要固定版本时用 `dsh plugin --profile <profile> add dsh-question-timeout-protection@<版本>`. 本版本 0.1.4 的上限是 `<0.2.3-rc.1`, 也可以按下面的方式二至方式四从源码或 tarball 安装.
 
 ### 方式二: 从源码构建后安装
 
@@ -60,7 +60,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <绝对路径>
 ```
 
-`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.1.3.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
+`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.1.4.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
 
 ### 方式三: 直接从 GitHub 源码安装
 
@@ -106,7 +106,7 @@ dsh plugin --profile <profile> add <绝对路径>
 
 倒计时右侧的「无限等待」按钮, 点击后本次提问不再有截止时间, 倒计时冻结为「已暂停」, 直到你提交才结束.
 
-这个动作需要服务端确认登记成功才会生效, 因此点击后要等回执. 如果状态通道不可用, 按钮不会生效, 卡片会回到计时状态并在倒计时位置显示「无法无限等待」.
+点击后界面立即冻结倒计时, 同时向服务端登记这次「无限等待」; 登记失败或回执超时时撤回冻结, 卡片回到计时状态, 倒计时位置显示「无法无限等待」.
 
 ### 自动无限等待
 
@@ -198,7 +198,7 @@ dsh plugin --profile <profile> add <绝对路径>
 
 **依赖宿主提问投影**
 
-客户端靠宿主 sessions 服务的 userQuestions 投影判断提问是否进入 continued 态, 草稿上报, 超时收尾与气泡都由它驱动. 该服务缺失或接口改名时插件按会话各打一条 console.warn: 倒计时与卡片装饰仍在, 但草稿不上报, 超时收尾不执行, 气泡不出现.
+客户端靠宿主 sessions 服务的 userQuestions 投影判断提问是否进入 continued 态, 草稿上报, 超时收尾与气泡都由它驱动. 该服务缺失或接口改名时插件按会话各打一条 console.warn: 倒计时与卡片装饰仍在, 卡片仍处于宿主等待状态时草稿照常上报并随工具结果回到模型, 但超时收尾不执行, 气泡不出现.
 
 **会话订阅上限**
 
@@ -214,7 +214,7 @@ dsh plugin --profile <profile> add <绝对路径>
 
 **界面语言**
 
-宿主 0.2.2-rc.1 起提供 8 种界面语言, 插件只识别中文与英文标签. 其他语言界面下倒计时, 无限等待按钮与工具栏开关不出现, 插件自绘的气泡与配置页文案回退英文. ja 的「回答」与中文同形会被隐藏, 但 ja 的等待文案仍会保留, 与被收起卡片的状态不一致; 其余语言下宿主的「回答」入口与等待文案大多仍然可见. ja 下空草稿超时不会出现插件气泡, 宿主的入口又已按文案隐藏, 因此这一轮没有可点的回看入口. 卡片关闭在这些语言下退化为隐藏类, 提交按钮不锁定.
+宿主 0.2.2-rc.1 起提供 8 种界面语言, 插件只识别中文与英文标签. 其他语言界面下倒计时, 无限等待按钮与工具栏开关不出现, 插件自绘的气泡与配置页文案回退英文. ja 的「回答」与中文同形会被隐藏, 但 ja 的等待文案仍会保留, 与被收起卡片的状态不一致; 其余语言下宿主的「回答」入口与等待文案大多仍然可见. ja 下空草稿超时不会出现插件气泡, 宿主的入口又已按文案隐藏, 因此这一轮没有可点的回看入口. 卡片关闭在这些语言下退化为隐藏类: 提交, 下一题与跳过按钮和输入框一样被禁用, 只是卡片整体隐藏后看不到这些状态.
 
 **PTC 模式下受外层程序预算约束**
 
@@ -230,7 +230,7 @@ dsh plugin --profile <profile> add <绝对路径>
 - 草稿按题合并三处来源, 优先级为宿主持久化记录, 当前显示题的实时值, 插件自己的快照; 读实时值时已选标签取的是宿主给读屏用的文案, 其中的「(推荐)」这类后缀可能被省略
 - 桌面端(macOS)自 dsh 0.2.2-rc.2 起只在带 `data-window-drag` 的页头行内允许拖动窗口, 带 `data-window-drag-controls` 的容器里的控件由宿主自动排除拖动; 覆盖拖动行的自定义浮层要自身声明 `data-window-drag-exclude` 才可交互, 顶部还留了 `--dsh-frame-top-clearance` 的预留带. 插件的草稿浮层挂在 body 上, 既没有声明拖动排除也不读预留带, 因此桌面端贴近窗口顶部时可能落进预留带; 浮层内没有可点控件, 影响限于位置; 网页客户端不受影响
 - 注入给模型的超时说明目前只有中文, 英文界面下模型收到的仍是中文说明
-- 草稿超过单次上报上限 256 KiB 时界面显示「草稿过长, 未送达」, 这一条不计入连续失败次数; 连续失败三次后该轮判定通道不可用, 插件不再接管, 卡片交还宿主继续可作答
+- 草稿超过单次上报上限 256 KiB 时界面显示「草稿过长, 未送达」, 这一条不计入连续失败次数, 并按固定间隔(约 5 秒)自动重试, 删减内容后会恢复上报; 连续失败三次后该轮判定通道不可用, 插件不再接管, 卡片交还宿主继续可作答
 
 ## 更新与卸载
 
