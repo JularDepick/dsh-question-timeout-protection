@@ -11,6 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type { Config } from '../config'
 import { configValue } from '../config-value'
+import { runBudgetRemaining } from '../ptc/budget'
 import {
   awaitDraft,
   callQuestionOrder,
@@ -31,17 +32,23 @@ import {
   DEFAULT_TIMEOUT_SECONDS,
   DRAFT_GRACE_MS,
   injectsContext,
+  MAX_DRAFT_QUESTION_CHARS,
+  MAX_DRAFT_TOTAL_CHARS,
   MAX_TIMEOUT_SECONDS,
   MIN_TIMEOUT_SECONDS,
+  PTC_BUDGET_MARGIN_MS,
+  PTC_MIN_WAIT_MS,
   TIMED_TIMEOUT_PARAMETER,
+  TIMEOUT_PENDING_BUDGET_NOTICE,
   TIMEOUT_PENDING_DRAFT_NOTICE,
+  TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE,
   TIMEOUT_PENDING_MISSING_NOTICE,
   TIMEOUT_PENDING_NOTICE,
 } from '../constants'
 
 /* 模型侧工具说明 */
 const TOOL_DESCRIPTION =
-  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: that round has already been settled as timed out, and an answer submitted later is not adopted by this tool, so decide yourself whether to ask again.'
+  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: that round has already been settled as timed out, and an answer submitted later is not adopted by this tool, so decide yourself whether to ask again. A timed call made from inside run_code is additionally bounded by that program\'s elapsed-time budget: keep the enclosing run_code timeoutMs above this timeout, otherwise the question is aborted and no draft can be returned.'
 
 /* 模型侧问题数组说明 */
 const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'
@@ -203,7 +210,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       },
       [TIMED_TIMEOUT_PARAMETER]: {
         type: 'integer',
-        description: `Wait seconds for the entire question batch (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)}). Pass -1 only when an answer is required before proceeding.`,
+        description: `Wait seconds for the entire question batch (default ${String(configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)}). Pass -1 only when an answer is required before proceeding. Inside run_code, set the enclosing run_code timeoutMs above this value.`,
       },
     },
     output: {
@@ -371,7 +378,23 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         }
       }
       if (exec.agent === undefined) throw new Error('timed questions require a live agent')
-      const timeoutMs = timeoutSeconds * 1000
+      /*
+       * PTC 子调用的寿命受外层程序预算约束: 预算到期时 runtime 硬停程序并中止这次等待,
+       * 既拿不到 pending 结果, 也留不下草稿。这里把等待收敛到外层剩余预算之内,
+       * 让提问在预算到期前自己按超时结算, 草稿照常随 pending 结果交给模型。
+       */
+      const requestedTimeoutMs = timeoutSeconds * 1000
+      const parentCallId = exec.rootCallId === exec.callId ? undefined : exec.rootCallId
+      const parentRemaining = parentCallId === undefined ? undefined : runBudgetRemaining(parentCallId)
+      const usableMs = parentRemaining === undefined ? undefined : parentRemaining - PTC_BUDGET_MARGIN_MS
+      if (usableMs !== undefined && usableMs < PTC_MIN_WAIT_MS) {
+        /*
+         * 外层没剩下可等待的预算: 开卡片只会闪一下就被掐掉,
+         * 直接按预算不足结算, 并让模型知道重试时要放宽外层 timeoutMs。
+         */
+        return { pending: true, callId: exec.callId, message: TIMEOUT_PENDING_BUDGET_NOTICE }
+      }
+      const timeoutMs = usableMs === undefined ? requestedTimeoutMs : Math.min(requestedTimeoutMs, usableMs)
       /*
        * 把本轮提问的权威到期时刻登记到状态通道: 客户端在到期瞬间上报的「无限等待」
        * 要按这个时刻判定是否已经过期, 不能用客户端自报的时刻。
@@ -529,6 +552,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         }
         const mapped: Array<{ id: string; selected: string[]; custom?: string }> = []
         let dropped = 0
+        /*
+         * 注入额度: 草稿随工具结果进入上下文, 宿主可能带工具结果裁剪,
+         * 超长的草稿会被整段吃掉, 因此先按单题与整轮上限截断并让模型知道截断发生过。
+         */
+        let remainingChars = MAX_DRAFT_TOTAL_CHARS
+        let truncated = false
         for (const item of draft) {
           const question = questions[item.index]
           if (question === undefined) {
@@ -542,10 +571,22 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            */
           const custom = item.custom?.trim() ?? ''
           if (item.selected.length === 0 && custom === '') continue
+          const selected = [...item.selected]
+          const questionLimit = Math.min(MAX_DRAFT_QUESTION_CHARS, remainingChars)
+          const selectedChars = selected.reduce((sum, label) => sum + label.length, 0)
+          if (selectedChars > questionLimit) {
+            /* 已选项本身就超限: 这一题整体不注入, 后面的题也没有额度了 */
+            truncated = true
+            break
+          }
+          const room = questionLimit - selectedChars
+          const keptCustom = custom.length > room ? custom.slice(0, room) : custom
+          if (keptCustom.length !== custom.length) truncated = true
+          remainingChars -= selectedChars + keptCustom.length
           mapped.push({
             id: question.id,
-            selected: [...item.selected],
-            ...(custom === '' ? {} : { custom }),
+            selected,
+            ...(keptCustom === '' ? {} : { custom: keptCustom }),
           })
         }
         if (dropped > 0) {
@@ -557,7 +598,9 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
         return {
           pending: true,
           callId,
-          message: TIMEOUT_PENDING_DRAFT_NOTICE,
+          message: truncated
+            ? TIMEOUT_PENDING_DRAFT_NOTICE + TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE
+            : TIMEOUT_PENDING_DRAFT_NOTICE,
           draft: mapped,
         }
       }

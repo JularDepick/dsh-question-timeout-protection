@@ -100,6 +100,8 @@ import {
   TAKE_TIME_TEXTS,
   TOOL_CALL_ID_ATTRIBUTE,
   TOOL_CALL_ID_SELECTOR,
+  TOOL_ROW_FAILED_STATES,
+  TOOL_ROW_STATE_ATTRIBUTE,
   WAIT_STATUS_SELECTOR,
 } from '../constants'
 /** 适配器需要的插件配置 */
@@ -939,6 +941,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const callTouchedAt = new Map<string, number>()
   /* 草稿快照超过通道上限的调用: 界面需要显示「草稿过长」而不是笼统的通道故障 */
   const draftTooLarge = new Set<string>()
+  /*
+   * 被中断的提问(工具行停在失败态): 外层预算到期或宿主中止都会走到这里,
+   * 卡片已经不在, 草稿只留作回看, 不再提供作答入口。
+   */
+  const interrupted = new Set<string>()
   /* 超限判定时刻: 只按固定间隔重试, 不每轮重发同一份长文 */
   const draftTooLargeAt = new Map<string, number>()
 
@@ -1012,6 +1019,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of draftTooLarge.keys()) ids.add(id)
     for (const id of draftTooLargeAt.keys()) ids.add(id)
     for (const id of dismissedCallIds.keys()) ids.add(id)
+    for (const id of interrupted.keys()) ids.add(id)
     /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
     for (const id of optionInteractions.keys()) ids.add(id)
     return [...ids]
@@ -1043,8 +1051,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     draftTooLarge.delete(callId)
     draftTooLargeAt.delete(callId)
     dismissedCallIds.delete(callId)
-    /* lastDrafts 只是工作副本, 气泡用的快照在 drafts 里, 这里可以一并清掉 */
-    lastDrafts.delete(callId)
+    interrupted.delete(callId)
+    /*
+     * lastDrafts 故意不在这里清: 提问被外层预算中止时这一轮根本不会进投影,
+     * forgetCall 之后工具行仍停在失败态, 草稿要靠这份实时副本搬成只读气泡。
+     * 容量由 pruneDrafts 兜底, 正常提交的那条在点击提交时已经删掉。
+     */
   }
 
   /*
@@ -1824,9 +1836,15 @@ function hideHostWaitText(root: HTMLElement): void {
     note.textContent = pick(DRAFT_PANEL_NOTE_ZH, DRAFT_PANEL_NOTE_EN)
     const body = document.createElement('div')
     body.className = 'dqtp-draft-body'
-    const blocks = draft.questions.map((question, index) => {
+    /*
+     * 题数取题目与草稿条目两者的较大值: 提问被外层预算中止时投影里没有题目元信息,
+     * 只按题目遍历会把已经填好的内容整段丢掉, 面板上只剩「没有内容」。
+     */
+    const blockCount = Math.max(draft.questions.length, draft.items.length)
+    const blocks = Array.from({ length: blockCount }, (_, index) => {
+      const question = draft.questions[index]
       const item = draft.items[index] ?? emptyItem()
-      const heading = (question.header ?? question.question ?? '').trim()
+      const heading = (question?.header ?? question?.question ?? '').trim()
       const content = hasItemContent(item)
         ? composeItem(item)
         : pick(DRAFT_PANEL_UNANSWERED_ZH, DRAFT_PANEL_UNANSWERED_EN)
@@ -1922,6 +1940,36 @@ function hideHostWaitText(root: HTMLElement): void {
   /* 已装饰过的工具行及其状态指纹: 状态没变就不重复遍历行内按钮 */
   const decoratedRows = new WeakMap<HTMLElement, string>()
 
+  /* 工具行是否停在失败态: 宿主把失败与中止都写在 data-state 上 */
+  const failedRowState = (row: HTMLElement): boolean => {
+    const state = row.getAttribute(TOOL_ROW_STATE_ATTRIBUTE)
+    return state !== null && TOOL_ROW_FAILED_STATES.includes(state)
+  }
+
+  /*
+   * 把被中断的提问的草稿搬成只读气泡快照。
+   * PTC 子调用被外层预算中止时宿主不会把这一轮写进提问投影, 于是既没有超时接管,
+   * 也没有「已继续工作」的晚回复; 用户在卡片里填的内容只存在这份实时副本里,
+   * 不搬到气泡上就等于当场丢掉。
+   */
+  const promoteInterruptedDraft = (row: HTMLElement, callId: string): void => {
+    if (timedOut.has(callId) || passive.has(callId)) return
+    const items = lastDrafts.get(callId)
+    if (items === undefined || !items.some(hasItemContent)) return
+    if (!drafts.has(callId)) {
+      const container = row.closest(SESSION_CONTAINER_SELECTOR)
+      const sessionId =
+        container instanceof HTMLElement
+          ? container.getAttribute('data-conversation-session') ?? undefined
+          : callSessionOf(callId)
+      if (sessionId === undefined || sessionId === '') return
+      /* 投影里没有这一行时题目元信息为空, 面板按草稿条目逐条展示 */
+      drafts.set(callId, { sessionId, callId, questions: projectedQuestions.get(callId) ?? [], items })
+      pruneDrafts()
+    }
+    interrupted.add(callId)
+  }
+
   /*
    * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡。
    * 宿主自己那枚「回答」气泡与插件气泡功能冲突, 取缔掉它 —— 需要看回答草稿时用插件气泡,
@@ -1930,13 +1978,15 @@ function hideHostWaitText(root: HTMLElement): void {
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
     if (callId === undefined) return
+    /* 提问已被中断(工具行停在失败态)时, 先把实时草稿搬成只读气泡快照 */
+    if (failedRowState(row)) promoteInterruptedDraft(row, callId)
     /*
      * 普通历史行(没有草稿, 未超时, 未交还)装饰一次后每轮跳过:
      * 它们只需要一个隐藏的气泡按钮, 长会话里这类行占绝大多数。
      * 接管过的行每轮照旧重跑, 宿主重渲染把隐藏类清掉时还会重新藏回去。
      * 气泡节点被宿主移除时指纹不匹配, 会重新创建。
      */
-    const plain = !timedOut.has(callId) && !passive.has(callId) && !drafts.has(callId)
+    const plain = !timedOut.has(callId) && !passive.has(callId) && !interrupted.has(callId) && !drafts.has(callId)
     const bubblePresent = row.querySelector('button.' + BUBBLE_BUTTON_CLASS) !== null
     /*
      * 指纹必须带上超时与交还状态: 结算后这两个状态会从有到无,
@@ -1948,9 +1998,10 @@ function hideHostWaitText(root: HTMLElement): void {
       + (bubblePresent ? '1' : '0')
       + (timedOut.has(callId) ? 'T' : '-')
       + (passive.has(callId) ? 'P' : '-')
+      + (interrupted.has(callId) ? 'I' : '-')
     if (plain && decoratedRows.get(row) === signature) return
-    /* 该调用不在超时接管状态时, 宿主入口与等待文案都必须恢复可见 */
-    if (!timedOut.has(callId)) {
+    /* 该调用不在超时接管或中断状态时, 宿主入口与等待文案都必须恢复可见 */
+    if (!timedOut.has(callId) && !interrupted.has(callId)) {
       showHostReopen(row)
       showHostWaitText(row)
     }
@@ -1978,11 +2029,11 @@ function hideHostWaitText(root: HTMLElement): void {
     if (button.textContent !== label) button.textContent = label
     if (button.getAttribute(BUBBLE_STATE_ATTRIBUTE) !== BUBBLE_STATE_DRAFT)
       button.setAttribute(BUBBLE_STATE_ATTRIBUTE, BUBBLE_STATE_DRAFT)
-    if (timedOut.has(callId)) {
+    if (timedOut.has(callId) || interrupted.has(callId)) {
       hideHostReopen(row)
       /*
        * 宿主把等待结果写在这条工具行的摘要里(「已继续工作, 仍可回答」),
-       * 而插件已经把这一轮收尾成超时并交出草稿, 留着这句话等于告诉用户"还能继续答",
+       * 而插件已经把这一轮收尾成超时或中断并交出草稿, 留着这句话等于告诉用户"还能继续答",
        * 与卡片已关闭的事实冲突, 因此接管后同样要按文案把它藏掉。
        */
       hideHostWaitText(row)

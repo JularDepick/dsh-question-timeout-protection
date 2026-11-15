@@ -8,7 +8,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { Config } from './config'
-import { PLUGIN_NAME } from './constants'
+import { DEFAULT_PTC_BUDGET_MS, PLUGIN_NAME } from './constants'
+import { installRunBudgetTracking } from './ptc/budget'
 import { QuestionTimeoutService } from './question/service'
 import { registerQuestionSyncRoute, stopQuestionSync } from './sync/server'
 
@@ -25,6 +26,18 @@ export type { FallbackMode } from './constants'
 export function apply(ctx: Context, config: Config): void {
   const service = new QuestionTimeoutService(ctx, config)
   service.start()
+  /*
+   * PTC 外层预算感知: run_code 的 elapsed-time budget 到期会中止在途的提问子调用,
+   * 因此把每次 run_code 的预算记下来, 让提问工具在子调用里收敛等待时长。
+   * 缺省预算优先取宿主 PTC 运行时公布的值, 取不到时用与宿主一致的常量兜底。
+   */
+  let ptcDefaultBudgetMs = DEFAULT_PTC_BUDGET_MS
+  ctx.inject(['ptcRuntime'], (scoped?: Context) => {
+    const holder = (scoped ?? ctx) as unknown as { ptcRuntime?: { timeout?: { defaultMs?: unknown } } }
+    const value = holder.ptcRuntime?.timeout?.defaultMs
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) ptcDefaultBudgetMs = value
+  })
+  ctx.effect(() => installRunBudgetTracking(ctx, () => ptcDefaultBudgetMs))
   let syncStarted = false
   /*
    * 状态通道挂在宿主自带的 HTTP 服务上: 同源、免 CORS, 也不会与另一个实例抢端口。

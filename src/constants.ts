@@ -408,3 +408,52 @@ export const DRAFT_PANEL_UNANSWERED_ZH = '未作答'
 
 /** 只读草稿面板里某题没有作答时的提示(英文) */
 export const DRAFT_PANEL_UNANSWERED_EN = 'Not answered'
+
+/*
+ * PTC 模式外层程序的工具名。
+ * 该工具的 elapsed-time budget 到期会硬停程序并中止在途的子调用,
+ * 因此本插件在子调用里必须把等待收敛到外层剩余预算之内。
+ */
+export const PTC_RUN_TOOL_NAME = 'run_code'
+
+/** 外层程序未显式声明预算时的兜底值(毫秒), 与宿主 run_code 的缺省预算一致 */
+export const DEFAULT_PTC_BUDGET_MS = 120000
+
+/** 在外层预算到期前预留的收尾时间(毫秒): 覆盖取草稿的宽限期与结算竞态 */
+export const PTC_BUDGET_MARGIN_MS = 5000
+
+/** 收敛后的等待时长小于该值时不再开卡片(毫秒): 直接按预算不足结算 */
+export const PTC_MIN_WAIT_MS = 2000
+
+/** 外层预算登记的容量上限 */
+export const MAX_RUN_BUDGETS = 512
+
+/** 外层预算登记的存活时长: 超过这个时间仍未结算的登记视为残留 */
+export const RUN_BUDGET_TTL_MS = 30 * 60 * 1000
+
+/**
+ * 外层预算不足以等待作答时的说明(模型侧)。
+ * 这一轮没有真正等待, 用户也没看到问题, 因此必须让模型知道重试时要放宽外层预算。
+ */
+export const TIMEOUT_PENDING_BUDGET_NOTICE =
+  '外层 run_code 的剩余执行预算不足以等待用户作答, 这次提问没有开始等待, 用户也没有看到问题; 需要提问时请把 run_code 的 timeoutMs 设为大于提问等待时长后重试。'
+
+/**
+ * 注入给模型的草稿文本上限(字符): 单题与整轮。
+ * 草稿随工具结果进入上下文, 宿主可能带工具结果裁剪(如 PTC 预设的 8192 字符阈值),
+ * 超长的草稿会被整段吃掉, 因此插件自己先按上限截断并说明。
+ */
+export const MAX_DRAFT_QUESTION_CHARS = 1200
+
+/** 整轮草稿的注入上限(字符) */
+export const MAX_DRAFT_TOTAL_CHARS = 6000
+
+/** 草稿因上限被截断时的补充说明(模型侧) */
+export const TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE = '草稿过长, 超过上限的部分已截断。'
+
+/** 工具行根节点的状态属性(宿主 ToolRow 的 data-state) */
+export const TOOL_ROW_STATE_ATTRIBUTE = 'data-state'
+
+/** 视为提问已被中断的宿主工具行状态: 失败与中止都不再有可作答的卡片 */
+export const TOOL_ROW_FAILED_STATES: readonly string[] = ['error', 'stopped']
+
