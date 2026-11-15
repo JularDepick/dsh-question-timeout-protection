@@ -2211,6 +2211,13 @@ function hideHostWaitText(root: HTMLElement): void {
           badCallIdWarned.add(callId)
           console.warn('[question-timeout-protection] 调用标识不符合通道格式, 这一轮的草稿无法送达')
         }
+        /*
+         * 草稿永远送不到, 就不能按超时收走卡片: 交还宿主原版路径,
+         * 让用户还能在卡片里作答, 而不是看着卡片消失却没有任何提示。
+         */
+        syncUnavailable.add(callId)
+        const badIdCard = findCard(identity)
+        if (badIdCard !== undefined) decorateCard(badIdCard, identity)
         return
       }
       if (reply.reason === 'too-large') {

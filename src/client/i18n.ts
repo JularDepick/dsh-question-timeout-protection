@@ -34,7 +34,6 @@ const EN: Record<keyof typeof ZH, string> = {
   injectDesc: 'The draft snapshot is sent to the server before the timeout; on expiry it comes back with the tool result per question and enters the model context, so the model can decide whether to ask again',
   fixedSection: 'Fixed features',
   fixedNote: "Follows the plugin's enabled state; this page offers no switch",
-
   fixedKeepLabel: 'Keep the draft in the UI',
   fixedKeepDesc: 'At timeout, records the selected options and typed text into the question bubble, where they can be viewed read-only',
   cardEnhancementsLabel: 'Card enhancements',

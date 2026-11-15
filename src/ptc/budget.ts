@@ -25,6 +25,9 @@ const runBudgets = new Map<string, number>()
  */
 const nestedBudgets = new Map<string, Map<string, number>>()
 
+/* 内层登记到期后的宽限(毫秒): 过了这段时间仍未收到结算事件就按残留清掉 */
+const NESTED_BUDGET_GRACE_MS = 5000
+
 /**
  * 登记一次外层程序的到期时刻。
  * 同一调用会先由调用事件、再由派发钩子登记一次, 取较晚的到期时刻:
@@ -57,6 +60,11 @@ function registerNestedBudget(rootCallId: string, callId: string, deadline: numb
   const previous = entries.get(callId)
   if (previous !== undefined && previous >= deadline) return
   entries.set(callId, deadline)
+  while (entries.size > MAX_RUN_BUDGETS) {
+    const oldest = entries.keys().next()
+    if (oldest.done) break
+    entries.delete(oldest.value)
+  }
   while (nestedBudgets.size > MAX_RUN_BUDGETS) {
     const oldest = nestedBudgets.keys().next()
     if (oldest.done) break
@@ -72,10 +80,11 @@ function clearNestedBudget(callId: string): void {
   }
 }
 
-/** 丢弃一次外层程序的登记 */
+/** 丢弃一次外层程序的登记: 根结算时连它名下的内层登记一起清掉 */
 export function clearRunBudget(callId: string): void {
   runBudgets.delete(callId)
   clearNestedBudget(callId)
+  nestedBudgets.delete(callId)
 }
 
 /**
@@ -87,9 +96,19 @@ export function runBudgetRemaining(callId: string): number | undefined {
   let deadline = runBudgets.get(callId)
   const nested = nestedBudgets.get(callId)
   if (nested !== undefined) {
-    for (const value of nested.values()) {
+    const now = Date.now()
+    for (const [id, value] of nested) {
+      /*
+       * 内层程序到期即已结束, 结果事件万一没到也不能让这条登记长期把根预算压成 0:
+       * 过了宽限就按残留清掉。根登记不适用这条, 它到期就意味着程序本身要被硬停。
+       */
+      if (value + NESTED_BUDGET_GRACE_MS <= now) {
+        nested.delete(id)
+        continue
+      }
       if (deadline === undefined || value < deadline) deadline = value
     }
+    if (nested.size === 0) nestedBudgets.delete(callId)
   }
   if (deadline === undefined) return undefined
   /*
