@@ -419,8 +419,8 @@ export const PTC_RUN_TOOL_NAME = 'run_code'
 /** 外层程序未显式声明预算时的兜底值(毫秒), 与宿主 run_code 的缺省预算一致 */
 export const DEFAULT_PTC_BUDGET_MS = 120000
 
-/** 在外层预算到期前预留的收尾时间(毫秒): 覆盖取草稿的宽限期与结算竞态 */
-export const PTC_BUDGET_MARGIN_MS = 5000
+/** 在外层预算到期前预留的收尾时间(毫秒): 覆盖最多两次取草稿的宽限期(DRAFT_GRACE_MS)与结算竞态 */
+export const PTC_BUDGET_MARGIN_MS = 7000
 
 /** 收敛后的等待时长小于该值时不再开卡片(毫秒): 直接按预算不足结算 */
 export const PTC_MIN_WAIT_MS = 2000

@@ -12,7 +12,7 @@ const ZH = {
   injectLabel: '注入到上下文',
   injectDesc: '超时前把草稿快照交给服务端, 到期时随工具结果按题带回模型上下文, 由模型自行决定是否重新提问',
   fixedSection: '固定特性',
-  fixedNote: '随插件启用状态生效, 不可单独关闭',
+  fixedNote: '随插件启用状态生效, 本页不提供开关',
   fixedKeepLabel: '界面保留草稿',
   fixedKeepDesc: '超时后把已选选项与已输入内容记入提问气泡, 可在气泡里只读查看',
   cardEnhancementsLabel: '卡片增强',
@@ -33,7 +33,8 @@ const EN: Record<keyof typeof ZH, string> = {
   injectLabel: 'Inject into context',
   injectDesc: 'The draft snapshot is sent to the server before the timeout; on expiry it comes back with the tool result per question and enters the model context, so the model can decide whether to ask again',
   fixedSection: 'Fixed features',
-  fixedNote: "Follows the plugin's enabled state and cannot be turned off separately",
+  fixedNote: "Follows the plugin's enabled state; this page offers no switch",
+
   fixedKeepLabel: 'Keep the draft in the UI',
   fixedKeepDesc: 'At timeout, records the selected options and typed text into the question bubble, where they can be viewed read-only',
   cardEnhancementsLabel: 'Card enhancements',

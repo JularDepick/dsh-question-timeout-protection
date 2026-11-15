@@ -582,6 +582,14 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           const room = questionLimit - selectedChars
           const keptCustom = custom.length > room ? custom.slice(0, room) : custom
           if (keptCustom.length !== custom.length) truncated = true
+          if (selected.length === 0 && keptCustom === '') {
+            /*
+             * 整轮额度已用尽: 这一题连补充内容都放不下, 后面的题同样放不下。
+             * 不能把它当成空条目塞进 draft, 否则模型会把"作答了但什么都没选"当成用户的真实选择。
+             */
+            truncated = true
+            break
+          }
           remainingChars -= selectedChars + keptCustom.length
           mapped.push({
             id: question.id,

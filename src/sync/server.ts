@@ -476,8 +476,12 @@ function handleStateRequest(request: IncomingMessage, response: ServerResponse):
         deadline?: unknown
       }
       if (typeof parsed.callId !== 'string' || !CALL_ID_PATTERN.test(parsed.callId)) {
-        response.writeHead(400)
-        response.end()
+        /*
+         * 调用标识本身不合规属于内容问题, 与通道故障不是一回事:
+         * 带上 reason, 客户端才不会把它累计成"通道不可用"并把卡片交还宿主。
+         */
+        response.writeHead(400, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ ok: false, reason: 'bad-call-id' }))
         return
       }
       if (parsed.infinite === false) {

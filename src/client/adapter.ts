@@ -339,7 +339,8 @@ function parseCardKey(key: string | null): CardIdentity | undefined {
    * 所以按第一个冒号切分: 从后往前切会把 callId 的前半段当成会话 id。
    */
   const split = rest.indexOf(':')
-  if (split <= 0) return undefined
+  /* 冒号在末尾时 callId 为空, 这样的卡片 key 不能用: 后续上报必然被服务端拒绝 */
+  if (split <= 0 || split + 1 >= rest.length) return undefined
   return { sessionId: rest.slice(0, split), callId: rest.slice(split + 1) }
 }
 
@@ -941,6 +942,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const callTouchedAt = new Map<string, number>()
   /* 草稿快照超过通道上限的调用: 界面需要显示「草稿过长」而不是笼统的通道故障 */
   const draftTooLarge = new Set<string>()
+  /* 调用标识不合规的调用: 只告警一次, 且不计入通道故障 */
+  const badCallIdWarned = new Set<string>()
   /*
    * 被中断的提问(工具行停在失败态): 外层预算到期或宿主中止都会走到这里,
    * 卡片已经不在, 草稿只留作回看, 不再提供作答入口。
@@ -1020,6 +1023,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of draftTooLargeAt.keys()) ids.add(id)
     for (const id of dismissedCallIds.keys()) ids.add(id)
     for (const id of interrupted.keys()) ids.add(id)
+    for (const id of badCallIdWarned.keys()) ids.add(id)
     /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
     for (const id of optionInteractions.keys()) ids.add(id)
     return [...ids]
@@ -1052,6 +1056,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     draftTooLargeAt.delete(callId)
     dismissedCallIds.delete(callId)
     interrupted.delete(callId)
+    badCallIdWarned.delete(callId)
     /*
      * lastDrafts 故意不在这里清: 提问被外层预算中止时这一轮根本不会进投影,
      * forgetCall 之后工具行仍停在失败态, 草稿要靠这份实时副本搬成只读气泡。
@@ -1080,6 +1085,17 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       }
       if (oldestId === undefined) break
       forgetCall(oldestId)
+    }
+    /*
+     * 告警去重集合按会话登记, 而投影面长期缺失时这些会话既不在订阅表也不在轮询表里,
+     * 回收路径碰不到它们; 这里按容量兜底, 避免长会话里只增不减。
+     */
+    for (const warned of [subscribeWarned, evaluateWarned]) {
+      while (warned.size > MAX_SESSION_SUBSCRIPTIONS * 8) {
+        const oldest = warned.keys().next()
+        if (oldest.done) break
+        warned.delete(oldest.value)
+      }
     }
   }
 
@@ -1743,6 +1759,17 @@ function hideHostWaitText(root: HTMLElement): void {
         if (current !== undefined) decorateCard(current, identity)
         return
       }
+      if (reply.reason === 'bad-call-id') {
+        /* 调用标识不合规时「无限等待」永远登记不上: 撤回冻结, 但不判成通道故障 */
+        paused.delete(identity.callId)
+        if (!badCallIdWarned.has(identity.callId)) {
+          badCallIdWarned.add(identity.callId)
+          console.warn('[question-timeout-protection] 调用标识不符合通道格式, 「无限等待」无法登记')
+        }
+        const badIdCard = findCard(identity)
+        if (badIdCard !== undefined) decorateCard(badIdCard, identity)
+        return
+      }
       /*
        * 通道不可达(没有网页客户端, 令牌取不到, 或请求被拒)时无限等待根本无法生效,
        * 这里撤回冻结、把该调用交还宿主, 并在倒计时位置给出可见提示, 避免到期仍提交草稿。
@@ -2175,6 +2202,17 @@ function hideHostWaitText(root: HTMLElement): void {
         return
       }
       if (settled) return
+      if (reply.reason === 'bad-call-id') {
+        /*
+         * 调用标识不符合通道格式属于内容问题, 不是通道故障:
+         * 计入连续失败会让整轮被判定为通道不可用并把卡片交还宿主, 反而掩盖真实原因。
+         */
+        if (!badCallIdWarned.has(callId)) {
+          badCallIdWarned.add(callId)
+          console.warn('[question-timeout-protection] 调用标识不符合通道格式, 这一轮的草稿无法送达')
+        }
+        return
+      }
       if (reply.reason === 'too-large') {
         /*
          * 内容本身超出通道上限, 与通道故障无关: 不计入连续失败次数,
@@ -2215,8 +2253,14 @@ function hideHostWaitText(root: HTMLElement): void {
     }
     handled.add(row.callId)
     deferred.delete(row.callId)
-    const count = row.questions.length
-    const liveIndex = card === undefined ? undefined : readProgress(card)?.index
+    /*
+     * 题数与上报链路用同一口径: 投影里的题数可能少于卡片分页数, 也可能是空数组,
+     * 只按 row.questions.length 会在结算那一刻把后面几题的草稿截掉,
+     * 极端情况下 items 为空, 一份非空草稿会被当成空草稿处理并直接关卡片。
+     */
+    const progress = card === undefined ? undefined : readProgress(card)
+    const count = Math.max(progress?.count ?? 1, projectedCounts.get(row.callId) ?? 1, row.questions.length)
+    const liveIndex = progress?.index
     /*
      * 结算时的草稿以宿主的持久化记录为主: 宿主在用户每次改动时同步写一次,
      * 用户清空输入后那里写下的就是空值, 不会把用户删掉的内容当成草稿带回模型。
@@ -2714,6 +2758,12 @@ function hideHostWaitText(root: HTMLElement): void {
    */
   const onDraftStorageChange = (event: Event): void => {
     const key = (event as StorageEvent).key
+    /* 另一个标签页切换了「问答自动无限等待」: 本页跟着改, 不必等刷新 */
+    if (key === AUTO_INFINITE_STORAGE_KEY) {
+      autoInfinite = readAutoInfinite()
+      scheduleScan()
+      return
+    }
     if (typeof key === 'string' && !key.startsWith(HOST_DRAFT_STORAGE_PREFIX)) return
     invalidateHostDraftCache()
     scheduleScan()
@@ -2770,6 +2820,10 @@ function hideHostWaitText(root: HTMLElement): void {
     }
     for (const element of Array.from(document.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
       element.classList.remove(HIDDEN_CONTROL_CLASS)
+    }
+    /* 工具行上的还原标记也要摘掉: 否则卸载后节点上留着一个没人认的旧标记 */
+    for (const element of Array.from(document.querySelectorAll('[' + HIDDEN_WAIT_ATTRIBUTE + ']'))) {
+      element.removeAttribute(HIDDEN_WAIT_ATTRIBUTE)
     }
     for (const element of Array.from(document.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
       element.remove()

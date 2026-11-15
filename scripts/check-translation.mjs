@@ -232,20 +232,25 @@ function literalPairs() {
   const source = readFileSync(join(ROOT, 'src/constants.ts'), 'utf8')
   const declarations = constDeclarations(source)
   const pairs = []
+  const unreadable = []
   const names = new Set()
   for (const match of source.matchAll(/export const ([A-Za-z0-9_]+)_ZH\b/g)) names.add(match[1])
   for (const name of names) {
     const zhStart = constValueStart(source, declarations, name + '_ZH')
-    if (zhStart === undefined) continue
-    const zhLiteral = readStringLiteral(source, zhStart)
-    if (zhLiteral === undefined) continue
     const enStart = constValueStart(source, declarations, name + '_EN')
-    if (enStart === undefined) continue
-    const enLiteral = readStringLiteral(source, enStart)
-    if (enLiteral === undefined) continue
+    const zhLiteral = zhStart === undefined ? undefined : readStringLiteral(source, zhStart)
+    const enLiteral = enStart === undefined ? undefined : readStringLiteral(source, enStart)
+    /*
+     * 取不到字面量时必须报错而不是静默跳过: 用模板串或加号拼接书写的文案
+     * 既不会被比值, 也不会触发"未登记"检查, 整组常量就此脱离校验。
+     */
+    if (zhLiteral === undefined || enLiteral === undefined) {
+      unreadable.push(name)
+      continue
+    }
     pairs.push({ name, zh: zhLiteral.value, en: enLiteral.value })
   }
-  return pairs
+  return { pairs, unreadable }
 }
 
 /*
@@ -570,7 +575,15 @@ for (const match of constantsSource.matchAll(/export const ([A-Za-z0-9_]+)_ZH\b/
 }
 
 const enIni = parseIni(readFileSync(join(ROOT, 'src/translation/en-US.ini'), 'utf8'))
-for (const pair of literalPairs()) {
+const literal = literalPairs()
+/*
+ * 取不到字面量的成对常量必须报出来: 静默跳过等于整组文案脱离校验,
+ * 界面上的取值与 ini 漂移时没有任何人会发现。
+ */
+for (const name of literal.unreadable) {
+  problems.push('文案常量 ' + name + '_ZH / ' + name + '_EN 的取值不是可解析的字符串字面量, 无法与 ini 对账')
+}
+for (const pair of literal.pairs) {
   const key = CONSTANT_KEY_MAP[pair.name]
   if (key === undefined) {
     problems.push('常量 ' + pair.name + '_ZH/_EN 未登记在检查映射里')

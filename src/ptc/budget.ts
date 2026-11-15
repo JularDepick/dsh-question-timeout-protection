@@ -18,6 +18,13 @@ import { MAX_RUN_BUDGETS, PTC_RUN_TOOL_NAME, RUN_BUDGET_TTL_MS } from '../consta
 /* run_code 调用标识 -> 到期时刻(毫秒) */
 const runBudgets = new Map<string, number>()
 
+/*
+ * 内层程序的到期时刻: 键为根调用标识, 值为「内层调用标识 -> 到期时刻」。
+ * PTC 里可以再嵌套一层 run_code, 提问的寿命此时受内层预算约束,
+ * 而工具侧只拿得到根调用标识, 因此把内层登记挂在根标识下, 取最近的那个。
+ */
+const nestedBudgets = new Map<string, Map<string, number>>()
+
 /**
  * 登记一次外层程序的到期时刻。
  * 同一调用会先由调用事件、再由派发钩子登记一次, 取较晚的到期时刻:
@@ -39,9 +46,36 @@ export function registerRunBudget(callId: string, deadline: number): void {
   }
 }
 
+/** 登记一次内层程序的到期时刻(嵌套 run_code) */
+function registerNestedBudget(rootCallId: string, callId: string, deadline: number): void {
+  if (rootCallId === '') return
+  let entries = nestedBudgets.get(rootCallId)
+  if (entries === undefined) {
+    entries = new Map<string, number>()
+    nestedBudgets.set(rootCallId, entries)
+  }
+  const previous = entries.get(callId)
+  if (previous !== undefined && previous >= deadline) return
+  entries.set(callId, deadline)
+  while (nestedBudgets.size > MAX_RUN_BUDGETS) {
+    const oldest = nestedBudgets.keys().next()
+    if (oldest.done) break
+    nestedBudgets.delete(oldest.value)
+  }
+}
+
+/** 丢弃一次内层程序的登记(内层调用结算时) */
+function clearNestedBudget(callId: string): void {
+  for (const [rootCallId, entries] of nestedBudgets) {
+    if (!entries.delete(callId)) continue
+    if (entries.size === 0) nestedBudgets.delete(rootCallId)
+  }
+}
+
 /** 丢弃一次外层程序的登记 */
 export function clearRunBudget(callId: string): void {
   runBudgets.delete(callId)
+  clearNestedBudget(callId)
 }
 
 /**
@@ -50,17 +84,26 @@ export function clearRunBudget(callId: string): void {
  * 已过期返回 0, 让调用方按"预算不足"处理而不是当成无限预算。
  */
 export function runBudgetRemaining(callId: string): number | undefined {
-  const deadline = runBudgets.get(callId)
+  let deadline = runBudgets.get(callId)
+  const nested = nestedBudgets.get(callId)
+  if (nested !== undefined) {
+    for (const value of nested.values()) {
+      if (deadline === undefined || value < deadline) deadline = value
+    }
+  }
   if (deadline === undefined) return undefined
+  /*
+   * 过期不删登记: 同一个程序里可能还有第二次提问, 删掉会让它退回未收敛的完整等待,
+   * 反而更容易被硬停。登记由调用结算与 TTL 回收。
+   */
   const remaining = deadline - Date.now()
-  if (remaining > 0) return remaining
-  runBudgets.delete(callId)
-  return 0
+  return remaining > 0 ? remaining : 0
 }
 
 /** 清空全部登记(插件卸载时) */
 export function resetRunBudgets(): void {
   runBudgets.clear()
+  nestedBudgets.clear()
 }
 
 /* 会话事件里本模块关心的最小面 */
@@ -79,6 +122,7 @@ interface SessionEventSource {
 interface ToolExecuteLike {
   name?: unknown
   callId?: unknown
+  rootCallId?: unknown
   parent?: unknown
   arguments?: unknown
 }
@@ -133,11 +177,20 @@ export function installRunBudgetTracking(ctx: unknown, defaultBudgetMs: () => nu
           exec !== null
           && typeof exec === 'object'
           && exec.name === PTC_RUN_TOOL_NAME
-          && exec.parent === undefined
           && typeof exec.callId === 'string'
           && exec.callId !== ''
         ) {
-          registerRunBudget(exec.callId, Date.now() + readBudgetMs(exec.arguments, defaultBudgetMs()))
+          const deadline = Date.now() + readBudgetMs(exec.arguments, defaultBudgetMs())
+          if (exec.parent === undefined) {
+            registerRunBudget(exec.callId, deadline)
+          } else {
+            /* 嵌套的 run_code: 内层预算同样会硬停程序, 挂在根标识下供提问取用 */
+            registerNestedBudget(
+              typeof exec.rootCallId === 'string' ? exec.rootCallId : '',
+              exec.callId,
+              deadline,
+            )
+          }
         }
       } catch {
         /* 登记失败不能影响这次工具派发 */
