@@ -36,7 +36,7 @@ This plugin adds three things: you can see how long is left, you can pause the w
 
 ### Requirements
 
-- dsh within `>=0.2.1-rc.1 <0.2.3-rc.1`; installation and startup refuse anything outside it
+- dsh within `>=0.2.1-rc.1 <0.2.2-rc.0 || >=0.2.2-rc.0 <0.2.3-rc.1`; installation and startup refuse anything outside it
 - Node.js >= 20
 
 ### Option A: install from npm
@@ -151,10 +151,12 @@ The last two are not exposed in the UI; write them into this plugin's row under 
 
 | Item | Version |
 |:---:|:---:|
-| dsh | `>=0.2.1-rc.1 <0.2.3-rc.1` |
+| dsh | `>=0.2.1-rc.1 <0.2.2-rc.0 || >=0.2.2-rc.0 <0.2.3-rc.1` |
 | Node.js | >= 20 |
 
 The Node.js requirement of the host dsh itself follows the release notes of the matching version.
+
+The range is split in two to satisfy both checks. The host evaluates it with `includePrerelease`, where the single `>=0.2.1-rc.1 <0.2.3-rc.1` suffices, but npm and pnpm verify peer dependencies with strict semver: a prerelease version passes only when the range carries a prerelease comparator of the same `major.minor.patch` tuple. The single range names only 0.2.1 and 0.2.3, so 0.2.2-rc.x is rejected on the peer side. Naming the 0.2.2 prerelease in a second segment makes both checks accept the same set, and the union is still equivalent to `>=0.2.1-rc.1 <0.2.3-rc.1`.
 
 ## FAQ
 
