@@ -34,6 +34,7 @@ import {
   BUBBLE_STATE_ATTRIBUTE,
   BUBBLE_STATE_DRAFT,
   CARD_BUTTON_SELECTOR,
+  CARD_DISMISS_ATTEMPTS,
   CARD_ENHANCEMENTS_CLASS,
   CARD_OPTIONS_SELECTOR,
   HOST_WAIT_PATTERNS,
@@ -59,6 +60,7 @@ import {
   COUNTDOWN_TEXT_EN,
   COUNTDOWN_TEXT_ZH,
   COUNTDOWN_WARNING_CLASS,
+  DISMISS_VERIFY_MS,
   DRAFT_CUSTOM_LABEL_EN,
   DRAFT_CUSTOM_LABEL_ZH,
   DRAFT_PANEL_EMPTY_EN,
@@ -919,8 +921,14 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const subscriptions = new Map<string, () => void>()
   /* 已锁定过的卡片节点 */
   const lockedCards = new WeakSet<HTMLElement>()
-  /* 已触发过宿主 dismiss 的调用: 宿主重渲染换节点后仍不重复点关闭按钮 */
-  const dismissedCallIds = new Set<string>()
+  /*
+   * 收起卡片的重试状态按节点记, 不按 callId: 宿主重新发布同一 callId 的卡片时会换一个新节点,
+   * 那一轮必须重新点一次关闭按钮, 否则新卡片占着座位却只被藏起来。
+   */
+  const dismissFailures = new WeakMap<HTMLElement, number>()
+  const dismissAttemptedAt = new WeakMap<HTMLElement, number>()
+  /* 撤座失败改由宿主承接的调用: 告警按调用只留一条 */
+  const dismissFailedWarned = new Set<string>()
   /* 投影已到达但卡片尚未挂载的调用, 等卡片出现再评估 */
   const deferred = new Map<string, ProjectionRow>()
   /* 投影里每个调用的题目数: 上报草稿时用它兜底题数, 避免只报第一题 */
@@ -1021,7 +1029,6 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of draftSyncFailures.keys()) ids.add(id)
     for (const id of draftTooLarge.keys()) ids.add(id)
     for (const id of draftTooLargeAt.keys()) ids.add(id)
-    for (const id of dismissedCallIds.keys()) ids.add(id)
     for (const id of interrupted.keys()) ids.add(id)
     for (const id of badCallIdWarned.keys()) ids.add(id)
     /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
@@ -1054,7 +1061,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     callTouchedAt.delete(callId)
     draftTooLarge.delete(callId)
     draftTooLargeAt.delete(callId)
-    dismissedCallIds.delete(callId)
+    dismissFailedWarned.delete(callId)
     interrupted.delete(callId)
     badCallIdWarned.delete(callId)
     /*
@@ -1433,26 +1440,76 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   }
 
   /*
-   * 收起问答卡片: 先按宿主自带的关闭按钮触发它的 dismiss(仅撤下卡片, 请求仍存活),
-   * 再加隐藏类兜底, 防止宿主重渲染把卡片带回界面。
-   * 同一节点由 DOM 标记判定, 宿主重渲染换节点后由 dismissedCallIds 按 callId 判定:
-   * 两条路都命中时每轮只补隐藏类, 不重复点宿主自带的关闭按钮。
+   * 点一次宿主自带的关闭按钮, 让宿主把这一轮提问从 composer 座位上撤下。
+   * 撤座是收起卡片的前提: 座位仍被占着时宿主会把真正的消息输入栏整个 display:none,
+   * 只藏卡片会让整块输入区变成空白。宿主在提交在途时把该按钮置为 disabled,
+   * 这时 click() 不会派发事件; 界面语言文案不符或卡片结构改版时也点不到。
+   * 返回是否真的点到了一个可用的关闭按钮。
+   */
+  const dismissCard = (card: HTMLElement): boolean => {
+    for (const button of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
+      const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '').trim()
+      if (!CLOSE_PANEL_LABELS.includes(label)) continue
+      if (button instanceof HTMLButtonElement && button.disabled) return false
+      button.click()
+      return true
+    }
+    return false
+  }
+
+  /*
+   * 撤座失败时把这轮交还宿主: 卡片保持可见可作答, 由宿主自己的等待状态与「回答」入口承接。
+   * 这是唯一安全的后备: 座位撤不下来又把卡片藏起来, 用户就只剩一片空白输入区。
+   */
+  const handBackCard = (card: HTMLElement): void => {
+    card.classList.remove(HIDDEN_CONTROL_CLASS)
+    const identity = parseCardKey(card.getAttribute('data-question-key'))
+    if (identity === undefined) return
+    passive.add(identity.callId)
+    timedOut.delete(identity.callId)
+    drafts.delete(identity.callId)
+    restoreCard(card)
+    if (dismissFailedWarned.has(identity.callId)) return
+    dismissFailedWarned.add(identity.callId)
+    console.warn(
+      '[question-timeout-protection] 无法让宿主收起问答卡片, 这一轮改由宿主原版处理, 卡片保持可作答',
+    )
+  }
+
+  /*
+   * 收起问答卡片: 先让宿主把卡片从座位上撤下, 成功后再加隐藏类兜底。
+   * 只有"座位已撤下"这一种情况允许隐藏卡片; 点不到关闭按钮时按间隔重试,
+   * 重试用尽后把这轮交还宿主, 绝不留下"座位还占着、卡片却看不见"的中间态。
+   * 同一节点上点过一次, 下一轮若发现卡片仍在文档里, 说明宿主没有卸载它(座位没撤),
+   * 撤掉标记与隐藏类按失败重来。
    */
   const hideCard = (card: HTMLElement): void => {
     const key = card.getAttribute('data-question-key') ?? ''
-    const callId = parseCardKey(key)?.callId ?? key
-    const marked = card.getAttribute(CARD_DISMISSED_ATTRIBUTE) === key
-    if (!marked) card.setAttribute(CARD_DISMISSED_ATTRIBUTE, key)
-    if (!marked && !dismissedCallIds.has(callId)) {
-      dismissedCallIds.add(callId)
-      for (const button of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
-        const label = (button.getAttribute('aria-label') ?? button.getAttribute('title') ?? '').trim()
-        if (!CLOSE_PANEL_LABELS.includes(label)) continue
-        button.click()
-        break
-      }
+    /* 两次尝试(或一次点击后的观察)至少隔一个窗口: 按帧触发的扫描不能把重试次数一口气用光 */
+    if (Date.now() - (dismissAttemptedAt.get(card) ?? 0) < DISMISS_VERIFY_MS) return
+    let failures = dismissFailures.get(card) ?? 0
+    if (card.getAttribute(CARD_DISMISSED_ATTRIBUTE) === key) {
+      /*
+       * 上一轮点过关闭按钮, 卡片却仍在文档里: 宿主没有卸载它, 座位并没有撤下。
+       * 撤掉标记与隐藏类, 按一次失败重新处理。
+       */
+      card.removeAttribute(CARD_DISMISSED_ATTRIBUTE)
+      card.classList.remove(HIDDEN_CONTROL_CLASS)
+      failures += 1
     }
-    card.classList.add(HIDDEN_CONTROL_CLASS)
+    dismissAttemptedAt.set(card, Date.now())
+    if (failures >= CARD_DISMISS_ATTEMPTS) {
+      dismissFailures.set(card, failures)
+      handBackCard(card)
+      return
+    }
+    if (dismissCard(card)) {
+      dismissFailures.set(card, failures)
+      card.setAttribute(CARD_DISMISSED_ATTRIBUTE, key)
+      card.classList.add(HIDDEN_CONTROL_CLASS)
+      return
+    }
+    dismissFailures.set(card, failures + 1)
   }
 
   /*
@@ -2813,10 +2870,10 @@ function hideHostWaitText(root: HTMLElement): void {
     subscriptions.clear()
     /* 卸载时把插件加过的东西全部撤掉, 不让隐藏类与自绘节点留在宿主界面上 */
     for (const element of Array.from(document.querySelectorAll(QUESTION_CARD_SELECTOR))) {
-      if (element instanceof HTMLElement) {
-        restoreCard(element)
-        element.removeAttribute(CARD_DISMISSED_ATTRIBUTE)
-      }
+      if (!(element instanceof HTMLElement)) continue
+      /* 标记要先摘: restoreCard 对已收起的卡片直接早退, 顺序反了会把隐藏类留在界面上 */
+      element.removeAttribute(CARD_DISMISSED_ATTRIBUTE)
+      restoreCard(element)
     }
     for (const element of Array.from(
       document.querySelectorAll(
@@ -2844,7 +2901,7 @@ function hideHostWaitText(root: HTMLElement): void {
     if (enhancementUsers <= 0) document.documentElement.classList.remove(CARD_ENHANCEMENTS_CLASS)
     syncUnavailable.clear()
     autoInfiniteAttempted.clear()
-    dismissedCallIds.clear()
+    dismissFailedWarned.clear()
     subscribeWarned.clear()
     evaluateWarned.clear()
   }

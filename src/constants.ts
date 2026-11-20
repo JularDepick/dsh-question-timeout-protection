@@ -264,6 +264,19 @@ export const CLOSE_PANEL_LABELS: readonly string[] = [
   'Close the panel — reopen it from the tool call',
 ]
 
+/**
+ * 收起卡片时点宿主关闭按钮的重试上限。
+ * 宿主在提交在途时禁用该按钮, 界面语言文案不符或卡片结构改版时也可能点不到;
+ * 重试用尽后把这轮交还宿主, 卡片保持可作答, 不能座位还占着却把卡片藏起来。
+ */
+export const CARD_DISMISS_ATTEMPTS = 5
+
+/**
+ * 两次撤座尝试之间的最小间隔(毫秒), 同时是一次点击后观察宿主是否卸载卡片的窗口。
+ * 扫描会被 DOM 变更按帧触发, 没有这个窗口时重试次数会被一口气用光。
+ */
+export const DISMISS_VERIFY_MS = 500
+
 /*
  * 宿主提问工具行「回答」按钮的文案(中文与英文), 超时后隐藏以免重新打开问答框;
  * 结算后同一按钮变成「查看回答」, 恢复入口时也要认它。

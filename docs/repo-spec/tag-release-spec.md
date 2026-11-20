@@ -25,6 +25,6 @@
 5. `pnpm run pack:release`: 构建并产出 tarball, 落到打包输出目录. 该命令在受限环境里依赖 `pnpm pack --ignore-scripts`(生命周期执行器会被拒绝), 首次在这样的环境发布前先实跑一次确认可用
 6. 核对 tarball: 文件清单为构建产物三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与构建产物里的新文案与工作区一致. 这里的比对基准是第 1 步新重建的产物, 不是工作区里既有的 `dist/`
 7. 在不带兼容性豁免的 profile 上验证 `engines.dsh` 放行, 避免豁免记录掩盖范围声明错误
-8. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入, 并覆盖三种交还宿主的路径, 空草稿, 草稿过长与非中英界面降级
+8. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入, 并覆盖四种交还宿主的路径(含撤座失败), 空草稿, 草稿过长与非中英界面降级
 9. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本
 10. 若本次同时发布到 npm: 先 `npm publish` 发布正式版本, 再用 `npm view <包名> dist-tags` 确认 latest 已指向该版本. 仓库曾有过同名占位版本, 这类情况下尤其要核对 latest, 否则按包名安装会拿到占位包, dsh 只打一条警告并跳过该插件, 功能完全不出现
