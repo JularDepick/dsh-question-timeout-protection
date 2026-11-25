@@ -465,6 +465,8 @@ const HOST_LABEL_BASELINE = {
     'Expand the question card',
   ],
   CLOSE_PANEL_LABELS: ['收起问题面板，可从工具调用重新打开', 'Close the panel — reopen it from the tool call'],
+  /* 宿主已停表的等待文案: 无限等待据此判断"不用再点暂停控件" */
+  HOST_HELD_PATTERNS: ['会一直等你回答', 'Waiting until you answer'],
   /*
    * 结算后同一按钮的文案变成「查看回答」, 恢复入口时也要认它。
    * ja 的 ask.reopen 与中文同形, 结算后的 ask.review 是「回答を表示」:
@@ -849,7 +851,11 @@ function endtimeTimestamp(text) {
  * 没有则回溯最后一次改文案的提交; 取不到 git 数据时 checked 为 false。
  */
 function endtimeFreshness(file) {
-  const pendingDiff = gitOutput(['diff', '--no-color', '--', file])
+  /*
+   * 与 HEAD 比而不是与索引比: 守则要求暂存只用 git add ., 先暂存再跑门禁是常见顺序,
+   * 只比工作区与索引会把已暂存的文案改动当成"没有改动", 于是回落到历史提交而假绿。
+   */
+  const pendingDiff = gitOutput(['diff', 'HEAD', '--no-color', '--', file])
   if (pendingDiff === undefined) return { checked: false, problems: [] }
   const pending = scanIniPatch(pendingDiff)
   if (pending.content) {
@@ -907,9 +913,17 @@ for (const file of FILES) {
   if (freshness.checked) endtimeCheckedFiles += 1
   for (const problem of freshness.problems) problems.push(problem)
 }
+/*
+ * git 不可用时 endtime 的时效校验只能跳过。
+ * 默认按警告处理(离线开发不该被拦), 但发布门禁必须用 --strict:
+ * 否则"改了文案没改 endtime"这一项会以退出码 0 假绿通过。
+ */
+const strict = process.argv.includes('--strict')
 if (endtimeCheckedFiles < FILES.length) {
   const skipped = FILES.length - endtimeCheckedFiles
-  console.warn('meta.endtime 的时效校验已跳过 ' + String(skipped) + ' 个文件, git 数据不可用')
+  const message = 'meta.endtime 的时效校验已跳过 ' + String(skipped) + ' 个文件, git 数据不可用'
+  if (strict) problems.push(message + ' (--strict 下不允许跳过)')
+  else console.warn(message)
 }
 
 if (problems.length > 0) {
@@ -917,4 +931,7 @@ if (problems.length > 0) {
   for (const problem of problems) console.error('  - ' + problem)
   process.exit(1)
 }
-console.log('翻译一致性检查通过, 共 ' + String(baseKeys.size) + ' 个键, ' + String(FILES.length) + ' 个翻译文件')
+const skippedNote = endtimeCheckedFiles < FILES.length
+  ? ' (endtime 时效未校验: ' + String(FILES.length - endtimeCheckedFiles) + ' 个文件)'
+  : ''
+console.log('翻译一致性检查通过, 共 ' + String(baseKeys.size) + ' 个键, ' + String(FILES.length) + ' 个翻译文件' + skippedNote)

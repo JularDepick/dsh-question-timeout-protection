@@ -38,3 +38,13 @@ fs.mkdirSync(targetDir, { recursive: true })
 fs.rmSync(target, { force: true })
 fs.renameSync(source, target)
 console.log(`pack-release: ${base} -> release/${base}`)
+
+/*
+ * 同步一份 -latest 别名副本。
+ * 目录里若有人直接拿这个别名上传, 至少不会拿到上一版的旧包; 别名本身不是发布物,
+ * 版本化文件名才是核对与上传的依据。
+ */
+const alias = path.join(targetDir, `${pkg.name.replace(/^@/, '').replace('/', '-')}-latest.tgz`)
+fs.rmSync(alias, { force: true })
+fs.copyFileSync(target, alias)
+console.log(`pack-release: release/${path.basename(alias)} 已同步为 ${pkg.version}`)
