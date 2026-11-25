@@ -66,7 +66,19 @@ function nestedTimeout(questions: ReadonlyArray<unknown>): number | undefined {
   for (const item of questions) {
     if (item === null || typeof item !== 'object') continue
     const value = (item as { timeout?: unknown }).timeout
-    if (typeof value === 'number' && Number.isFinite(value)) return value
+    /*
+     * 这里只是兼容兜底, 语义上不等价于顶层参数: 只收 1..MAX 的整数,
+     * -1(必答)、0 与小数一律忽略并回落到配置值, 免得模型笔误把整次调用
+     * 静默翻成阻塞等待或直接报错。
+     */
+    if (
+      typeof value === 'number'
+      && Number.isInteger(value)
+      && value >= MIN_TIMEOUT_SECONDS
+      && value <= MAX_TIMEOUT_SECONDS
+    ) {
+      return value
+    }
   }
   return undefined
 }
@@ -263,7 +275,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
               draft: {
                 type: 'array',
                 description:
-                  'Unsubmitted draft the user had entered when the wait expired; one item per question, empty when there was no draft.',
+                  'Unsubmitted draft the user had entered when the wait expired. It contains only questions that had a selection or typed text; a question missing from this list was not answered before the timeout, which is not the same as the user skipping it.',
                 items: {
                   type: 'object',
                   additionalProperties: false,
@@ -277,7 +289,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
                       type: 'array',
                       required: true,
                       items: { type: 'string' },
-                      description: 'Option labels the user had selected; empty with no custom means the question was left blank.',
+                      description: 'Option labels the user had selected for this question.',
                     },
                     custom: {
                       type: 'string',
@@ -598,9 +610,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           const questionLimit = Math.min(MAX_DRAFT_QUESTION_CHARS, remainingChars)
           const selectedChars = selected.reduce((sum, label) => sum + label.length, 0)
           if (selectedChars > questionLimit) {
-            /* 已选项本身就超限: 这一题整体不注入, 后面的题也没有额度了 */
+            /*
+             * 这一题的已选项本身就超限: 只丢这一题, 后面的题继续按剩余额度注入。
+             * 用 break 会让一道长题把整轮剩余额度里本可容纳的题全部吃掉。
+             */
             truncated = true
-            break
+            continue
           }
           const room = questionLimit - selectedChars
           const keptCustom = custom.length > room ? custom.slice(0, room) : custom

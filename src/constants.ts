@@ -146,6 +146,12 @@ export const CUSTOM_HINT_CLASS = 'dqtp-custom-hint'
 /** 选中自定义回答时挂在卡片上的类名: 用它压掉宿主预设选项的选中底色 */
 export const CUSTOM_CHOICE_CLASS = 'dqtp-custom-choice'
 
+/** 单选题自定义回答的输入内容与选中状态在 localStorage 里的键 */
+export const CUSTOM_STATE_STORAGE_KEY = 'dqtp-custom-choice.v1'
+
+/** 自定义回答状态最多保留多少个调用, 超出按插入顺序淘汰 */
+export const MAX_CUSTOM_STATE_CALLS = 64
+
 /** 「自定义回答」单选按钮的文案(中文/英文) */
 export const CUSTOM_RADIO_LABEL_ZH = '自定义回答'
 export const CUSTOM_RADIO_LABEL_EN = 'Custom answer'
@@ -459,7 +465,7 @@ export const PTC_RUN_TOOL_NAME = 'run_code'
 export const DEFAULT_PTC_BUDGET_MS = 120000
 
 /** 在外层预算到期前预留的收尾时间(毫秒): 覆盖最多两次取草稿的宽限期(DRAFT_GRACE_MS)与结算竞态 */
-export const PTC_BUDGET_MARGIN_MS = 7000
+export const PTC_BUDGET_MARGIN_MS = 8000
 
 /** 收敛后的等待时长小于该值时不再开卡片(毫秒): 直接按预算不足结算 */
 export const PTC_MIN_WAIT_MS = 2000

@@ -90,7 +90,7 @@ const MAX_TRACKED_CALLS = 512
 const TRACKED_CALL_TTL_MS = 15 * 60 * 1000
 
 /* 收下更晚到达的草稿更新所需的等待时长(毫秒) */
-const SETTLE_MS = 600
+const SETTLE_MS = 1000
 
 /* 等待草稿上报时的轮询间隔(毫秒) */
 const POLL_INTERVAL_MS = 100
@@ -247,8 +247,13 @@ function sweepTrackedCalls(): void {
   for (const callId of callQuestionOrders.keys()) {
     if (!callDeadlines.has(callId)) callQuestionOrders.delete(callId)
   }
-  /* 「无限等待」的登记也要过期: 没有清扫时旧条目只能等被新条目挤掉 */
+  /*
+   * 「无限等待」的登记也要过期, 但只回收"这一轮已经不再等待"的条目:
+   * 该调用仍有权威到期时刻时, 它的寿命由 timeout 决定(最长可到 2147483 秒),
+   * 按登记时刻 + 15 分钟清扫会让长提问的冻结被别的提问顺手删掉。
+   */
   for (const [callId, registeredAt] of infiniteCalls) {
+    if (callDeadlines.has(callId)) continue
     if (now - registeredAt > TRACKED_CALL_TTL_MS) infiniteCalls.delete(callId)
   }
   while (callDeadlines.size > MAX_TRACKED_CALLS) {
@@ -313,6 +318,24 @@ function normalizeHost(value: string): string {
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
 
 /*
+ * 宿主自己公布的权威来源(host:port)。
+ * 宿主允许绑定任意一个具体本机地址(容器地址, 局域网地址), 那种部署下页面地址不是回环,
+ * 只按回环白名单会把整条通道挡死; 注册路由时从 webServer.getOrigin() 取一次作为放行依据。
+ * 仍然要求请求的 Host 与它完全一致, 因此不放宽到"任意域名"。
+ */
+let allowedAuthority: string | undefined
+
+/* 把 origin 归一成 host:port, 解析失败返回 undefined */
+function authorityOf(origin: string): string | undefined {
+  try {
+    const parsed = new URL(origin)
+    return parsed.host.toLowerCase()
+  } catch {
+    return undefined
+  }
+}
+
+/*
  * 请求的 Host 是否指向本机回环。
  *
  * 这道检查对不带 Origin 的同源请求同样生效: DNS rebinding 下攻击者域名解析到回环后,
@@ -320,13 +343,15 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
  * 只靠 isHostOrigin 的自洽比对挡不住, 因此两个端点都在原有检查之前先过这道白名单。
  * 大小写差异由 URL 解析归一, 带 userinfo 或路径的畸形 Host 一律拒绝。
  */
-function isLoopbackHost(host: string | undefined): boolean {
+function isTrustedHost(host: string | undefined): boolean {
   if (host === undefined || host === '') return false
   try {
     const parsed = new URL('http://' + host)
     if (parsed.username !== '' || parsed.password !== '') return false
     if (parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') return false
-    return LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())
+    if (LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) return true
+    /* 非回环部署: 只认宿主自己公布的那一个来源 */
+    return allowedAuthority !== undefined && parsed.host.toLowerCase() === allowedAuthority
   } catch {
     return false
   }
@@ -342,7 +367,7 @@ function isLoopbackHost(host: string | undefined): boolean {
 function serveToken(request: IncomingMessage, response: ServerResponse): boolean {
   if (request.method !== 'GET' || request.url !== SYNC_PATH + '-token') return false
   /* 先挡 DNS rebinding: 攻击者域名解析到回环后, 它给出的 Host 不是回环字面量 */
-  if (!isLoopbackHost(request.headers.host)) {
+  if (!isTrustedHost(request.headers.host)) {
     response.writeHead(403)
     response.end()
     return true
@@ -369,7 +394,7 @@ function serveToken(request: IncomingMessage, response: ServerResponse): boolean
 /* 处理一次上报请求 */
 function handleStateRequest(request: IncomingMessage, response: ServerResponse): void {
   /* 先挡 DNS rebinding: 无 Origin 的同源请求也要过这道回环白名单 */
-  if (!isLoopbackHost(request.headers.host)) {
+  if (!isTrustedHost(request.headers.host)) {
     response.writeHead(403)
     response.end()
     return
@@ -585,6 +610,16 @@ export function registerQuestionSyncRoute(webServer: {
           /* 宿主可能已随实例一起销毁, 注销失败不再抛出 */
         }
       }
+    }
+    /*
+     * 取一次宿主公布的权威来源: 非回环绑定时页面地址不是 127.0.0.1,
+     * 只按回环白名单会把整条通道挡死。端口尚未绑定时 getOrigin 可能抛错, 回落即可。
+     */
+    try {
+      const origin = webServer.getOrigin?.()
+      if (typeof origin === 'string' && origin !== '') allowedAuthority = authorityOf(origin)
+    } catch {
+      /* 取不到就只认回环白名单 */
     }
     syncChannelReady = true
     console.info('[question-timeout-protection] 状态同步路由已挂在宿主 HTTP 服务上: ' + SYNC_PATH)

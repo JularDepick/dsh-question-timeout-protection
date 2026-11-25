@@ -45,6 +45,8 @@ import {
   CUSTOM_RADIO_LABEL_EN,
   CUSTOM_RADIO_LABEL_ZH,
   CUSTOM_ROW_SELECTOR,
+  CUSTOM_STATE_STORAGE_KEY,
+  MAX_CUSTOM_STATE_CALLS,
   HOST_HELD_PATTERNS,
   HOST_WAIT_PATTERNS,
   CALL_STATE_TTL_MS,
@@ -279,10 +281,11 @@ const CARD_STYLE = `
   cursor: default;
 }
 .dqtp-custom-radio {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  margin-right: 8px;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  /* 与宿主 .number 标号座对齐: 行内 gap 提供水平间距, 这里只补垂直偏移 */
+  margin: 2px 0 0;
   padding: 0;
   border-radius: 50%;
   border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.24));
@@ -298,6 +301,11 @@ const CARD_STYLE = `
 .dqtp-custom-choice[data-question-key] button[role="radio"][aria-checked="true"] > span:first-child {
   background: transparent;
   color: var(--dsw-alias-label-secondary, #666);
+}
+/* 宿主把选中底色加在整行上, 只清标号底色仍会出现两个"已选" */
+.dqtp-custom-choice[data-question-key] [class*="_optionSelected"] {
+  background: transparent;
+  border-color: var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.16));
 }
 .dqtp-custom-hint {
   display: block;
@@ -1072,6 +1080,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       if (entries === undefined) return
       entries.delete(index)
       if (entries.size === 0) typedCustom.delete(callId)
+      saveCustomState()
       return
     }
     if (entries === undefined) {
@@ -1079,6 +1088,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       typedCustom.set(callId, entries)
     }
     entries.set(index, text)
+    saveCustomState()
   }
 
   /* 取某一题保留的自定义内容 */
@@ -1093,18 +1103,78 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       customChoice.set(callId, entries)
     }
     entries.set(index, custom)
+    saveCustomState()
   }
 
   /* 调用结束时丢弃该调用的自定义选择状态 */
   const clearCustomState = (callId: string): void => {
     typedCustom.delete(callId)
     customChoice.delete(callId)
+    saveCustomState()
   }
 
   /*
+   * 自定义回答的"输入内容 + 是否选中"落到 localStorage:
+   * 只存内存的话刷新后输入过的内容与"选中自定义但还没写"的意图都会丢,
+   * 界面会退回宿主预选的推荐项。按 callId 存, 最多保留 64 个调用。
+   */
+  const loadCustomState = (): void => {
+    try {
+      const raw = window.localStorage.getItem(CUSTOM_STATE_STORAGE_KEY)
+      if (raw === null) return
+      const parsed = JSON.parse(raw) as Record<string, { text?: Record<string, string>; choice?: Record<string, boolean> }>
+      if (parsed === null || typeof parsed !== 'object') return
+      for (const [callId, entry] of Object.entries(parsed)) {
+        if (entry === null || typeof entry !== 'object') continue
+        if (entry.text !== undefined && entry.text !== null) {
+          const map = new Map<number, string>()
+          for (const [key, value] of Object.entries(entry.text)) {
+            const index = Number(key)
+            if (Number.isInteger(index) && index >= 0 && typeof value === 'string' && value !== '') map.set(index, value)
+          }
+          if (map.size > 0) typedCustom.set(callId, map)
+        }
+        if (entry.choice !== undefined && entry.choice !== null) {
+          const map = new Map<number, boolean>()
+          for (const [key, value] of Object.entries(entry.choice)) {
+            const index = Number(key)
+            if (Number.isInteger(index) && index >= 0 && typeof value === 'boolean') map.set(index, value)
+          }
+          if (map.size > 0) customChoice.set(callId, map)
+        }
+      }
+    } catch {
+      /* 存储不可用或内容损坏时按空状态工作 */
+    }
+  }
+
+  const saveCustomState = (): void => {
+    try {
+      const out: Record<string, { text: Record<string, string>; choice: Record<string, boolean> }> = {}
+      const ids = new Set<string>([...typedCustom.keys(), ...customChoice.keys()])
+      let kept = 0
+      for (const callId of ids) {
+        if (kept >= MAX_CUSTOM_STATE_CALLS) break
+        kept += 1
+        const text: Record<string, string> = {}
+        for (const [index, value] of typedCustom.get(callId) ?? []) text[String(index)] = value
+        const choice: Record<string, boolean> = {}
+        for (const [index, value] of customChoice.get(callId) ?? []) choice[String(index)] = value
+        out[callId] = { text, choice }
+      }
+      window.localStorage.setItem(CUSTOM_STATE_STORAGE_KEY, JSON.stringify(out))
+    } catch {
+      /* 配额或隐私模式下写不进去就只保留内存状态 */
+    }
+  }
+
+  loadCustomState()
+
+  /*
    * 判断这一题当前选中的是不是「自定义回答」。
-   * 唯一判据是单选按钮的状态; 没有显式状态时(刷新后或首次见到)按宿主状态推断:
-   * 一个预设选项都没选中、但输入框里有内容, 才算自定义。
+   * 首选插件记下的显式状态; 没有显式状态时(刷新后或首次见到)只能按宿主状态推断:
+   * 一个预设选项都没选中、但输入框里有内容, 才算自定义。推断态与用户点过按钮的
+   * 显式态在界面上表现一致, 区别只在点击语义(见自定义按钮分支)。
    */
   const resolveCustomChoice = (callId: string, index: number, card?: HTMLElement): 'custom' | 'option' => {
     const explicit = customChoice.get(callId)?.get(index)
@@ -1129,9 +1199,14 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       const question = projectedQuestions.get(callId)?.[index]
       /* 多选题里自定义与选项可以并存, 保持宿主口径 */
       if (question?.multiSelect === true) return item
+      const explicit = choices?.get(index)
+      /*
+       * 没有显式选择状态、也拿不到题目元信息时(投影缺失或 PTC 子调用尚未入投影),
+       * 无法确认是不是单选, 一律不动 —— 否则多选题会被按单选互斥清空已选项。
+       */
+      if (explicit === undefined && question === undefined) return item
       /* 明确跳过时不能把保留的自定义内容塞回去, 否则"跳过"会被算成一次作答 */
       if (item.skipped) return { ...item, custom: '' }
-      const explicit = choices?.get(index)
       const typedText = typed?.get(index)
       const custom = explicit ?? (item.selected.length === 0 && (typedText ?? item.custom).trim() !== '')
       if (custom) return { ...item, selected: [], custom: typedText ?? item.custom }
@@ -1151,6 +1226,23 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     field.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
+  /*
+   * 写两次: 先写一个与当前值不同的占位, 再写目标值。
+   * React 的受控输入对"值没变"的 input 事件会去重, 同值写入不会触发 onChange,
+   * 而宿主只有真的收到一次 onChange 才会把单选的 selected 清空。
+   */
+  const writeFieldWithChange = (field: HTMLTextAreaElement | HTMLInputElement, value: string): void => {
+    const sentinel = field.value === ' ' ? '' : ' '
+    writeField(field, sentinel)
+    writeField(field, value)
+  }
+
+  /* 宿主是否还选中着某个预设选项(排除插件自绘按钮) */
+  const hostHasCheckedOption = (card: HTMLElement): boolean =>
+    Array.from(card.querySelectorAll('button[role="radio"][aria-checked="true"]')).some(
+      (button) => !button.classList.contains(CUSTOM_RADIO_CLASS),
+    )
+
   /* 取当前卡片这一题的自定义输入框 */
   const customFieldOf = (card: HTMLElement): HTMLTextAreaElement | HTMLInputElement | undefined => {
     const row = card.querySelector(CUSTOM_ROW_SELECTOR)
@@ -1163,14 +1255,52 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 在单选题的自定义输入框左侧挂一枚与预设选项同地位的单选按钮, 并在内容被保留时给出提示。
    * 宿主的左侧标号只是装饰(aria-hidden), 换成可点的按钮后界面上只有一个标记。
    */
-  const ensureCustomChoiceUI = (card: HTMLElement, identity: CardIdentity): void => {
-    if (card.querySelector('[role="radiogroup"]') === null) return
+  /* 宿主把卡片里所有输入控件都禁用时视为只读(历史/已结算卡片) */
+  const isReadOnlyCard = (card: HTMLElement): boolean => {
+    const fields = Array.from(card.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>(CARD_INPUT_SELECTOR))
+    return fields.length > 0 && fields.every((field) => field.disabled)
+  }
+
+  /* 撤掉插件在这张卡片上插的自定义选择控件(关闭增强、卸载、切换题型的公共路径) */
+  const removeCustomChoiceUI = (card: HTMLElement): void => {
     const row = card.querySelector(CUSTOM_ROW_SELECTOR)
-    if (!(row instanceof HTMLElement)) return
+    for (const element of Array.from(
+      card.querySelectorAll('button.' + CUSTOM_RADIO_CLASS + ', button.' + CUSTOM_HINT_CLASS),
+    )) {
+      element.remove()
+    }
+    /* 撤按钮与还原宿主标号必须是原子的: 只撤按钮会留下一个没有标号的自定义行 */
+    if (row instanceof HTMLElement) {
+      for (const marker of Array.from(row.querySelectorAll('span[aria-hidden="true"]'))) {
+        if (marker instanceof HTMLElement) marker.classList.remove(HIDDEN_CONTROL_CLASS)
+      }
+    }
+    card.classList.remove(CUSTOM_CHOICE_CLASS)
+  }
+
+  const ensureCustomChoiceUI = (card: HTMLElement, identity: CardIdentity): void => {
+    /*
+     * 只有「增强开着 + 单选 + 未锁定」的卡片才挂自定义选择控件。
+     * 其余情况(多选页、只读/已结算卡片、运行中关掉增强)必须把先前插进去的节点撤掉:
+     * 宿主两套变体共用同一批 DOM 节点, 留下的按钮会出现在多选页或历史卡片上。
+     */
+    const usable = options().cardEnhancements !== false
+      && !card.classList.contains(CARD_LOCKED_CLASS)
+      && card.querySelector('[role="radiogroup"]') !== null
+      && card.querySelector(CUSTOM_ROW_SELECTOR) instanceof HTMLElement
+      /* 已交还宿主的卡片由宿主原版路径接管, 不再挂插件控件 */
+      && !passive.has(identity.callId)
+      /* 只读/已结算卡片: 宿主把输入框全部禁用, 没有可作答的地方 */
+      && !isReadOnlyCard(card)
+    if (!usable) {
+      removeCustomChoiceUI(card)
+      return
+    }
+    const row = card.querySelector(CUSTOM_ROW_SELECTOR)
     const field = customFieldOf(card)
-    if (field === undefined) return
-    for (const marker of Array.from(row.querySelectorAll('span[aria-hidden="true"]'))) {
-      if (marker instanceof HTMLElement) marker.classList.add(HIDDEN_CONTROL_CLASS)
+    if (!(row instanceof HTMLElement) || field === undefined) {
+      removeCustomChoiceUI(card)
+      return
     }
     let radio = row.querySelector<HTMLButtonElement>('button.' + CUSTOM_RADIO_CLASS)
     if (!(radio instanceof HTMLButtonElement)) {
@@ -1178,9 +1308,18 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       radio.type = 'button'
       radio.className = CUSTOM_RADIO_CLASS
       radio.setAttribute('role', 'radio')
-      const host = field.parentElement === row ? row : field.parentElement
-      if (host !== null) host.insertBefore(radio, field)
+      /*
+       * 插到自定义行里、输入框外层容器(宿主 AnswerField 的 div.field)之前。
+       * 宿主的 div.field 是单格 grid, 把按钮插进去会和文字叠在同一格里。
+       */
+      const anchor = field.parentElement !== null && field.parentElement !== row ? field.parentElement : field
+      /* 锚点必须是 row 的直接子节点, 否则 insertBefore 会抛 NotFoundError 打断整轮扫描 */
+      if (anchor.parentElement === row) row.insertBefore(radio, anchor)
       else row.appendChild(radio)
+    }
+    /* 宿主那个纯装饰标号只在插件按钮挂上之后才隐藏, 避免两头落空 */
+    for (const marker of Array.from(row.querySelectorAll('span[aria-hidden="true"]'))) {
+      if (marker instanceof HTMLElement) marker.classList.add(HIDDEN_CONTROL_CLASS)
     }
     const index = readProgress(card)?.index ?? 0
     const mode = resolveCustomChoice(identity.callId, index, card)
@@ -1191,7 +1330,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     card.classList.toggle(CUSTOM_CHOICE_CLASS, mode === 'custom')
     const typed = typedCustomAt(identity.callId, index)
     const showHint = mode === 'option' && typed !== undefined && typed.trim() !== ''
-    let hint = card.querySelector<HTMLButtonElement>('button.' + CUSTOM_HINT_CLASS)
+    let hint: HTMLButtonElement | null = null
+    const sibling = row.nextElementSibling
+    if (sibling instanceof HTMLButtonElement && sibling.classList.contains(CUSTOM_HINT_CLASS)) hint = sibling
     if (!showHint) {
       if (hint !== null) hint.remove()
       return
@@ -1203,8 +1344,11 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       row.insertAdjacentElement('afterend', hint)
     }
     const customText = typed ?? ''
-    const text = pick(CUSTOM_HINT_ZH, CUSTOM_HINT_EN).replace('{text}', () => customText.slice(0, 80))
+    const customShown = customText.length > 80 ? customText.slice(0, 80) + '…' : customText
+    const text = pick(CUSTOM_HINT_ZH, CUSTOM_HINT_EN).replace('{text}', () => customShown)
     if (hint.textContent !== text) hint.textContent = text
+    /* 完整原文放 title, 按钮名不因长文变成一整段 */
+    if (hint.title !== customText) hint.title = customText
   }
 
   /* 记下调用归属的会话 */
@@ -1759,6 +1903,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     )) {
       element.remove()
     }
+    /* 自定义选择的单选按钮、提示与根类名也要一并撤掉 */
+    removeCustomChoiceUI(card)
     restoreDisabled(card)
     card.classList.remove(CARD_LOCKED_CLASS)
     lockedCards.delete(card)
@@ -2432,7 +2578,16 @@ function hideHostWaitText(root: HTMLElement): void {
      * 判据取并集: 投影里的活动行覆盖原生调用, 卡片上的宿主等待状态覆盖 PTC 子调用 ——
      * 后者的投影要等超时后的 pending 结果才建行, 只认投影等于提问期间一次都不上报。
      */
-    if (!callActive.has(identity.callId) && !hostStillWaiting(card)) return
+    /*
+     * 非中英界面下 hostStillWaiting 读不到文案, PTC 子调用又还没进投影,
+     * 两条判据都会漏掉; 这里补一条与界面语言无关的判据: 卡片上还有任何等待状态文案
+     * 且未被锁定, 就认为这一轮仍在等待。结算后服务端回 ignored, 客户端随即可冷却。
+     */
+    const waitingByStatus = !card.classList.contains(CARD_LOCKED_CLASS)
+      && Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR)).some(
+        (element) => (element.textContent ?? '').trim() !== '',
+      )
+    if (!callActive.has(identity.callId) && !hostStillWaiting(card) && !waitingByStatus) return
     rememberCallSession(identity)
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
@@ -2878,9 +3033,23 @@ function hideHostWaitText(root: HTMLElement): void {
       if (!(card instanceof HTMLElement) || identity === undefined) return
       const index = readProgress(card)?.index ?? 0
       setCustomChoice(identity.callId, index, true)
+      rememberCallSession(identity)
       const field = customFieldOf(card)
-      const typed = typedCustomAt(identity.callId, index)
-      if (field !== undefined && typed !== undefined && field.value !== typed) writeField(field, typed)
+      if (field !== undefined) {
+        /*
+         * 目标内容取"记住的输入"优先, 其次取输入框现有值(刷新后宿主持久化草稿里有内容,
+         * 但内存表是空的); 两者都没有才是空自定义。绝不能无条件写空串, 那会删掉用户的输入。
+         */
+        const typed = typedCustomAt(identity.callId, index)
+        const intended = typed ?? field.value
+        if (intended !== '') rememberTypedCustom(identity.callId, index, intended)
+        /*
+         * 写两次并复核: 同值写入会被 React 去重, 宿主收不到 onChange, 单选的 selected
+         * 就清不掉 —— 回车/下一题/提交会把用户没点过的预设项交出去。
+         */
+        writeFieldWithChange(field, intended)
+        if (hostHasCheckedOption(card)) writeFieldWithChange(field, intended)
+      }
       ensureCustomChoiceUI(card, identity)
       field?.focus()
       return
@@ -2922,22 +3091,6 @@ function hideHostWaitText(root: HTMLElement): void {
     const card = button.closest(QUESTION_CARD_SELECTOR)
     const identity = parseCardKey(card instanceof HTMLElement ? card.getAttribute('data-question-key') : null)
     if (identity === undefined) return
-    /*
-     * 单选: 选中「自定义回答」但输入框还是空的时不放行提交。
-     * 宿主只按"有没有内容"判断, 会把这次提交当成未作答或误落到预设项上。
-     */
-    if (card instanceof HTMLElement && card.querySelector('[role="radiogroup"]') !== null) {
-      const index = readProgress(card)?.index ?? 0
-      if (resolveCustomChoice(identity.callId, index, card) === 'custom') {
-        const field = customFieldOf(card)
-        if (field === undefined || field.value.trim() === '') {
-          event.preventDefault()
-          event.stopPropagation()
-          field?.focus()
-          return
-        }
-      }
-    }
     paused.delete(identity.callId)
     deadlines.delete(identity.callId)
     lastDrafts.delete(identity.callId)
@@ -3049,8 +3202,19 @@ function hideHostWaitText(root: HTMLElement): void {
        * 顺序反了会让第一轮扫描里的上报被当成"历史卡片"跳过。
        */
       ensureSubscription(identity.sessionId)
-      /* 单选题: 保证自定义输入框左侧那枚单选按钮与提示始终与状态一致 */
-      if (enhancementOn) ensureCustomChoiceUI(element, identity)
+      /*
+       * 单选题: 只有"仍在等待且没有交还宿主"的卡片才挂自定义选择控件。
+       * 先挂后还原会让还原指纹在第二轮早退, 残留的按钮就再也撤不掉。
+       */
+      if (
+        enhancementOn
+        && !passive.has(identity.callId)
+        && (callActive.has(identity.callId) || hostStillWaiting(element))
+      ) {
+        ensureCustomChoiceUI(element, identity)
+      } else {
+        removeCustomChoiceUI(element)
+      }
       if (enhancementOn && (callActive.has(identity.callId) || hostStillWaiting(element))) {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
@@ -3168,6 +3332,8 @@ function hideHostWaitText(root: HTMLElement): void {
     if (identity === undefined || index === undefined) return
     const field = customFieldOf(card)
     if (field === undefined || field !== target) return
+    /* 多选题的自定义与选项可以并存, 不参与单选的选择状态 */
+    if (card.querySelector('[role="radiogroup"]') === null) return
     rememberTypedCustom(identity.callId, index, field.value)
     setCustomChoice(identity.callId, index, true)
     ensureCustomChoiceUI(card, identity)
@@ -3211,7 +3377,8 @@ function hideHostWaitText(root: HTMLElement): void {
     }
     for (const element of Array.from(
       document.querySelectorAll(
-        '[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS + ', button.' + BUBBLE_BUTTON_CLASS,
+        '[' + COUNTDOWN_ATTRIBUTE + '], button.' + INFINITE_BUTTON_CLASS + ', button.' + BUBBLE_BUTTON_CLASS
+          + ', button.' + CUSTOM_RADIO_CLASS + ', button.' + CUSTOM_HINT_CLASS,
       ),
     )) {
       element.remove()
@@ -3225,6 +3392,9 @@ function hideHostWaitText(root: HTMLElement): void {
     }
     for (const element of Array.from(document.querySelectorAll('button.' + AUTO_INFINITE_BUTTON_CLASS))) {
       element.remove()
+    }
+    for (const element of Array.from(document.querySelectorAll('.' + CUSTOM_CHOICE_CLASS))) {
+      element.classList.remove(CUSTOM_CHOICE_CLASS)
     }
     releaseStyle()
     /*
