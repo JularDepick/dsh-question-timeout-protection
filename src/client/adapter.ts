@@ -37,6 +37,14 @@ import {
   CARD_DISMISS_ATTEMPTS,
   CARD_ENHANCEMENTS_CLASS,
   CARD_OPTIONS_SELECTOR,
+  CUSTOM_CHOICE_CLASS,
+  CUSTOM_HINT_CLASS,
+  CUSTOM_HINT_EN,
+  CUSTOM_HINT_ZH,
+  CUSTOM_RADIO_CLASS,
+  CUSTOM_RADIO_LABEL_EN,
+  CUSTOM_RADIO_LABEL_ZH,
+  CUSTOM_ROW_SELECTOR,
   HOST_HELD_PATTERNS,
   HOST_WAIT_PATTERNS,
   CALL_STATE_TTL_MS,
@@ -270,6 +278,40 @@ const CARD_STYLE = `
 .dqtp-card-locked {
   cursor: default;
 }
+.dqtp-custom-radio {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.24));
+  background: transparent;
+  cursor: pointer;
+}
+.dqtp-custom-radio[aria-checked="true"] {
+  border-color: var(--dsw-alias-label-primary, #111);
+  background: var(--dsw-alias-label-primary, #111);
+  box-shadow: inset 0 0 0 3px var(--dsw-alias-bg-primary, #fff);
+}
+/* 选中自定义回答时压掉宿主预设项的选中底色, 避免界面上出现两个"已选" */
+.dqtp-custom-choice[data-question-key] button[role="radio"][aria-checked="true"] > span:first-child {
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #666);
+}
+.dqtp-custom-hint {
+  display: block;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #666);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+  word-break: break-word;
+}
 #dqtp-draft-panel {
   position: fixed;
   z-index: 2147483000;
@@ -491,6 +533,8 @@ function readSelected(card: HTMLElement, question?: QuestionMeta): string[] {
     .map((option) => (typeof option.label === 'string' ? option.label : ''))
     .filter((label) => label !== '')
   for (const button of Array.from(card.querySelectorAll('button[aria-checked="true"]'))) {
+    /* 插件自绘的「自定义回答」单选按钮也带 aria-checked, 不能算作已选选项 */
+    if (button.classList.contains(CUSTOM_RADIO_CLASS)) continue
     const display = (button.getAttribute('aria-label') ?? '').trim()
     if (display === '') continue
     const label = originals.find((original) => stripRecommendedSuffix(original) === display) ?? display
@@ -929,11 +973,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   /* 每个调用最近一次的分题草稿, 卡片重渲染后仍可用 */
   const lastDrafts = new Map<string, DraftItem[]>()
   /*
-   * 单选题切换选项时宿主会把该题已输入的自定义内容清空(它的选项点击直接写 custom: '')。
-   * 这里按 callId -> 题序 记下被清掉的内容, 由扫描把它写回输入框, 并在合并草稿时补回去,
-   * 直到用户提交、超时, 或自己重新编辑该题为止。
+   * 单选的自定义回答: 输入过的内容与"是否选中它"分开记。
+   * 宿主把"输入框有内容"当成选中自定义, 与预设选项互斥; 插件改成只看单选按钮,
+   * 因此内容可以在切到预设项后继续保留, 只是不再算数。
    */
-  const preservedCustom = new Map<string, Map<number, string>>()
+  const typedCustom = new Map<string, Map<number, string>>()
+  const customChoice = new Map<string, Map<number, boolean>>()
   /* 会话提问投影订阅 */
   const subscriptions = new Map<string, () => void>()
   /* 已锁定过的卡片节点 */
@@ -1020,36 +1065,82 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     )
   }
 
-  /* 记下被宿主清空的自定义内容: 只在该题为单选且确实有内容时记录 */
-  const rememberPreservedCustom = (callId: string, index: number, text: string): void => {
-    if (text.trim() === '') return
-    let entries = preservedCustom.get(callId)
+  /* 记下用户在这一题输入过的自定义内容(与是否选中它无关) */
+  const rememberTypedCustom = (callId: string, index: number, text: string): void => {
+    let entries = typedCustom.get(callId)
+    if (text === '') {
+      if (entries === undefined) return
+      entries.delete(index)
+      if (entries.size === 0) typedCustom.delete(callId)
+      return
+    }
     if (entries === undefined) {
       entries = new Map<number, string>()
-      preservedCustom.set(callId, entries)
+      typedCustom.set(callId, entries)
     }
     entries.set(index, text)
   }
 
-  /* 取某一题被保留的自定义内容 */
-  const preservedCustomAt = (callId: string, index: number): string | undefined =>
-    preservedCustom.get(callId)?.get(index)
+  /* 取某一题保留的自定义内容 */
+  const typedCustomAt = (callId: string, index: number): string | undefined =>
+    typedCustom.get(callId)?.get(index)
 
-  /* 用户自己改过这一题后不再回填, 以他的当前输入为准 */
-  const dropPreservedCustomAt = (callId: string, index: number): void => {
-    const entries = preservedCustom.get(callId)
-    if (entries === undefined) return
-    entries.delete(index)
-    if (entries.size === 0) preservedCustom.delete(callId)
+  /* 设置这一题是否选中自定义回答 */
+  const setCustomChoice = (callId: string, index: number, custom: boolean): void => {
+    let entries = customChoice.get(callId)
+    if (entries === undefined) {
+      entries = new Map<number, boolean>()
+      customChoice.set(callId, entries)
+    }
+    entries.set(index, custom)
   }
 
-  /* 调用结束时丢弃该调用的全部保留内容 */
-  const clearPreservedCustom = (callId: string): void => {
-    preservedCustom.delete(callId)
+  /* 调用结束时丢弃该调用的自定义选择状态 */
+  const clearCustomState = (callId: string): void => {
+    typedCustom.delete(callId)
+    customChoice.delete(callId)
   }
 
   /*
-   * 把文本写回输入框并触发 React 的 onChange。
+   * 判断这一题当前选中的是不是「自定义回答」。
+   * 唯一判据是单选按钮的状态; 没有显式状态时(刷新后或首次见到)按宿主状态推断:
+   * 一个预设选项都没选中、但输入框里有内容, 才算自定义。
+   */
+  const resolveCustomChoice = (callId: string, index: number, card?: HTMLElement): 'custom' | 'option' => {
+    const explicit = customChoice.get(callId)?.get(index)
+    if (explicit !== undefined) return explicit ? 'custom' : 'option'
+    if (card === undefined) return 'option'
+    const question = projectedQuestions.get(callId)?.[index]
+    const selected = readSelected(card, question)
+    const custom = readCustom(card)
+    return selected.length === 0 && custom.trim() !== '' ? 'custom' : 'option'
+  }
+
+  /*
+   * 把「是否选中自定义」写进草稿: 单选的两条路互斥 ——
+   * 选中自定义时 selected 必须为空且带上内容; 选中预设项时 custom 必须为空。
+   * 这样宿主持久化草稿里残留的自定义内容不会在选中预设项时继续算数。
+   */
+  const applyCustomChoice = (items: DraftItem[], callId: string): DraftItem[] => {
+    const choices = customChoice.get(callId)
+    const typed = typedCustom.get(callId)
+    if (choices === undefined && typed === undefined) return items
+    return items.map((item, index) => {
+      const question = projectedQuestions.get(callId)?.[index]
+      /* 多选题里自定义与选项可以并存, 保持宿主口径 */
+      if (question?.multiSelect === true) return item
+      /* 明确跳过时不能把保留的自定义内容塞回去, 否则"跳过"会被算成一次作答 */
+      if (item.skipped) return { ...item, custom: '' }
+      const explicit = choices?.get(index)
+      const typedText = typed?.get(index)
+      const custom = explicit ?? (item.selected.length === 0 && (typedText ?? item.custom).trim() !== '')
+      if (custom) return { ...item, selected: [], custom: typedText ?? item.custom }
+      return { ...item, custom: '' }
+    })
+  }
+
+  /*
+   * 把文本写进宿主输入框并触发 React 的 onChange。
    * 直接赋值会被 React 的受控值覆盖回去, 必须走原型上的原生 setter 再派发 input 事件。
    */
   const writeField = (field: HTMLTextAreaElement | HTMLInputElement, value: string): void => {
@@ -1060,29 +1151,60 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     field.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
-  /* 当前显示这一题有被保留的内容、而输入框是空的时, 把它写回去 */
-  const restorePreservedCustom = (card: HTMLElement, callId: string): void => {
-    /* 已锁定的卡片(超时收尾)不再写回, 免得往一张已结束的提问里塞内容 */
-    if (card.classList.contains(CARD_LOCKED_CLASS)) return
-    const progress = readProgress(card)
-    if (progress === undefined) return
-    const value = preservedCustomAt(callId, progress.index)
-    if (value === undefined) return
-    const field = card.querySelector(CARD_OPTIONS_SELECTOR + ' textarea') ?? card.querySelector(CARD_INPUT_SELECTOR)
-    if (!(field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement)) return
-    if (field.value !== '') return
-    writeField(field, value)
+  /* 取当前卡片这一题的自定义输入框 */
+  const customFieldOf = (card: HTMLElement): HTMLTextAreaElement | HTMLInputElement | undefined => {
+    const row = card.querySelector(CUSTOM_ROW_SELECTOR)
+    if (!(row instanceof HTMLElement)) return undefined
+    const field = row.querySelector(CARD_INPUT_SELECTOR)
+    return field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement ? field : undefined
   }
 
-  /* 合并草稿后补回被宿主清空的自定义内容: 宿主记录里的空 custom 不能压掉它 */
-  const applyPreservedCustom = (items: DraftItem[], callId: string): DraftItem[] => {
-    const entries = preservedCustom.get(callId)
-    if (entries === undefined) return items
-    return items.map((item, index) => {
-      const value = entries.get(index)
-      if (value === undefined || item.custom.trim() !== '') return item
-      return { ...item, custom: value }
-    })
+  /*
+   * 在单选题的自定义输入框左侧挂一枚与预设选项同地位的单选按钮, 并在内容被保留时给出提示。
+   * 宿主的左侧标号只是装饰(aria-hidden), 换成可点的按钮后界面上只有一个标记。
+   */
+  const ensureCustomChoiceUI = (card: HTMLElement, identity: CardIdentity): void => {
+    if (card.querySelector('[role="radiogroup"]') === null) return
+    const row = card.querySelector(CUSTOM_ROW_SELECTOR)
+    if (!(row instanceof HTMLElement)) return
+    const field = customFieldOf(card)
+    if (field === undefined) return
+    for (const marker of Array.from(row.querySelectorAll('span[aria-hidden="true"]'))) {
+      if (marker instanceof HTMLElement) marker.classList.add(HIDDEN_CONTROL_CLASS)
+    }
+    let radio = row.querySelector<HTMLButtonElement>('button.' + CUSTOM_RADIO_CLASS)
+    if (!(radio instanceof HTMLButtonElement)) {
+      radio = document.createElement('button')
+      radio.type = 'button'
+      radio.className = CUSTOM_RADIO_CLASS
+      radio.setAttribute('role', 'radio')
+      const host = field.parentElement === row ? row : field.parentElement
+      if (host !== null) host.insertBefore(radio, field)
+      else row.appendChild(radio)
+    }
+    const index = readProgress(card)?.index ?? 0
+    const mode = resolveCustomChoice(identity.callId, index, card)
+    radio.setAttribute('aria-checked', mode === 'custom' ? 'true' : 'false')
+    const label = pick(CUSTOM_RADIO_LABEL_ZH, CUSTOM_RADIO_LABEL_EN)
+    if (radio.title !== label) radio.title = label
+    if (radio.getAttribute('aria-label') !== label) radio.setAttribute('aria-label', label)
+    card.classList.toggle(CUSTOM_CHOICE_CLASS, mode === 'custom')
+    const typed = typedCustomAt(identity.callId, index)
+    const showHint = mode === 'option' && typed !== undefined && typed.trim() !== ''
+    let hint = card.querySelector<HTMLButtonElement>('button.' + CUSTOM_HINT_CLASS)
+    if (!showHint) {
+      if (hint !== null) hint.remove()
+      return
+    }
+    if (!(hint instanceof HTMLButtonElement)) {
+      hint = document.createElement('button')
+      hint.type = 'button'
+      hint.className = CUSTOM_HINT_CLASS
+      row.insertAdjacentElement('afterend', hint)
+    }
+    const customText = typed ?? ''
+    const text = pick(CUSTOM_HINT_ZH, CUSTOM_HINT_EN).replace('{text}', () => customText.slice(0, 80))
+    if (hint.textContent !== text) hint.textContent = text
   }
 
   /* 记下调用归属的会话 */
@@ -1121,8 +1243,9 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of badCallIdWarned.keys()) ids.add(id)
     /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
     for (const id of optionInteractions.keys()) ids.add(id)
-    /* 保留的自定义内容同理: 只剩它自己时也要能被回收 */
-    for (const id of preservedCustom.keys()) ids.add(id)
+    /* 自定义回答的保留内容与选择状态同理: 只剩它们自己时也要能被回收 */
+    for (const id of typedCustom.keys()) ids.add(id)
+    for (const id of customChoice.keys()) ids.add(id)
     return [...ids]
   }
 
@@ -1155,7 +1278,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     dismissFailedWarned.delete(callId)
     interrupted.delete(callId)
     badCallIdWarned.delete(callId)
-    clearPreservedCustom(callId)
+    clearCustomState(callId)
     /*
      * lastDrafts 故意不在这里清: 提问被外层预算中止时这一轮根本不会进投影,
      * forgetCall 之后工具行仍停在失败态, 草稿要靠这份实时副本搬成只读气泡。
@@ -2314,7 +2437,7 @@ function hideHostWaitText(root: HTMLElement): void {
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
     const count = Math.max(progress?.count ?? 1, projected)
-    const items = applyPreservedCustom(
+    const items = applyCustomChoice(
       mergeDrafts(
         gateDraftSelections(readHostDrafts(identity, count), identity.callId),
         readLiveDrafts(card, count, readLiveSelected(card, identity.callId)),
@@ -2450,7 +2573,7 @@ function hideHostWaitText(root: HTMLElement): void {
      * 用户清空输入后那里写下的就是空值, 不会把用户删掉的内容当成草稿带回模型。
      * 宿主的记录取不到(存储不可用或题数对不上)时, 用插件自己记录的快照兜底。
      */
-    const items = applyPreservedCustom(
+    const items = applyCustomChoice(
       mergeDrafts(
         gateDraftSelections(readHostDrafts(identity, count), identity.callId),
         readLiveDrafts(card, count, card === undefined ? [] : readLiveSelected(card, row.callId)),
@@ -2717,7 +2840,8 @@ function hideHostWaitText(root: HTMLElement): void {
      * 只有用户实际点过选项, 卡片上的 aria-checked 才能当作他的选择。
      */
     const option = target.closest('button[role="radio"], button[role="checkbox"]')
-    if (option instanceof HTMLElement) {
+    /* 插件自绘的「自定义回答」按钮同样带 role=radio, 由下面的专用分支处理 */
+    if (option instanceof HTMLElement && !option.classList.contains(CUSTOM_RADIO_CLASS)) {
       const card = option.closest(QUESTION_CARD_SELECTOR)
       if (card instanceof HTMLElement) {
         const identity = parseCardKey(card.getAttribute('data-question-key'))
@@ -2732,30 +2856,35 @@ function hideHostWaitText(root: HTMLElement): void {
           touched.add(index)
           optionInteractions.set(identity.callId, touched)
           /*
-           * 单选题: 宿主点选项时会把该题已输入的自定义内容清空。
-           * 这是捕获阶段, 宿主的状态还没变, 先把它读下来, 点击处理完再写回输入框。
-           * 多选题不受影响(宿主多选只改 selected)。
+           * 单选题: 点预设选项等于放弃「自定义回答」这一项。
+           * 输入过的内容继续留在 typedCustom 里, 由提示按钮提供恢复入口, 不再写回输入框 ——
+           * 宿主的单选只要输入框有内容就以自定义为准, 回填会把刚选中的选项又清掉。
            */
           if (card.querySelector('[role="group"]') === null) {
-            const text = readCustom(card)
-            if (text.trim() !== '') {
-              rememberPreservedCustom(identity.callId, index, text)
-              const restore = (): void => {
-                if (disposed) return
-                const current = findCard(identity)
-                if (current === undefined) return
-                restorePreservedCustom(current, identity.callId)
-              }
-              /* 两次尝试: 一次赶在 React 提交后, 一次赶在宿主重渲染清空输入框之后 */
-              window.setTimeout(restore, 0)
-              window.setTimeout(restore, 120)
-            }
+            setCustomChoice(identity.callId, index, false)
+            ensureCustomChoiceUI(card, identity)
           }
         }
       }
     }
     const button = target.closest(CARD_BUTTON_SELECTOR)
     if (!(button instanceof HTMLElement)) return
+
+    if (button.classList.contains(CUSTOM_RADIO_CLASS) || button.classList.contains(CUSTOM_HINT_CLASS)) {
+      event.preventDefault()
+      event.stopPropagation()
+      const card = button.closest(QUESTION_CARD_SELECTOR)
+      const identity = parseCardKey(card instanceof HTMLElement ? card.getAttribute('data-question-key') : null)
+      if (!(card instanceof HTMLElement) || identity === undefined) return
+      const index = readProgress(card)?.index ?? 0
+      setCustomChoice(identity.callId, index, true)
+      const field = customFieldOf(card)
+      const typed = typedCustomAt(identity.callId, index)
+      if (field !== undefined && typed !== undefined && field.value !== typed) writeField(field, typed)
+      ensureCustomChoiceUI(card, identity)
+      field?.focus()
+      return
+    }
 
     if (button.classList.contains(AUTO_INFINITE_BUTTON_CLASS)) {
       event.preventDefault()
@@ -2793,10 +2922,26 @@ function hideHostWaitText(root: HTMLElement): void {
     const card = button.closest(QUESTION_CARD_SELECTOR)
     const identity = parseCardKey(card instanceof HTMLElement ? card.getAttribute('data-question-key') : null)
     if (identity === undefined) return
+    /*
+     * 单选: 选中「自定义回答」但输入框还是空的时不放行提交。
+     * 宿主只按"有没有内容"判断, 会把这次提交当成未作答或误落到预设项上。
+     */
+    if (card instanceof HTMLElement && card.querySelector('[role="radiogroup"]') !== null) {
+      const index = readProgress(card)?.index ?? 0
+      if (resolveCustomChoice(identity.callId, index, card) === 'custom') {
+        const field = customFieldOf(card)
+        if (field === undefined || field.value.trim() === '') {
+          event.preventDefault()
+          event.stopPropagation()
+          field?.focus()
+          return
+        }
+      }
+    }
     paused.delete(identity.callId)
     deadlines.delete(identity.callId)
     lastDrafts.delete(identity.callId)
-    clearPreservedCustom(identity.callId)
+    clearCustomState(identity.callId)
   }
   document.addEventListener('click', onDocumentClick, true)
 
@@ -2904,11 +3049,8 @@ function hideHostWaitText(root: HTMLElement): void {
        * 顺序反了会让第一轮扫描里的上报被当成"历史卡片"跳过。
        */
       ensureSubscription(identity.sessionId)
-      /*
-       * 单选切换选项后被宿主清空的自定义内容, 在这一题重新出现时写回输入框
-       * (宿主切到别的题时不写, 等用户翻回这一题再由这一轮扫描补上)。
-       */
-      if (enhancementOn) restorePreservedCustom(element, identity.callId)
+      /* 单选题: 保证自定义输入框左侧那枚单选按钮与提示始终与状态一致 */
+      if (enhancementOn) ensureCustomChoiceUI(element, identity)
       if (enhancementOn && (callActive.has(identity.callId) || hostStillWaiting(element))) {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
@@ -2916,7 +3058,7 @@ function hideHostWaitText(root: HTMLElement): void {
         /* 参数顺序必须与 evaluateRow 一致, 取舍规则也必须一致 */
         lastDrafts.set(
           identity.callId,
-          applyPreservedCustom(
+          applyCustomChoice(
             mergeDrafts(
               gateDraftSelections(readHostDrafts(identity, count), identity.callId),
               readLiveDrafts(element, count, readLiveSelected(element, identity.callId)),
@@ -3014,8 +3156,9 @@ function hideHostWaitText(root: HTMLElement): void {
     invalidateHostDraftCache()
     scheduleScan()
     /*
-     * 用户自己改过这一题就丢掉保留值, 以他的当前输入为准。
-     * 只认可信事件: 插件回填时派发的 input 事件不是可信事件, 不能把自己的回填当成用户编辑。
+     * 只认可信事件: 插件自己派发的 input 事件不是用户编辑, 不能用来推断选中状态。
+     * 用户在输入框里打字等于选中「自定义回答」这一项, 同时把内容记下来,
+     * 之后切到预设选项时内容仍保留, 只是不再算数。
      */
     if (!event.isTrusted) return
     const card = target.closest(QUESTION_CARD_SELECTOR)
@@ -3023,7 +3166,11 @@ function hideHostWaitText(root: HTMLElement): void {
     const identity = parseCardKey(card.getAttribute('data-question-key'))
     const index = readProgress(card)?.index
     if (identity === undefined || index === undefined) return
-    dropPreservedCustomAt(identity.callId, index)
+    const field = customFieldOf(card)
+    if (field === undefined || field !== target) return
+    rememberTypedCustom(identity.callId, index, field.value)
+    setCustomChoice(identity.callId, index, true)
+    ensureCustomChoiceUI(card, identity)
   }
   window.addEventListener('storage', onDraftStorageChange)
   document.addEventListener('input', onDraftContentChange, true)

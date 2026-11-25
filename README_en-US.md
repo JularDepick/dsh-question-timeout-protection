@@ -126,13 +126,18 @@ The draft lives only in memory, so a page refresh loses the bubbles and their re
 
 ### Custom text in single-choice questions
 
-The host clears the custom text of a single-choice question when you click another option. The plugin records that text the moment the option is clicked and writes it back: immediately while you stay on the question, when you navigate back to it if the host moved on, and it keeps counting toward the draft until you submit, the question times out, or you edit that question yourself.
+The host treats "the custom field has text" as "the custom answer is chosen", so a preset option and custom text cannot both hold, and clicking an option clears what you typed. The plugin makes the choice explicit: a radio button sits to the left of the custom field, on equal footing with the preset options, and only that button decides whether the custom answer is chosen — not whether the field has text.
+
+- Custom chosen: the preset options lose their selected fill, the answer carries the custom text and an empty selection
+- A preset option chosen: your custom text is not lost; a "Custom answer kept: … (click to use it)" button appears under the field, and clicking it switches back
+- Custom chosen with an empty field: submission is blocked and focus returns to the field
+- Multiple-choice questions are unaffected; custom text and options still coexist there
 
 ### Context injection
 
 This is on by default. While you are answering, the client always reports draft snapshots to the server (it cannot read the `fallback` mode); the server decides whether to use them. When on, expiry takes the latest snapshot and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes; when off, the snapshot stays on the server and is cleared when the call ends.
 
-The timeout notice and the draft share that one result, and the model is explicitly told to report the timeout at the end of its reply, plus what it intends to do with the draft when one came back.
+The timeout notice and the draft share that one result. When a draft comes back, the notice tells the model to judge how complete it is and decide the next step, not to reveal that judgement to you, and to summarise the decision about this question after that next step.
 
 With this off, the plugin only withdraws the card and hands the model no draft.
 

@@ -97,7 +97,7 @@ export const TIMEOUT_PENDING_MISSING_NOTICE =
  * 避免模型把整段说明当成草稿内容。
  */
 export const TIMEOUT_PENDING_DRAFT_NOTICE =
-  '该轮提问已超时,用户没有正式提交; 超时前留下的草稿已随本结果带回, 内容见 draft 字段, 请据此继续任务; 界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 草稿不等于用户已确认的答案; 并在最后告知用户这次超时以及你对草稿的处理决策。'
+  '该轮提问已超时。用户未正式提交，但留下了一份草稿，详见 draft 字段。请自行判断草稿完整度、决定下一步事项。判断过程不得告知用户，在下一步事项之后总结报告对本次问答的决策结果。'
 
 /**
  * 草稿快照超过通道上限时的提示。
@@ -133,6 +133,26 @@ export const CARD_FOOTER_ACTIONS_SELECTOR = '[class*="_footerActions"]'
 
 /** 宿主提问卡片的选项容器 */
 export const CARD_OPTIONS_SELECTOR = '[class*="_options"]'
+
+/** 宿主单选题的自定义回答行(类名带构建哈希, 按后缀匹配) */
+export const CUSTOM_ROW_SELECTOR = '[class*="_customRow"]'
+
+/** 插件自绘「自定义回答」单选按钮的类名 */
+export const CUSTOM_RADIO_CLASS = 'dqtp-custom-radio'
+
+/** 插件自绘「已保留自定义内容」提示按钮的类名 */
+export const CUSTOM_HINT_CLASS = 'dqtp-custom-hint'
+
+/** 选中自定义回答时挂在卡片上的类名: 用它压掉宿主预设选项的选中底色 */
+export const CUSTOM_CHOICE_CLASS = 'dqtp-custom-choice'
+
+/** 「自定义回答」单选按钮的文案(中文/英文) */
+export const CUSTOM_RADIO_LABEL_ZH = '自定义回答'
+export const CUSTOM_RADIO_LABEL_EN = 'Custom answer'
+
+/** 自定义内容已保留但当前未选中时的提示(中文/英文), {text} 替换为内容 */
+export const CUSTOM_HINT_ZH = '已保留自定义内容: {text}(点这里选用)'
+export const CUSTOM_HINT_EN = 'Custom answer kept: {text} (click to use it)'
 
 /** 卡片输入框选择器 */
 export const CARD_INPUT_SELECTOR = 'textarea, input'

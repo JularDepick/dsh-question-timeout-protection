@@ -436,6 +436,8 @@ const CONSTANT_KEY_MAP = {
   AUTO_INFINITE_ON_TEXT: 'control.autoInfiniteOn',
   AUTO_INFINITE_OFF_TEXT: 'control.autoInfiniteOff',
   AUTO_INFINITE_TITLE: 'control.autoInfiniteTitle',
+  CUSTOM_RADIO_LABEL: 'control.customRadio',
+  CUSTOM_HINT: 'control.customHint',
 }
 
 /* 数组型文案常量到 ini 键的映射(仅收录需要镜像的数组) */
