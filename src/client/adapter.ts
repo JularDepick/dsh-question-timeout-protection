@@ -37,10 +37,11 @@ import {
   CARD_DISMISS_ATTEMPTS,
   CARD_ENHANCEMENTS_CLASS,
   CARD_OPTIONS_SELECTOR,
+  HOST_HELD_PATTERNS,
   HOST_WAIT_PATTERNS,
   CALL_STATE_TTL_MS,
   MAX_CLIENT_CALL_STATES,
-  SUBSCRIPTION_MISS_LIMIT,
+  SUBSCRIPTION_IDLE_RELEASE_MS,
   MAX_KEPT_DRAFTS,
   MAX_SESSION_SUBSCRIPTIONS,
   PAUSED_TEXT_PATTERNS,
@@ -462,10 +463,20 @@ function recommendedOptionLabels(question?: QuestionMeta): string[] {
   return labels.length > 0 && stripRecommendedSuffix(labels[0]) !== labels[0] ? [labels[0]] : []
 }
 
-/* 从选中项里去掉宿主预选的推荐项 */
-function dropRecommended(selected: readonly string[], question?: QuestionMeta): string[] {
-  const recommended = new Set(recommendedOptionLabels(question))
-  return selected.filter((label) => !recommended.has(label))
+/*
+ * 去掉宿主预选的推荐项, 但只在"这组值确实就是预选本身"时才剥。
+ *
+ * 宿主打开卡片时会把推荐项预选上并落盘, 因此"看到推荐项"有两种来源: 宿主预选,
+ * 或用户自己点了推荐项(刷新后宿主的持久化草稿里就只剩这份值, 内存里的交互登记已经丢了)。
+ * 逐项剥离会把后者的真实选择也抹掉, 单选题只剩这一项时整轮草稿还会被判成空。
+ * 因此按题整组判断: 与预选集合完全相同才算未触碰, 否则原样保留。
+ */
+function dropPreselected(selected: readonly string[], question?: QuestionMeta): string[] {
+  const recommended = recommendedOptionLabels(question)
+  if (recommended.length === 0) return [...selected]
+  if (selected.length !== recommended.length) return [...selected]
+  const expected = new Set(recommended)
+  return selected.every((label) => expected.has(label)) ? [] : [...selected]
 }
 
 /*
@@ -917,6 +928,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const drafts = new Map<string, StoredDraft>()
   /* 每个调用最近一次的分题草稿, 卡片重渲染后仍可用 */
   const lastDrafts = new Map<string, DraftItem[]>()
+  /*
+   * 单选题切换选项时宿主会把该题已输入的自定义内容清空(它的选项点击直接写 custom: '')。
+   * 这里按 callId -> 题序 记下被清掉的内容, 由扫描把它写回输入框, 并在合并草稿时补回去,
+   * 直到用户提交、超时, 或自己重新编辑该题为止。
+   */
+  const preservedCustom = new Map<string, Map<number, string>>()
   /* 会话提问投影订阅 */
   const subscriptions = new Map<string, () => void>()
   /* 已锁定过的卡片节点 */
@@ -946,6 +963,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    * 已结算的历史卡片也会被扫描到, 为它们持续上报只会产生无人取走的请求。
    */
   const callActive = new Set<string>()
+  /*
+   * 曾经在投影里活动过的调用。
+   * 投影清理只能回收"曾经出现过、现在离开"的调用: PTC 子调用在超时前根本不在投影里,
+   * 把"不在 active"直接当成"已结算"会把它刚登记的截止时间、冻结态与选项交互一起抹掉。
+   */
+  const seenLive = new Set<string>()
   /* 每个调用最近一次被投影或界面看到的时间, 用于清理长会话里的残留登记 */
   const callTouchedAt = new Map<string, number>()
   /* 草稿快照超过通道上限的调用: 界面需要显示「草稿过长」而不是笼统的通道故障 */
@@ -976,7 +999,7 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     const question = projectedQuestions.get(callId)?.[index]
     const selected = readSelected(card, question)
     if (optionInteractions.get(callId)?.has(index) === true) return selected
-    return dropRecommended(selected, question)
+    return dropPreselected(selected, question)
   }
 
   /*
@@ -990,11 +1013,76 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       touched?.has(index) === true
         ? item
         : {
-            selected: dropRecommended(item.selected, projectedQuestions.get(callId)?.[index]),
+            selected: dropPreselected(item.selected, projectedQuestions.get(callId)?.[index]),
             custom: item.custom,
             skipped: item.skipped,
           },
     )
+  }
+
+  /* 记下被宿主清空的自定义内容: 只在该题为单选且确实有内容时记录 */
+  const rememberPreservedCustom = (callId: string, index: number, text: string): void => {
+    if (text.trim() === '') return
+    let entries = preservedCustom.get(callId)
+    if (entries === undefined) {
+      entries = new Map<number, string>()
+      preservedCustom.set(callId, entries)
+    }
+    entries.set(index, text)
+  }
+
+  /* 取某一题被保留的自定义内容 */
+  const preservedCustomAt = (callId: string, index: number): string | undefined =>
+    preservedCustom.get(callId)?.get(index)
+
+  /* 用户自己改过这一题后不再回填, 以他的当前输入为准 */
+  const dropPreservedCustomAt = (callId: string, index: number): void => {
+    const entries = preservedCustom.get(callId)
+    if (entries === undefined) return
+    entries.delete(index)
+    if (entries.size === 0) preservedCustom.delete(callId)
+  }
+
+  /* 调用结束时丢弃该调用的全部保留内容 */
+  const clearPreservedCustom = (callId: string): void => {
+    preservedCustom.delete(callId)
+  }
+
+  /*
+   * 把文本写回输入框并触发 React 的 onChange。
+   * 直接赋值会被 React 的受控值覆盖回去, 必须走原型上的原生 setter 再派发 input 事件。
+   */
+  const writeField = (field: HTMLTextAreaElement | HTMLInputElement, value: string): void => {
+    const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+    if (setter === undefined) field.value = value
+    else setter.call(field, value)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  /* 当前显示这一题有被保留的内容、而输入框是空的时, 把它写回去 */
+  const restorePreservedCustom = (card: HTMLElement, callId: string): void => {
+    /* 已锁定的卡片(超时收尾)不再写回, 免得往一张已结束的提问里塞内容 */
+    if (card.classList.contains(CARD_LOCKED_CLASS)) return
+    const progress = readProgress(card)
+    if (progress === undefined) return
+    const value = preservedCustomAt(callId, progress.index)
+    if (value === undefined) return
+    const field = card.querySelector(CARD_OPTIONS_SELECTOR + ' textarea') ?? card.querySelector(CARD_INPUT_SELECTOR)
+    if (!(field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement)) return
+    if (field.value !== '') return
+    writeField(field, value)
+  }
+
+  /* 合并草稿后补回被宿主清空的自定义内容: 宿主记录里的空 custom 不能压掉它 */
+  const applyPreservedCustom = (items: DraftItem[], callId: string): DraftItem[] => {
+    const entries = preservedCustom.get(callId)
+    if (entries === undefined) return items
+    return items.map((item, index) => {
+      const value = entries.get(index)
+      if (value === undefined || item.custom.trim() !== '') return item
+      return { ...item, custom: value }
+    })
   }
 
   /* 记下调用归属的会话 */
@@ -1033,6 +1121,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     for (const id of badCallIdWarned.keys()) ids.add(id)
     /* 选项交互按调用登记, 也可能只剩它自己: 不纳入清理就会在关闭卡片增强时一直留着 */
     for (const id of optionInteractions.keys()) ids.add(id)
+    /* 保留的自定义内容同理: 只剩它自己时也要能被回收 */
+    for (const id of preservedCustom.keys()) ids.add(id)
     return [...ids]
   }
 
@@ -1058,12 +1148,14 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     projectedQuestions.delete(callId)
     optionInteractions.delete(callId)
     callActive.delete(callId)
+    seenLive.delete(callId)
     callTouchedAt.delete(callId)
     draftTooLarge.delete(callId)
     draftTooLargeAt.delete(callId)
     dismissFailedWarned.delete(callId)
     interrupted.delete(callId)
     badCallIdWarned.delete(callId)
+    clearPreservedCustom(callId)
     /*
      * lastDrafts 故意不在这里清: 提问被外层预算中止时这一轮根本不会进投影,
      * forgetCall 之后工具行仍停在失败态, 草稿要靠这份实时副本搬成只读气泡。
@@ -1463,6 +1555,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
    */
   const handBackCard = (card: HTMLElement): void => {
     card.classList.remove(HIDDEN_CONTROL_CLASS)
+    /* 交还前必须摘掉收起标记: restoreCard 认这个标记, 留着会让锁定状态还原不回来 */
+    card.removeAttribute(CARD_DISMISSED_ATTRIBUTE)
     const identity = parseCardKey(card.getAttribute('data-question-key'))
     if (identity === undefined) return
     passive.add(identity.callId)
@@ -1522,8 +1616,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     /*
      * 已被插件收起的卡片不再还原: 宿主 dismiss 没点中时节点仍留在文档里,
      * 结算后把它还原成可作答状态, 用户就能往一张已经结束的提问里继续输入。
+     * 标记按"是否指向当前这张卡片"判定: 宿主复用节点换了 key 时旧值会留在属性上,
+     * 只看非空会让这张卡永远还原不了(交还宿主后仍被锁定)。
      */
-    if (card.getAttribute(CARD_DISMISSED_ATTRIBUTE) !== null) return
+    const markedKey = card.getAttribute(CARD_DISMISSED_ATTRIBUTE)
+    if (markedKey !== null && markedKey === (card.getAttribute('data-question-key') ?? '')) return
+    if (markedKey !== null) card.removeAttribute(CARD_DISMISSED_ATTRIBUTE)
     /* 收起时隐藏类加在卡片根节点自身, querySelectorAll 不含自身, 必须单独清一次 */
     card.classList.remove(HIDDEN_CONTROL_CLASS)
     for (const element of Array.from(card.querySelectorAll('.' + HIDDEN_CONTROL_CLASS))) {
@@ -1756,18 +1854,36 @@ function hideHostWaitText(root: HTMLElement): void {
   }
 
   /*
-   * 触发宿主自带的「慢慢回答」, 让宿主自己的定时器也停下。
-   * 返回是否真的点到了控件: 宿主改动或该控件不存在时, 停不下宿主的计时。
+   * 宿主自己的定时器是否已经停下。
+   * 用户点过「慢慢回答」或开始编辑回答后, 宿主会切到「会一直等你回答」并把内部截止时间清空,
+   * 这时卡片上既没有倒计时也没有暂停控件 —— 停表已完成, 不需要也不能再点一次。
    */
-  const clickHostTakeTime = (identity: CardIdentity): boolean => {
-    const card = findCard(identity)
-    if (card === undefined) return false
-    for (const element of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
-      if (!TAKE_TIME_TEXTS.includes(element.textContent?.trim() ?? '')) continue
-      element.click()
-      return true
+  const hostTimerStopped = (card: HTMLElement): boolean => {
+    for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
+      const text = (element.textContent ?? '').trim()
+      if (text === '') continue
+      if (HOST_HELD_PATTERNS.some((pattern) => text.includes(pattern))) return true
     }
     return false
+  }
+
+  /*
+   * 触发宿主自带的「慢慢回答」, 让宿主自己的定时器也停下。
+   * 三态返回: clicked 表示点到了控件, already-stopped 表示宿主已经停表(编辑中或已点过),
+   * missing 表示既没点到控件也没有停表迹象 —— 只有这种情况才说明宿主仍在计时。
+   * 宿主在编辑态不渲染该按钮, 因此不能把"没找到按钮"直接当成"宿主没停表"。
+   */
+  const clickHostTakeTime = (identity: CardIdentity): 'clicked' | 'already-stopped' | 'missing' => {
+    const card = findCard(identity)
+    if (card === undefined) return 'missing'
+    for (const element of Array.from(card.querySelectorAll(CARD_BUTTON_SELECTOR))) {
+      if (!TAKE_TIME_TEXTS.includes(element.textContent?.trim() ?? '')) continue
+      /* 提交在途时宿主会把卡片按钮置为 disabled, 这时 click() 不派发事件, 不能算作已停表 */
+      if (element instanceof HTMLButtonElement && element.disabled) continue
+      element.click()
+      return 'clicked'
+    }
+    return hostTimerStopped(card) ? 'already-stopped' : 'missing'
   }
 
   /* 点击「无限等待」: 冻结本次问答的倒计时, 直到用户提交为止 */
@@ -1790,7 +1906,8 @@ function hideHostWaitText(root: HTMLElement): void {
          * 宿主却可能先结算成超时, 模型拿到的仍是超时结果, 两边结论对不上。
          * 这时撤回冻结并把该轮交还宿主, 让界面与模型保持一致。
          */
-        if (clickHostTakeTime(identity)) return
+        /* 点到了控件, 或宿主本来就已经停表, 两种都说明宿主不会再先结算 */
+        if (clickHostTakeTime(identity) !== 'missing') return
         paused.delete(identity.callId)
         syncUnavailable.add(identity.callId)
         /*
@@ -2197,12 +2314,15 @@ function hideHostWaitText(root: HTMLElement): void {
     const progress = readProgress(card)
     const projected = projectedCounts.get(identity.callId) ?? 1
     const count = Math.max(progress?.count ?? 1, projected)
-    const items = mergeDrafts(
-      gateDraftSelections(readHostDrafts(identity, count), identity.callId),
-      readLiveDrafts(card, count, readLiveSelected(card, identity.callId)),
-      lastDrafts.get(identity.callId),
-      count,
-      progress?.index,
+    const items = applyPreservedCustom(
+      mergeDrafts(
+        gateDraftSelections(readHostDrafts(identity, count), identity.callId),
+        readLiveDrafts(card, count, readLiveSelected(card, identity.callId)),
+        lastDrafts.get(identity.callId),
+        count,
+        progress?.index,
+      ),
+      identity.callId,
     )
     /*
      * 空草稿也要上报: 服务端据此知道"确实没有草稿", 工具到期时不必再空等一段宽限时间,
@@ -2330,12 +2450,15 @@ function hideHostWaitText(root: HTMLElement): void {
      * 用户清空输入后那里写下的就是空值, 不会把用户删掉的内容当成草稿带回模型。
      * 宿主的记录取不到(存储不可用或题数对不上)时, 用插件自己记录的快照兜底。
      */
-    const items = mergeDrafts(
-      gateDraftSelections(readHostDrafts(identity, count), identity.callId),
-      readLiveDrafts(card, count, card === undefined ? [] : readLiveSelected(card, row.callId)),
-      stored,
-      count,
-      liveIndex,
+    const items = applyPreservedCustom(
+      mergeDrafts(
+        gateDraftSelections(readHostDrafts(identity, count), identity.callId),
+        readLiveDrafts(card, count, card === undefined ? [] : readLiveSelected(card, row.callId)),
+        stored,
+        count,
+        liveIndex,
+      ),
+      row.callId,
     )
     lastDrafts.set(row.callId, items)
     const current = options()
@@ -2412,6 +2535,7 @@ function hideHostWaitText(root: HTMLElement): void {
     for (const row of active as ProjectionRow[]) {
       if (typeof row.callId !== 'string') continue
       live.add(row.callId)
+      seenLive.add(row.callId)
       /* 仍在 active 的行才算进行中的提问, 只有它们值得上报草稿 */
       callActive.add(row.callId)
       callTouchedAt.set(row.callId, Date.now())
@@ -2435,6 +2559,8 @@ function hideHostWaitText(root: HTMLElement): void {
     for (const callId of knownCallIds()) {
       if (live.has(callId)) continue
       if (callSessionOf(callId) !== sessionId) continue
+      /* 从没进过投影的调用(PTC 子调用在途)不在这里回收, 交给 TTL 与容量兜底 */
+      if (!seenLive.has(callId)) continue
       forgetCall(callId)
     }
   }
@@ -2449,7 +2575,7 @@ function hideHostWaitText(root: HTMLElement): void {
   const polledSessions = new Map<string, () => void>()
   /* 各会话最近一次在界面上出现的时间, 用于限制订阅数量 */
   const subscriptionSeen = new Map<string, number>()
-  /* 各会话连续多少轮没有出现在界面上: 达到阈值就释放订阅, 不再等新会话把它挤掉 */
+  /* 各会话首次从界面上消失的时刻: 离开超过 SUBSCRIPTION_IDLE_RELEASE_MS 就释放订阅 */
   const subscriptionMissing = new Map<string, number>()
 
   /*
@@ -2483,10 +2609,8 @@ function hideHostWaitText(root: HTMLElement): void {
      * 被上限淘汰过的会话会停在轮询兜底里, 若这里直接返回, 它永远升不回真实订阅,
      * 之后每次投影变化都要等下一轮扫描才被发现。名额有空时把它接回订阅。
      */
-    if (polledSessions.has(sessionId)) {
-      if (subscriptions.size >= MAX_SESSION_SUBSCRIPTIONS) return
-      polledSessions.delete(sessionId)
-    }
+    const wasPolled = polledSessions.has(sessionId)
+    if (wasPolled && subscriptions.size >= MAX_SESSION_SUBSCRIPTIONS) return
     /*
      * 直接读 ctx.sessions 在未注入时会被框架抛错(cannot get property without inject),
      * 因此这里先读属性再退回 ctx.get, 缺该服务时只失去投影订阅而不是整个适配器。
@@ -2503,6 +2627,8 @@ function hideHostWaitText(root: HTMLElement): void {
       }
       return
     }
+    /* 投影面确实拿到了才从轮询兜底里摘掉: 解析失败时留着轮询, 该会话不至于彻底不再求值 */
+    if (wasPolled) polledSessions.delete(sessionId)
     const evaluate = (): void => {
       if (disposed) return
       /*
@@ -2605,6 +2731,26 @@ function hideHostWaitText(root: HTMLElement): void {
           const touched = optionInteractions.get(identity.callId) ?? new Set<number>()
           touched.add(index)
           optionInteractions.set(identity.callId, touched)
+          /*
+           * 单选题: 宿主点选项时会把该题已输入的自定义内容清空。
+           * 这是捕获阶段, 宿主的状态还没变, 先把它读下来, 点击处理完再写回输入框。
+           * 多选题不受影响(宿主多选只改 selected)。
+           */
+          if (card.querySelector('[role="group"]') === null) {
+            const text = readCustom(card)
+            if (text.trim() !== '') {
+              rememberPreservedCustom(identity.callId, index, text)
+              const restore = (): void => {
+                if (disposed) return
+                const current = findCard(identity)
+                if (current === undefined) return
+                restorePreservedCustom(current, identity.callId)
+              }
+              /* 两次尝试: 一次赶在 React 提交后, 一次赶在宿主重渲染清空输入框之后 */
+              window.setTimeout(restore, 0)
+              window.setTimeout(restore, 120)
+            }
+          }
         }
       }
     }
@@ -2650,6 +2796,7 @@ function hideHostWaitText(root: HTMLElement): void {
     paused.delete(identity.callId)
     deadlines.delete(identity.callId)
     lastDrafts.delete(identity.callId)
+    clearPreservedCustom(identity.callId)
   }
   document.addEventListener('click', onDocumentClick, true)
 
@@ -2690,15 +2837,36 @@ function hideHostWaitText(root: HTMLElement): void {
         subscriptionMissing.delete(sessionId)
         continue
       }
-      const misses = (subscriptionMissing.get(sessionId) ?? 0) + 1
-      if (misses < SUBSCRIPTION_MISS_LIMIT) {
-        subscriptionMissing.set(sessionId, misses)
+      /*
+       * 按时间判定而不是按扫描轮次: 扫描既被 1s 定时器驱动, 也被 DOM 变更按帧触发,
+       * 轮次计数会让"十分钟"缩成一两分钟, 把仍在等待的会话提前释放掉。
+       */
+      const missingSince = subscriptionMissing.get(sessionId)
+      if (missingSince === undefined) {
+        subscriptionMissing.set(sessionId, Date.now())
         continue
       }
+      if (Date.now() - missingSince < SUBSCRIPTION_IDLE_RELEASE_MS) continue
       off()
       subscriptions.delete(sessionId)
       subscriptionMissing.delete(sessionId)
-      subscriptionSeen.delete(sessionId)
+      /*
+       * 释放后落到轮询兜底: 该会话可能还有在途提问, 完全不再求值会让超时接管与草稿上报
+       * 在用户切回之前静默失效。轮询表同样受数量上限约束。
+       */
+      polledSessions.set(sessionId, () => {
+        try {
+          const face = resolveProjectionFace(ctx, sessionId)
+          if (face === undefined) return
+          evaluateProjection(sessionId, face.getSnapshot?.())
+        } catch (error) {
+          if (evaluateWarned.has(sessionId)) return
+          evaluateWarned.add(sessionId)
+          console.warn('[question-timeout-protection] 评估提问投影时出错, 该会话的兜底可能受影响', error)
+        }
+      })
+      subscriptionSeen.set(sessionId, Date.now())
+      enforcePolledLimit()
       /* 告警去重随订阅一起回收: 会话重新出现时若仍缺服务, 还能再留一条日志 */
       subscribeWarned.delete(sessionId)
       evaluateWarned.delete(sessionId)
@@ -2736,6 +2904,11 @@ function hideHostWaitText(root: HTMLElement): void {
        * 顺序反了会让第一轮扫描里的上报被当成"历史卡片"跳过。
        */
       ensureSubscription(identity.sessionId)
+      /*
+       * 单选切换选项后被宿主清空的自定义内容, 在这一题重新出现时写回输入框
+       * (宿主切到别的题时不写, 等用户翻回这一题再由这一轮扫描补上)。
+       */
+      if (enhancementOn) restorePreservedCustom(element, identity.callId)
       if (enhancementOn && (callActive.has(identity.callId) || hostStillWaiting(element))) {
         const previous = lastDrafts.get(identity.callId)
         const progress = readProgress(element)
@@ -2743,12 +2916,15 @@ function hideHostWaitText(root: HTMLElement): void {
         /* 参数顺序必须与 evaluateRow 一致, 取舍规则也必须一致 */
         lastDrafts.set(
           identity.callId,
-          mergeDrafts(
-            gateDraftSelections(readHostDrafts(identity, count), identity.callId),
-            readLiveDrafts(element, count, readLiveSelected(element, identity.callId)),
-            previous,
-            count,
-            progress?.index,
+          applyPreservedCustom(
+            mergeDrafts(
+              gateDraftSelections(readHostDrafts(identity, count), identity.callId),
+              readLiveDrafts(element, count, readLiveSelected(element, identity.callId)),
+              previous,
+              count,
+              progress?.index,
+            ),
+            identity.callId,
           ),
         )
       }
@@ -2837,6 +3013,17 @@ function hideHostWaitText(root: HTMLElement): void {
     if (!(target instanceof Element) || target.closest(QUESTION_CARD_SELECTOR) === null) return
     invalidateHostDraftCache()
     scheduleScan()
+    /*
+     * 用户自己改过这一题就丢掉保留值, 以他的当前输入为准。
+     * 只认可信事件: 插件回填时派发的 input 事件不是可信事件, 不能把自己的回填当成用户编辑。
+     */
+    if (!event.isTrusted) return
+    const card = target.closest(QUESTION_CARD_SELECTOR)
+    if (!(card instanceof HTMLElement)) return
+    const identity = parseCardKey(card.getAttribute('data-question-key'))
+    const index = readProgress(card)?.index
+    if (identity === undefined || index === undefined) return
+    dropPreservedCustomAt(identity.callId, index)
   }
   window.addEventListener('storage', onDraftStorageChange)
   document.addEventListener('input', onDraftContentChange, true)

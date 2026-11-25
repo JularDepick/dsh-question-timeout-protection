@@ -48,10 +48,28 @@ import {
 
 /* 模型侧工具说明 */
 const TOOL_DESCRIPTION =
-  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. A timed call that expires before an answer batch returns a pending result: that round has already been settled as timed out, and an answer submitted later is not adopted by this tool, so decide yourself whether to ask again. A timed call made from inside run_code is additionally bounded by that program\'s elapsed-time budget: keep the enclosing run_code timeoutMs above this timeout, otherwise the question is aborted and no draft can be returned.'
+  'Ask brief, direct, self-contained questions about missing information, preferences, or decisions. Use user-facing terms; assume no knowledge of background work or internal names. Use distinct stable question IDs. '
+  + 'Pass timeout as a top-level argument of this call, never inside a question item. '
+  + 'An answer item with empty selected and no custom means the user skipped that question: continue without it, do not ask it again, and do not treat the skip as permission. '
+  + 'A timed call that expires before an answer batch returns a pending result: that round timed out, the card may be closed or still answerable, and an answer the user submits later arrives as a separate user message, so never treat the pending result or its draft as a confirmed answer. '
+  + 'A timed call made from inside run_code is additionally bounded by that program\'s elapsed-time budget: keep the enclosing run_code timeoutMs above this timeout, otherwise the question is rejected without being shown and no draft can be returned.'
 
 /* 模型侧问题数组说明 */
 const QUESTIONS_DESCRIPTION = 'Questions to ask the user.'
+
+/*
+ * 兼容模型把 timeout 误写进题目对象的情形。
+ * 等待时长属于整批提问, 正确位置是本调用的顶层参数; schema 不声明题目内的 timeout,
+ * 以免鼓励这种写法, 但模型确实这样写时不能让整批退回默认值 —— 取题目里第一个合法数值。
+ */
+function nestedTimeout(questions: ReadonlyArray<unknown>): number | undefined {
+  for (const item of questions) {
+    if (item === null || typeof item !== 'object') continue
+    const value = (item as { timeout?: unknown }).timeout
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return undefined
+}
 
 /*
  * 判定并规范化本次调用的等待秒数;允许 -1 表示必答(回到阻塞等待)。
@@ -234,7 +252,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
               message: {
                 type: 'string',
                 required: true,
-                description: 'How to continue while the questions stay answerable.',
+                description: 'How to continue after the timeout; the card may be closed or still answerable.',
               },
               draftMissing: {
                 type: 'boolean',
@@ -307,7 +325,10 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     async execute(args, exec) {
-      const timeoutSeconds = resolveTimeout(args.timeout, configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS)
+      const timeoutSeconds = resolveTimeout(
+        args.timeout ?? nestedTimeout(args.questions),
+        configValue(config.timeoutSeconds) ?? DEFAULT_TIMEOUT_SECONDS,
+      )
       const infiniteEnabled = configValue(config.infiniteWait) ?? true
       /*
        * 草稿兜底总开关: 关闭时客户端既不上报草稿也不收尾卡片, 服务端就不该等宽限期,
@@ -389,10 +410,12 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       const usableMs = parentRemaining === undefined ? undefined : parentRemaining - PTC_BUDGET_MARGIN_MS
       if (usableMs !== undefined && usableMs < PTC_MIN_WAIT_MS) {
         /*
-         * 外层没剩下可等待的预算: 开卡片只会闪一下就被掐掉,
-         * 直接按预算不足结算, 并让模型知道重试时要放宽外层 timeoutMs。
+         * 外层没剩下可等待的预算: 这次提问根本不会开始等待, 用户也看不到问题。
+         * 不能返回 pending —— 宿主的提问投影会把 pending 的调用转成 continued,
+         * 客户端随即建出一张可作答的卡片, 与"没有开始等待"自相矛盾。
+         * 按错误结算, 投影直接移除该调用, 模型也能据此放宽外层 timeoutMs 后重试。
          */
-        return { pending: true, callId: exec.callId, message: TIMEOUT_PENDING_BUDGET_NOTICE }
+        throw new Error(TIMEOUT_PENDING_BUDGET_NOTICE)
       }
       const timeoutMs = usableMs === undefined ? requestedTimeoutMs : Math.min(requestedTimeoutMs, usableMs)
       /*

@@ -81,14 +81,15 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
  * 语义要点: 只说明本轮提问已超时、用户没有正式提交, 不对草稿做任何断言 ——
  * 草稿为空时不该告诉模型"草稿保留了下来"; 有草稿时草稿走 draft 字段随本结果一起回来。
  */
-export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式提交; 请在回复末尾告知用户这一点。'
+export const TIMEOUT_PENDING_NOTICE =
+  '该轮提问已超时,用户没有正式提交; 界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 请勿把超时本身或草稿当成用户的确认; 请在回复末尾告知用户这一点。'
 
 /**
  * 没有收到任何草稿快照时的说明。
  * 与「收到空草稿」不同: 后者表示用户确实没写, 前者是快照没送达, 模型不能据此断定用户没输入。
  */
 export const TIMEOUT_PENDING_MISSING_NOTICE =
-  '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入, 并在回复末尾告知用户这次提问已超时。'
+  '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入; 界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 请勿把超时当成用户的确认; 并在回复末尾告知用户这次提问已超时。'
 
 /**
  * 有草稿时随 pending 结果返回给模型的说明。
@@ -96,7 +97,7 @@ export const TIMEOUT_PENDING_MISSING_NOTICE =
  * 避免模型把整段说明当成草稿内容。
  */
 export const TIMEOUT_PENDING_DRAFT_NOTICE =
-  '该轮提问已超时,用户没有正式提交; 超时前留下的草稿已随本结果带回, 内容见 draft 字段, 请据此继续任务, 并在最后告知用户这次超时以及你对草稿的处理决策。'
+  '该轮提问已超时,用户没有正式提交; 超时前留下的草稿已随本结果带回, 内容见 draft 字段, 请据此继续任务; 界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 草稿不等于用户已确认的答案; 并在最后告知用户这次超时以及你对草稿的处理决策。'
 
 /**
  * 草稿快照超过通道上限时的提示。
@@ -130,8 +131,7 @@ export const HEADER_ACTIONS_SELECTOR = '[class*="_headerActions"]'
 /** 宿主提问卡片底部按钮区(提交/下一题/跳过) */
 export const CARD_FOOTER_ACTIONS_SELECTOR = '[class*="_footerActions"]'
 
-
-/** 宿主提问卡片内的输入控件 */
+/** 宿主提问卡片的选项容器 */
 export const CARD_OPTIONS_SELECTOR = '[class*="_options"]'
 
 /** 卡片输入框选择器 */
@@ -169,6 +169,13 @@ export const COUNTDOWN_PATTERNS: readonly RegExp[] = [
 
 /** 判定宿主是否停在暂停态的文案特征: 暂停态下的剩余秒数不是真实到期时间 */
 export const PAUSED_TEXT_PATTERNS: readonly RegExp[] = [/已暂停/, /Paused/]
+
+/**
+ * 宿主「已经停表」的等待文案: 用户点过「慢慢回答」或开始编辑回答后,
+ * 宿主自己的定时器已经停下, 卡片只显示这句提示, 不再渲染倒计时与暂停控件。
+ * 与 HOST_WAIT_PATTERNS 分开: 后者还含「已继续工作」这类已结算文案。
+ */
+export const HOST_HELD_PATTERNS: readonly string[] = ['会一直等你回答', 'Waiting until you answer']
 
 /** 「问答自动无限等待」常开开关的文案(中文与英文): 中文侧带「自动」, 与英文的 Auto 对齐 */
 export const AUTO_INFINITE_LABEL_ZH = '问答自动无限等待'
@@ -216,8 +223,11 @@ export const SCAN_INTERVAL_MS = 1000
 /** 同时保持的会话投影订阅上限, 超出后淘汰最久没在界面上出现的会话 */
 export const MAX_SESSION_SUBSCRIPTIONS = 8
 
-/* 会话连续多少轮扫描看不见就释放它的投影订阅(按每秒一轮计算约十分钟) */
-export const SUBSCRIPTION_MISS_LIMIT = 600
+/*
+ * 会话离开界面多久后释放它的投影订阅(毫秒)。
+ * 按时间而不是按扫描轮次: 扫描同时被 DOM 变更按帧触发, 轮次计数会让实际时长缩到一两分钟。
+ */
+export const SUBSCRIPTION_IDLE_RELEASE_MS = 10 * 60 * 1000
 
 /* 客户端调用状态容量: 每个调用会留下若干登记, 超出后按最近使用时间淘汰最旧的 */
 export const MAX_CLIENT_CALL_STATES = 512
@@ -321,13 +331,11 @@ export const INFINITE_BUTTON_CLASS = 'dqtp-infinite-wait'
 /** 插件自绘「提问标识气泡」的类名 */
 export const BUBBLE_BUTTON_CLASS = 'dqtp-question-bubble'
 
-
 /** 「提问标识气泡」的状态属性: 仅在已记录超时草稿时出现 */
 export const BUBBLE_STATE_ATTRIBUTE = 'data-dqtp-bubble'
 
 /** 气泡草稿态取值 */
 export const BUBBLE_STATE_DRAFT = 'draft'
-
 
 /** 进入警示态时给倒计时附加的类名 */
 export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
@@ -390,8 +398,6 @@ export const SYNC_UNAVAILABLE_TEXT_EN = 'Cannot wait indefinitely'
 /** 「无限等待」按钮文案(英文) */
 export const INFINITE_WAIT_LABEL_EN = 'Wait indefinitely'
 
-
-
 /** 「提问标识气泡」文案(中文),已记录超时草稿时显示 */
 export const BUBBLE_DRAFT_LABEL_ZH = '提问·超时草稿'
 
@@ -447,6 +453,8 @@ export const RUN_BUDGET_TTL_MS = 30 * 60 * 1000
 /**
  * 外层预算不足以等待作答时的说明(模型侧)。
  * 这一轮没有真正等待, 用户也没看到问题, 因此必须让模型知道重试时要放宽外层预算。
+ * 该说明随工具错误返回, 不随 pending 结果: pending 会让宿主投影把调用转成可作答,
+ * 与"没有开始等待"矛盾。
  */
 export const TIMEOUT_PENDING_BUDGET_NOTICE =
   '外层 run_code 的剩余执行预算不足以等待用户作答, 这次提问没有开始等待, 用户也没有看到问题; 需要提问时请把 run_code 的 timeoutMs 设为大于提问等待时长后重试。'

@@ -598,20 +598,13 @@ export function registerQuestionSyncRoute(webServer: {
     if (channelUsers > 0) return
     detachRoutes?.()
     detachRoutes = undefined
-    /* 路由已全部撤销: 把登记表一起清空, 避免旧调用的状态留到 TTL 过期 */
-    clearSyncState()
+    /*
+     * 路由撤销但登记表保留: 配置变更会走"卸载旧实例再装载新实例", 那时仍有提问在等待,
+     * 清空登记会让它们之后上报的草稿全部落成 ignored, 这一轮的草稿再也送不到模型。
+     * 残留由 sweepTrackedCalls 的 TTL 与各表容量上限回收。
+     */
+    syncChannelReady = false
   }
-}
-
-/* 清空通道登记的全部状态(只在没有使用者时调用) */
-function clearSyncState(): void {
-  syncChannelReady = false
-  infiniteCalls.clear()
-  draftReports.clear()
-  draftReportedAt.clear()
-  callDeadlines.clear()
-  callQuestionOrders.clear()
-  settledCalls.clear()
 }
 
 /* 状态通道是否已经挂在宿主 HTTP 服务上, 供工具判断要不要等客户端上报 */
@@ -672,12 +665,14 @@ export function clearInfiniteWait(callId: string): void {
   infiniteCalls.delete(callId)
 }
 
-/** 清空状态通道里登记的全部状态 */
+/** 卸载状态通道: 只摘路由与就绪标志, 登记表留给 TTL 与容量上限回收 */
 export function stopQuestionSync(): void {
   /*
-   * 旧实例卸载时若还有新实例在用同一套路由, 清空共享登记会把新实例刚登记的调用一起抹掉,
-   * 无限等待与草稿注入随即静默失效; 只有最后一个使用者离开时才清空。
+   * 旧实例卸载时若还有新实例在用同一套路由, 清空共享登记会把新实例刚登记的调用一起抹掉;
+   * 即使没有新实例, 也可能还有等待中的提问(配置热替换就是卸载再装载), 同样不能清。
    */
   if (channelUsers > 0) return
-  clearSyncState()
+  detachRoutes?.()
+  detachRoutes = undefined
+  syncChannelReady = false
 }
