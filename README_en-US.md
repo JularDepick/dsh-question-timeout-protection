@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.1.4-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.2.0-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -47,7 +47,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-Installing by package name takes whatever the npm latest tag points at. Version 0.1.2 declares dsh support only up to `0.2.2-rc.2`, so installation and startup reject it on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. This version (0.1.4) supports up to `<0.2.3-rc.1`, and Options B to D below install it from source or a tarball.
+Installing by package name takes whatever the npm latest tag points at. If latest still sits at 0.1.2 or earlier, that version declares dsh support only up to `0.2.2-rc.2` and installation and startup reject it on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.4 on support up to `<0.2.3-rc.1`, and Options B to D below install them from source or a tarball.
 
 ### Option B: build from source
 
@@ -60,7 +60,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <absolute path>
 ```
 
-`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.1.4.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
+`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.2.0.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
 
 ### Option C: install from the GitHub source
 
@@ -98,7 +98,7 @@ No build is needed and the pnpm build-script policy does not apply.
 
 ### Countdown and warning
 
-The countdown appears only on a **live question**, and it follows the plugin's own deadline: focusing the input or starting to type does not pause it. During the last seconds the number turns red and blinks. Once the deadline passes, the plugin withdraws its countdown and failure hints and restores the card to the host's own wait state; when the settlement arrives it decides whether to lock and withdraw the card or hand it back.
+The countdown appears only on a **live question**, and it follows the plugin's own deadline: focusing the input or starting to type does not pause it. The deadline comes from the top-level `timeout` (seconds) the model passes to the question tool; without one the plugin uses its `timeoutSeconds` setting (120 by default). A `timeout` placed inside a question item is a misuse; the plugin only falls back to the first value found there when the top-level one is absent. During the last seconds the number turns red and blinks. Once the deadline passes, the plugin withdraws its countdown and failure hints and restores the card to the host's own wait state; when the settlement arrives it decides whether to lock and withdraw the card or hand it back.
 
 Historical questions and settled answers never show a countdown.
 
@@ -124,9 +124,13 @@ When the draft is empty, meaning you neither selected nor typed anything, the pl
 
 The draft lives only in memory, so a page refresh loses the bubbles and their records.
 
+### Custom text in single-choice questions
+
+The host clears the custom text of a single-choice question when you click another option. The plugin records that text the moment the option is clicked and writes it back: immediately while you stay on the question, when you navigate back to it if the host moved on, and it keeps counting toward the draft until you submit, the question times out, or you edit that question yourself.
+
 ### Context injection
 
-This is on by default. While you are answering, the client always reports draft snapshots to the server (it cannot read the plugin configuration); the server decides whether to use them. When on, expiry takes the latest snapshot and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes; when off, the snapshot stays on the server and is cleared when the call ends.
+This is on by default. While you are answering, the client always reports draft snapshots to the server (it cannot read the `fallback` mode); the server decides whether to use them. When on, expiry takes the latest snapshot and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes; when off, the snapshot stays on the server and is cleared when the call ends.
 
 The timeout notice and the draft share that one result, and the model is explicitly told to report the timeout at the end of its reply, plus what it intends to do with the draft when one came back.
 
@@ -143,7 +147,7 @@ The config page sits at the **top of the plugin detail view**, not inside "Compo
 | `infiniteWait` | boolean | `true` | Fixed | Provides the "Wait indefinitely" button and the toolbar switch; turning it off removes both |
 | `draftFallback` | boolean | `true` | Fixed | Timeout wrap-up switch. When off the client neither withdraws the card nor reports the draft and hands that question back to the host; the plugin still settles the wait on time |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts, from 1 to 60 |
-| `timeoutSeconds` | number | 120 | Not exposed | Wait seconds used when the model does not pass one explicitly, from 1 to 2147483 |
+| `timeoutSeconds` | number | 120 | Not exposed | Wait seconds used when the model does not pass one explicitly, from 1 to 2147483. This is the plugin's own default; the host's built-in timed question tool also defaults to 120, but that is a different source |
 
 The last two are not exposed in the UI; write them into this plugin's row under `config` in the profile's `cordis.patch.yml`, for example `config: { timeoutSeconds: 300 }` for a 300-second wait. Out-of-range values fail loudly at load time. The three fixed features are switched off the same way, for example `config: { cardEnhancements: false }`; restate every key that row needs rather than only the changed one.
 
@@ -216,18 +220,18 @@ Both share one token-protected channel mounted on the host's own HTTP service, s
 
 **UI languages**
 
-dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and is hidden, while the Japanese wait text stays visible and contradicts the withdrawn card; in the remaining locales the host answer entry and its wait text mostly stay visible. Under Japanese, a timeout with an empty draft produces no plugin bubble while the host entry is already hidden by its label, so that round offers no entry to reopen. The plugin cannot find the host close button there, so once the dismiss retries are used up that round is handed back to the host: the card stays visible and answerable (its locked state is restored) and the host's own wait status and answer entry take over, while timeout settlement and draft reporting still happen.
+dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and the plugin hides it for a moment, but it cannot recognise the Japanese close button, so once the dismiss retries are used up that round is handed back and both the entry and the card are restored; only a three-to-five second transition stays inconsistent, depending on how often the scan fires. In the remaining locales the host answer entry and its wait text mostly stay visible. Under Japanese, a timeout with an empty draft produces no plugin bubble, and the host entry is hidden only briefly before being restored, so the read-only card can still be reopened. The plugin cannot find the host close button there, so once the dismiss retries are used up that round is handed back to the host: the card stays visible and answerable (its locked state is restored) and the host's own wait status and answer entry take over, while timeout settlement and draft reporting still happen.
 
 **Bounded by the enclosing program budget in PTC mode**
 
-When the model asks from inside `run_code` (PTC mode), that question lives only as long as the enclosing program's elapsed-time budget: on expiry the host stops the program hard and aborts the in-flight question, so the on-screen countdown disappears mid-way and the draft never reaches the model. The plugin records the enclosing budget while the question is live and shrinks its wait to "remaining budget minus the settle margin": the question settles itself as a timeout before the budget expires, the draft still rides the pending result back to the model, and the countdown shows the shrunk duration. When the usable time left after the settle margin is under two seconds no card is opened; the call settles immediately as budget-insufficient and the model is told so. Indefinite wait cannot outlive the enclosing budget: a frozen question still ends when the budget expires, though its draft is kept. An interrupted question leaves a read-only bubble on the tool row so the draft as it stood at that moment can still be read. A run_code nested inside another run_code shrinks the wait to the inner budget; the budget clock starts when the program is actually dispatched, so latency from earlier wrappers does not count against it; when the draft rides the pending result back to the model it is capped per question and per round, and the same result says so, so an oversized draft is not swallowed whole by the host's tool-result pruning.
+When the model asks from inside `run_code` (PTC mode), that question lives only as long as the enclosing program's elapsed-time budget: on expiry the host stops the program hard and aborts the in-flight question, so the on-screen countdown disappears mid-way and the draft never reaches the model. The plugin records the enclosing budget while the question is live and shrinks its wait to "remaining budget minus the settle margin": the question settles itself as a timeout before the budget expires, the draft still rides the pending result back to the model, and the countdown shows the shrunk duration. When the usable time left after the settle margin is under two seconds no card is opened; the call fails immediately as budget-insufficient and the model is told to raise the enclosing budget, so no answerable card is left behind. Indefinite wait cannot outlive the enclosing budget: a frozen question still ends when the budget expires, though its draft is kept. An interrupted question leaves a read-only bubble on the tool row so the draft as it stood at that moment can still be read. A run_code nested inside another run_code shrinks the wait to the inner budget; the budget clock starts when the program is actually dispatched, so latency from earlier wrappers does not count against it; when the draft rides the pending result back to the model it is capped per question and per round, and the same result says so, so an oversized draft is not swallowed whole by the host's tool-result pruning.
 
 **Other**
 
 - The plugin times the wait itself: on expiry it settles the timeout and releases the host-side foreground wait, and an answer you actually submitted before that moment still wins
 - With several tabs on the same session the server keeps one draft snapshot per call id, so a later tab overwrites the one reported earlier
 - Only the latest 200 draft records in bubbles are kept, so older bubbles can no longer be opened
-- dsh 0.2.2-rc.1 pre-selects recommended options when a card opens, and the plugin strips those presets by matching the original option labels from the projection; in multiple choice, once you click any option the remaining presets are kept under the host's own submit semantics
+- dsh 0.2.2-rc.1 pre-selects recommended options when a card opens, and the plugin recognises those presets by matching the original option labels from the projection, then decides per question as a whole set: it strips them only when the selection equals the presets exactly, so a recommended option you actually picked (the in-memory interaction record is gone after a refresh) is not stripped into an empty draft; in multiple choice, once you click any option the remaining presets are kept under the host's own submit semantics
 - Skipping every question without any selection or typed text counts as an empty draft, so that timeout closes the card
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
 - On the macOS desktop app, dsh 0.2.2-rc.2 allows window dragging only inside header rows carrying `data-window-drag`, and the host automatically excludes drag on controls inside a `data-window-drag-controls` container; a custom overlay covering a drag row must declare `data-window-drag-exclude` to stay interactive, and `--dsh-frame-top-clearance` reserves a strip at the top. The plugin's draft panel is attached to the body and declares neither, so near the top of the window it may fall into the reserved strip. The panel holds no clickable controls, so the effect is positional only; the web client is unaffected
