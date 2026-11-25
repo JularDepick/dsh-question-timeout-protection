@@ -39,10 +39,10 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "pack:release": "node scripts/check-translation.mjs && tsdown && pnpm pack --ignore-scripts && node scripts/pack-release.mjs --strict && node scripts/verify-tarball.mjs",
+    "pack:release": "node scripts/check-translation.mjs --strict && tsdown && pnpm pack --ignore-scripts && node scripts/pack-release.mjs --strict && node scripts/verify-tarball.mjs",
     "prepare": "node scripts/check-translation.mjs && tsdown",
-    "prepack": "node scripts/check-translation.mjs && tsdown",
-    "postpack": "node scripts/pack-release.mjs",
+    "prepack": "node scripts/check-translation.mjs --strict && tsdown",
+    "postpack": "node scripts/pack-release.mjs && node scripts/verify-tarball.mjs --if-present",
     "typecheck": "tsc --noEmit",
     "check:translation": "node scripts/check-translation.mjs"
   },

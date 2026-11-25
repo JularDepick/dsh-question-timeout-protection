@@ -7,6 +7,7 @@
  * 作者: JularDepick
  */
 
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -60,8 +61,19 @@ function readTar(buffer) {
   return entries
 }
 
+/*
+ * --if-present: postpack 阶段用。
+ * npm/pnpm publish 自己生成 tarball, 仓库根目录没有新包可搬, 这时不该阻断发布,
+ * 只提示"本次没有新产物可校验"; 真正的门禁是 pack:release 里的不带开关调用。
+ */
+const ifPresent = process.argv.includes('--if-present')
 if (!fs.existsSync(tarball)) {
-  console.error(`verify-tarball: 未找到 ${path.relative(root, tarball)}, 先运行 pnpm run pack:release`)
+  const message = `verify-tarball: 未找到 ${path.relative(root, tarball)}`
+  if (ifPresent) {
+    console.log(message + ' (本次没有新产物, 跳过)')
+    process.exit(0)
+  }
+  console.error(message + ', 先运行 pnpm run pack:release')
   process.exit(1)
 }
 
@@ -93,6 +105,40 @@ if (packedRaw === undefined) {
   }
   /* 生命周期脚本会被包管理器剥离, 这里只确认构建脚本没有跟着进包 */
   if (packed.scripts?.prepack !== undefined) problems.push('包内仍带 prepack 生命周期脚本')
+}
+
+/*
+ * 包内三件产物必须与工作区同名文件逐字节一致:
+ * 这拦得住"tarball 落后于当前 dist", 拦不住"dist 落后于源码" —— 后者由发布清单里
+ * "先重建再打包"那一步保证, 因此这里只声称前者。
+ */
+for (const name of ['dist/client.js', 'dist/index.mjs', 'dist/index.d.mts']) {
+  const packed = entries.get('package/' + name)
+  const local = path.join(root, name)
+  if (packed === undefined) {
+    problems.push('包内缺少 ' + name)
+    continue
+  }
+  if (!fs.existsSync(local)) {
+    problems.push('工作区缺少 ' + name + ', 无法与包内产物比对')
+    continue
+  }
+  const digest = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex')
+  if (digest(packed) !== digest(fs.readFileSync(local))) {
+    problems.push('包内 ' + name + ' 与工作区不一致, 产物可能没有按当前源码重建')
+  }
+}
+
+/* -latest 别名与版本化 tarball 必须同内容: 有人会直接拿别名上传 */
+const aliasName = pkg.name.replace(/^@/, '').replace('/', '-') + '-latest.tgz'
+const alias = path.join(root, 'release', aliasName)
+if (!fs.existsSync(alias)) {
+  problems.push('缺少 -latest 别名副本: ' + aliasName)
+} else {
+  const digest = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex')
+  if (digest(fs.readFileSync(alias)) !== digest(fs.readFileSync(tarball))) {
+    problems.push('-latest 别名与版本化 tarball 内容不一致')
+  }
 }
 
 if (problems.length > 0) {

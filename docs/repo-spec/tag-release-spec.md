@@ -20,10 +20,10 @@
 
 1. `git status` 干净: 全部改动已提交, 以该提交为基线重建产物, 不允许用未提交的工作区直接产出发布物. 工作区里既有的 `dist/` 可能落后于 HEAD, 不得把它当作核对基准: 重建后记录三件产物的哈希, 之后的核对与打包都按这份新产物
 2. 按本地维护的版本索引清单逐处核对版本号, 避免只改包清单而漏掉文档与翻译 meta
-3. `node scripts/check-translation.mjs --strict`: 三份翻译文件, 配置页字典与宿主识别文案基线一致, 且 `meta.endtime` 的时效校验不得跳过(git 不可用时 `--strict` 会失败, 不带该开关只会打印警告并以 0 退出)
+3. `node scripts/check-translation.mjs --strict`: 三份翻译文件, 配置页字典与宿主识别文案基线一致, 且 `meta.endtime` 的时效校验不得跳过(git 不可用时 `--strict` 会失败, 不带该开关只会打印警告并以 0 退出). 该步已并入第 5 步的 `pack:release`, 这里单列只用于本地自查
 4. `pnpm run typecheck`: 类型检查无错
 5. `pnpm run pack:release`: 构建并产出 tarball, 落到打包输出目录, 并把同目录的 `<包名>-latest.tgz` 别名副本同步成这次构建的产物. 该命令在受限环境里依赖 `pnpm pack --ignore-scripts`(生命周期执行器会被拒绝), 首次在这样的环境发布前先实跑一次确认可用
-6. 核对 tarball: 文件清单为构建产物三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与构建产物里的新文案与工作区一致. `pnpm run pack:release` 已串上 `node scripts/verify-tarball.mjs` 自动核对条目清单与包内 `version`/`engines.dsh`/peer, 人工只需复核三件产物的哈希. 这里的比对基准是第 1 步新重建的产物, 不是工作区里既有的 `dist/`
+6. 核对 tarball: 文件清单为构建产物三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与构建产物里的新文案与工作区一致. `pnpm run pack:release` 已串上 `node scripts/verify-tarball.mjs`, 自动核对条目清单, 包内 `version`/`engines.dsh`/peer, 包内三件 `dist` 与工作区产物逐字节一致, 以及 `<包名>-latest.tgz` 别名与版本化 tarball 同内容. 该脚本只能证明 tarball 与当前 `dist/` 一致, 因此第 1 步"先重建再打包"仍必须人工确认. 这里的比对基准是第 1 步新重建的产物, 不是工作区里既有的 `dist/`
 7. 在不带兼容性豁免的 profile 上验证 `engines.dsh` 放行, 避免豁免记录掩盖范围声明错误
 8. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入, 并覆盖四种交还宿主的路径(含撤座失败), 空草稿, 草稿过长与非中英界面降级
 9. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本

@@ -47,7 +47,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-Installing by package name takes whatever the npm latest tag points at. If latest still sits at 0.1.2 or earlier, that version declares dsh support only up to `0.2.2-rc.2` and installation and startup reject it on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.4 on support up to `<0.2.3-rc.1`, and Options B to D below install them from source or a tarball.
+Installing by package name takes whatever the npm latest tag points at (0.1.4 at the time of writing). Versions 0.1.2 and earlier declare a dsh ceiling no higher than `0.2.2-rc.2`, so installation and startup reject them on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.3 on support up to `<0.2.3-rc.1`, and Options B to D below install them from source or a tarball.
 
 ### Option B: build from source
 
@@ -98,7 +98,7 @@ No build is needed and the pnpm build-script policy does not apply.
 
 ### Countdown and warning
 
-The countdown appears only on a **live question**, and it follows the plugin's own deadline: focusing the input or starting to type does not pause it. The deadline comes from the top-level `timeout` (seconds) the model passes to the question tool; without one the plugin uses its `timeoutSeconds` setting (120 by default). A `timeout` placed inside a question item is a misuse; the plugin only falls back to the first value found there when the top-level one is absent. During the last seconds the number turns red and blinks. Once the deadline passes, the plugin withdraws its countdown and failure hints and restores the card to the host's own wait state; when the settlement arrives it decides whether to lock and withdraw the card or hand it back.
+The countdown appears only on a **live question**, and it follows the plugin's own deadline: focusing the input or starting to type does not pause it. The deadline comes from the top-level `timeout` (seconds) the model passes to the question tool; without one the plugin uses its `timeoutSeconds` setting (120 by default). A `timeout` placed inside a question item is a misuse; the plugin only falls back to the first valid value found there when the top-level one is absent (`-1`, `0` and fractions are skipped). During the last seconds the number turns red and blinks. Once the deadline passes, the plugin withdraws its countdown and failure hints and restores the card to the host's own wait state; when the settlement arrives it decides whether to lock and withdraw the card or hand it back.
 
 Historical questions and settled answers never show a countdown.
 
@@ -106,7 +106,7 @@ Historical questions and settled answers never show a countdown.
 
 The "Wait indefinitely" button sits next to the countdown. Clicking it removes the deadline for this question and freezes the countdown as "Paused" until you submit.
 
-Clicking it freezes the countdown immediately and registers the wait with the server; if that registration fails or the reply times out the freeze is withdrawn, the card returns to counting and the countdown slot reads "Cannot wait indefinitely".
+Clicking it freezes the countdown immediately and registers the wait with the server; if that registration fails or the reply times out the freeze is withdrawn, the host keeps counting, the countdown slot reads "Cannot wait indefinitely" instead, and that round is handed back to the host.
 
 ### Auto wait indefinitely
 
@@ -130,12 +130,13 @@ The host treats "the custom field has text" as "the custom answer is chosen", so
 
 - Custom chosen: the preset options lose their selected fill, the answer carries the custom text and an empty selection
 - A preset option chosen: your custom text is not lost; a "Custom answer kept: … (click to use it)" button appears under the field, and clicking it switches back
-- Custom chosen with an empty field: submission is blocked and focus returns to the field
+- Custom chosen with an empty field: the host's own validation blocks submission (it asks you to answer first); the plugin adds no extra interception
 - Multiple-choice questions are unaffected; custom text and options still coexist there
+- The typed custom text and whether it is selected are written to localStorage, so they survive a refresh (the most recent 64 calls are kept)
 
 ### Context injection
 
-This is on by default. While you are answering, the client always reports draft snapshots to the server (it cannot read the `fallback` mode); the server decides whether to use them. When on, expiry takes the latest snapshot and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes; when off, the snapshot stays on the server and is cleared when the call ends.
+This is on by default. While you are answering, the client always reports draft snapshots to the server (the adapter never reads the `fallback` mode; only the settings page maps its checkbox to it); the server decides whether to use them. When on, expiry takes the latest snapshot and returns it to the model context through the tool's pending result, per question, each keeping its own selections and notes; when off, the snapshot stays on the server and is cleared when the call ends.
 
 The timeout notice and the draft share that one result. When a draft comes back, the notice tells the model to judge how complete it is and decide the next step, not to reveal that judgement to you, and to summarise the decision about this question after that next step.
 
@@ -148,7 +149,7 @@ The config page sits at the **top of the plugin detail view**, not inside "Compo
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---:|
 | `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback. The page only offers "Inject into context": checked writes `both`, unchecked writes `ui`. Keeping the draft in the UI is always on, so `context` never appears |
-| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn and locked, and the draft is still reported per the configuration above |
+| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the custom-answer radio and its kept-content hint, the question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn and locked, and the draft is still reported per the configuration above |
 | `infiniteWait` | boolean | `true` | Fixed | Provides the "Wait indefinitely" button and the toolbar switch; turning it off removes both |
 | `draftFallback` | boolean | `true` | Fixed | Timeout wrap-up switch. When off the client neither withdraws the card nor reports the draft and hands that question back to the host; the plugin still settles the wait on time |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts, from 1 to 60 |
@@ -187,7 +188,7 @@ Common reasons include: card enhancements are off; that question was a blocking 
 
 **What happens after I click "Wait indefinitely"**
 
-This question no longer has a deadline and the model keeps waiting until you submit, or the page or session ends. If the state channel is unavailable the button does not take effect: the card returns to counting and reads "Cannot wait indefinitely".
+This question no longer has a deadline and the model keeps waiting until you submit, or the page or session ends. If the state channel is unavailable the button does not take effect: nothing stays frozen, the countdown slot reads "Cannot wait indefinitely", and that round is handed back to the host, which keeps it answerable.
 
 **The bubble is gone after a refresh**
 
@@ -241,6 +242,7 @@ When the model asks from inside `run_code` (PTC mode), that question lives only 
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
 - On the macOS desktop app, dsh 0.2.2-rc.2 allows window dragging only inside header rows carrying `data-window-drag`, and the host automatically excludes drag on controls inside a `data-window-drag-controls` container; a custom overlay covering a drag row must declare `data-window-drag-exclude` to stay interactive, and `--dsh-frame-top-clearance` reserves a strip at the top. The plugin's draft panel is attached to the body and declares neither, so near the top of the window it may fall into the reserved strip. The panel holds no clickable controls, so the effect is positional only; the web client is unaffected
 - The timeout notice injected for the model is Chinese-only, so on an English UI the model still receives Chinese text
+- Closing a card relies on the host's close button: when that button is disabled during submission, or the UI language is not Chinese or English (labels do not match), the plugin cannot click it; after a few retries that round is handed back to the host, the card stays visible and answerable, and the host's own wait status and answer entry take over
 - A draft over the 256 KiB per-report limit makes the UI read "Draft too large; not delivered", which does not count towards consecutive failures and retries at a fixed interval (about five seconds), so trimming the text restores reporting; after three consecutive failures that question is judged channel-unavailable, the plugin stops taking it over and the card returns to the host and stays answerable
 
 ## Update and uninstall
