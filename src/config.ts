@@ -14,6 +14,7 @@ import {
   DEFAULT_DRAFT_FALLBACK,
   DEFAULT_FALLBACK_MODE,
   DEFAULT_INFINITE_WAIT,
+  DEFAULT_LATE_ANSWER,
   DEFAULT_TIMEOUT_SECONDS,
   DEFAULT_WARNING_SECONDS,
   MAX_TIMEOUT_SECONDS,
@@ -21,7 +22,7 @@ import {
   MIN_TIMEOUT_SECONDS,
   MIN_WARNING_SECONDS,
 } from './constants'
-import type { FallbackMode } from './constants'
+import type { FallbackMode, LateAnswerMode } from './constants'
 
 export interface Config {
   /** 提问超时后的兜底范围: 仅界面、仅上下文或两者 */
@@ -36,6 +37,8 @@ export interface Config {
   infiniteWait: Volatile<boolean>
   /** 是否在超时后保存草稿并按兜底范围处理 */
   draftFallback: Volatile<boolean>
+  /** 超时后是否保留宿主原生的再次回答入口 */
+  lateAnswer: Volatile<LateAnswerMode>
 }
 
 export { configValue } from './config-value'
@@ -47,6 +50,7 @@ export const Config = Schema.object({
   cardEnhancements: Schema.boolean().default(DEFAULT_CARD_ENHANCEMENTS).volatile(),
   infiniteWait: Schema.boolean().default(DEFAULT_INFINITE_WAIT).volatile(),
   draftFallback: Schema.boolean().default(DEFAULT_DRAFT_FALLBACK).volatile(),
+  lateAnswer: Schema.union(['allow', 'block']).default(DEFAULT_LATE_ANSWER).volatile(),
 })
 
 

@@ -30,6 +30,24 @@ export type FallbackMode = (typeof FALLBACK_MODES)[number]
 /** 兜底范围默认值(界面保留草稿并把超时草稿注入上下文) */
 export const DEFAULT_FALLBACK_MODE: FallbackMode = 'both'
 
+/**
+ * 超时后是否保留再次回答的入口:
+ * allow 保留宿主原生的「回答」入口与等待提示, 用户可以在超时后补交答复;
+ * block 锁定并收起卡片, 同时隐藏宿主入口与等待文案, 这一轮不再接受作答。
+ */
+export const LATE_ANSWER_MODES = ['allow', 'block'] as const
+
+/** 再次回答的取值类型 */
+export type LateAnswerMode = (typeof LATE_ANSWER_MODES)[number]
+
+/** 再次回答的默认值: 保留宿主入口, 超时不让用户彻底失去作答机会 */
+export const DEFAULT_LATE_ANSWER: LateAnswerMode = 'allow'
+
+/** 是否保留超时后的再次回答入口 */
+export function allowsLateAnswer(mode: LateAnswerMode): boolean {
+  return mode === 'allow'
+}
+
 /** 倒计时进入警示态的剩余秒数默认值(最后数秒红字闪烁) */
 export const DEFAULT_WARNING_SECONDS = 5
 
@@ -81,15 +99,29 @@ export const TIMED_TIMEOUT_PARAMETER = 'timeout'
  * 语义要点: 只说明本轮提问已超时、用户没有正式提交, 不对草稿做任何断言 ——
  * 草稿为空时不该告诉模型"草稿保留了下来"; 有草稿时草稿走 draft 字段随本结果一起回来。
  */
-export const TIMEOUT_PENDING_NOTICE =
-  '该轮提问已超时,用户没有正式提交; 界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 请勿把超时本身或草稿当成用户的确认; 请在回复末尾告知用户这一点。'
+export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式提交; '
+
+/*
+ * 超时后的作答状态说明, 由工具按配置里的 lateAnswer 择一拼接:
+ * allow 时宿主仍保留「回答」入口, 答复会作为一条用户消息送达;
+ * block 时卡片已被插件关掉并锁定, 不能再引导用户回去作答。
+ */
+export const TIMEOUT_PENDING_ANSWERABLE_NOTICE =
+  '界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 请勿把超时本身或草稿当成用户的确认; '
+
+/** 不保留再次回答入口时的对应说明 */
+export const TIMEOUT_PENDING_SEALED_NOTICE =
+  '本轮提问的卡片已由插件关闭并锁定, 界面不再提供再次作答的入口, 用户若要补充内容会另行发送消息, 请不要提示用户回去补答; '
+
+/** 超时说明的收尾: 两种作答状态共用 */
+export const TIMEOUT_PENDING_CLOSING = '请在回复末尾告知用户这次提问已超时。'
 
 /**
  * 没有收到任何草稿快照时的说明。
  * 与「收到空草稿」不同: 后者表示用户确实没写, 前者是快照没送达, 模型不能据此断定用户没输入。
  */
 export const TIMEOUT_PENDING_MISSING_NOTICE =
-  '该轮提问已超时,用户没有正式提交; 本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入; 界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 请勿把超时当成用户的确认; 并在回复末尾告知用户这次提问已超时。'
+  '该轮提问已超时,本轮没有收到草稿快照(草稿通道不可达或页面未打开), 因此拿不到超时前的输入内容, 请不要据此断言用户没有输入; '
 
 /**
  * 有草稿时随 pending 结果返回给模型的说明。
@@ -437,10 +469,10 @@ export const DRAFT_PANEL_TITLE_ZH = '超时草稿'
 export const DRAFT_PANEL_TITLE_EN = 'Timed-out draft'
 
 /** 只读草稿面板的说明(中文),提示这一轮提问已结束 */
-export const DRAFT_PANEL_NOTE_ZH = '这一轮提问已超时结束, 不能继续回答; 以下只是超时时的草稿内容'
+export const DRAFT_PANEL_NOTE_ZH = '这一轮提问已超时结束; 以下只是超时时的草稿内容'
 
 /** 只读草稿面板的说明(英文) */
-export const DRAFT_PANEL_NOTE_EN = 'This round of questions timed out and can no longer be answered; the content below is only the draft as it stood at the timeout'
+export const DRAFT_PANEL_NOTE_EN = 'This round of questions timed out; the content below is only the draft as it stood at the timeout'
 
 /** 只读草稿面板没有可展示内容时的提示(中文) */
 export const DRAFT_PANEL_EMPTY_ZH = '超时那一刻没有已选选项或已输入内容'

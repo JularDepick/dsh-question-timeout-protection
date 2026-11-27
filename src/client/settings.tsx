@@ -2,13 +2,20 @@
  * 插件配置页
  *
  * 注册在插件级配置插槽(plugins.bundle.config), 显示在插件详情页顶部, 不在「包含的组件」的行里。
- * 唯一可配置项是「注入到上下文」, 勾选变化即写入宿主配置, 不需要保存与重置;
+ * 可配置项是「注入到上下文」与「超时后仍可回答」, 勾选变化即写入宿主配置, 不需要保存与重置;
  * 其余能力随插件启用状态固定生效, 只做展示。
  * 作者: JularDepick
  */
 
 import { useEffect, useState } from 'react'
-import { DEFAULT_FALLBACK_MODE, PLUGIN_NAME, SETTINGS_LOCALE, SETTINGS_NAMESPACE, SETTINGS_SLOT } from '../constants'
+import {
+  DEFAULT_FALLBACK_MODE,
+  DEFAULT_LATE_ANSWER,
+  PLUGIN_NAME,
+  SETTINGS_LOCALE,
+  SETTINGS_NAMESPACE,
+  SETTINGS_SLOT,
+} from '../constants'
 import { clientText, SETTINGS_DICTIONARY } from './i18n'
 import type { ClientTextKey } from './i18n'
 
@@ -19,6 +26,7 @@ export interface SettingsValues {
   cardEnhancements: boolean
   infiniteWait: boolean
   draftFallback: boolean
+  lateAnswer: 'allow' | 'block'
 }
 
 /* 宿主配置表单的快照 */
@@ -137,12 +145,18 @@ function readInject(value: Partial<SettingsValues> | undefined): boolean {
   return mode === 'context' || mode === 'both'
 }
 
+/* 超时后是否保留宿主入口: 只有明确写成 block 才按关闭处理, 脏值与缺省都按默认值 */
+function readLateAnswer(value: Partial<SettingsValues> | undefined): boolean {
+  return (value?.lateAnswer ?? DEFAULT_LATE_ANSWER) !== 'block'
+}
+
 /* 配置页内容 */
 function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
   const forms = readClientService<FormsLike>(host, 'configForms')
   const [form, setForm] = useState<ConfigFormLike | undefined>(() => forms?.get(SETTINGS_NAMESPACE))
   const [snapshot, setSnapshot] = useState<ConfigSnapshot>(() => form?.getSnapshot() ?? PENDING)
   const [injectContext, setInjectContext] = useState<boolean>(() => readInject(snapshot.value))
+  const [keepLateAnswer, setKeepLateAnswer] = useState<boolean>(() => readLateAnswer(snapshot.value))
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
@@ -189,30 +203,41 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
   useEffect(() => {
     if (busy) return
     setInjectContext(readInject(snapshot.value))
+    setKeepLateAnswer(readLateAnswer(snapshot.value))
   }, [snapshot.revision, snapshot.status, busy])
 
   const ready = form !== undefined && snapshot.status === 'ready' && snapshot.writable !== false
   const disabled = !ready || busy
 
   /* 勾选变化即写入, 成功静默, 失败回滚并提示 */
-  const toggle = (next: boolean): void => {
+  const write = (path: string, value: unknown, rollback: () => void): void => {
     if (form === undefined || !ready || busy) return
-    setInjectContext(next)
     setBusy(true)
     setNotice('')
     void form
-      .mutate([{ op: 'set', path: ['fallback'], value: next ? 'both' : 'ui' }], snapshot.revision)
+      .mutate([{ op: 'set', path: [path], value }], snapshot.revision)
       .then((accepted) => {
-        if (!accepted) {
-          setInjectContext(readInject(form.getSnapshot().value))
-          setNotice(clientText('rejected'))
-        }
+        if (accepted) return
+        rollback()
+        setNotice(clientText('rejected'))
       })
       .catch(() => {
-        setInjectContext(readInject(form.getSnapshot().value))
+        rollback()
         setNotice(clientText('rejected'))
       })
       .finally(() => setBusy(false))
+  }
+
+  const toggleInject = (next: boolean): void => {
+    if (form === undefined || !ready || busy) return
+    setInjectContext(next)
+    write('fallback', next ? 'both' : 'ui', () => setInjectContext(readInject(form.getSnapshot().value)))
+  }
+
+  const toggleLateAnswer = (next: boolean): void => {
+    if (form === undefined || !ready || busy) return
+    setKeepLateAnswer(next)
+    write('lateAnswer', next ? 'allow' : 'block', () => setKeepLateAnswer(readLateAnswer(form.getSnapshot().value)))
   }
 
   return (
@@ -223,10 +248,22 @@ function SettingsPage({ host }: { host: SettingsContext }): JSX.Element {
           <span className="dqtp-card-note">{clientText('fallbackNote')}</span>
         </header>
         <label className="dqtp-option">
-          <input type="checkbox" disabled={disabled} checked={injectContext} onChange={(event) => toggle(event.target.checked)} />
+          <input type="checkbox" disabled={disabled} checked={injectContext} onChange={(event) => toggleInject(event.target.checked)} />
           <span className="dqtp-option-body">
             <span className="dqtp-option-label">{clientText('injectLabel')}</span>
             <span className="dqtp-option-desc">{clientText('injectDesc')}</span>
+          </span>
+        </label>
+        <label className="dqtp-option">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={keepLateAnswer}
+            onChange={(event) => toggleLateAnswer(event.target.checked)}
+          />
+          <span className="dqtp-option-body">
+            <span className="dqtp-option-label">{clientText('lateAnswerLabel')}</span>
+            <span className="dqtp-option-desc">{clientText('lateAnswerDesc')}</span>
           </span>
         </label>
       </section>

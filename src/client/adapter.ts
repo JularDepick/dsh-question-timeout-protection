@@ -4,13 +4,16 @@
  * 不接管宿主提问卡片的渲染, 只在其 DOM 上补齐插件要求的界面能力:
  * 卡片右上角的插件自绘倒计时与「无限等待」按钮、单选选项选中后的方形底色、
  * 工具调用行的提问标识气泡。提问进行中把草稿快照上报服务端, 工具到期时随
- * pending 结果按题交给模型; 超时后由插件收尾卡片: 开启注入时收起卡片并保留
- * 草稿记录, 未开启注入时只收起卡片。草稿存在内存里, 由气泡弹出的锚定悬浮卡片只读查看。
+ * pending 结果按题交给模型; 超时后由插件把卡片撤座收起: 默认保留宿主的「回答」入口,
+ * 用户超时后仍可补交答复(作为一条用户消息送达), 关掉「超时后仍可回答」才锁定卡片并藏掉该入口。
+ * 草稿存在内存里, 由气泡弹出的锚定悬浮卡片只读查看, 该气泡只在宿主入口不可用时出现。
  * 作者: JularDepick
  */
 
 import { isRecognisedLocale, pick } from './locale'
+import type { LateAnswerMode } from '../constants'
 import {
+  allowsLateAnswer,
   ASK_REOPEN_LABELS,
   AUTO_INFINITE_BUTTON_CLASS,
   AUTO_INFINITE_LABEL_EN,
@@ -127,6 +130,8 @@ export interface AdapterOptions {
   infiniteWait: boolean
   /** 是否启用超时草稿兜底 */
   draftFallback: boolean
+  /** 超时后是否保留宿主的再次回答入口 */
+  lateAnswer: LateAnswerMode
 }
 
 /** 配置来源, 每次读取都返回当前生效的选项 */
@@ -1487,6 +1492,14 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   const options = (): AdapterOptions => source.getOptions()
 
   /*
+   * 超时后是否保留宿主的再次回答入口。
+   * allow: 卡片照旧撤座收起, 但不再锁定、不再隐藏宿主「回答」入口与等待文案,
+   * 用户重开的卡片保持可作答, 补交的答复由宿主的晚回复通道作为一条用户消息送达;
+   * block: 保持原有收尾, 锁定并收起卡片, 同时藏掉宿主入口。
+   */
+  const keepsLateAnswer = (): boolean => allowsLateAnswer(options().lateAnswer)
+
+  /*
    * 把卡片增强开关同步成 documentElement 上的类名: 单选选中底色等静态样式按它门控,
    * 关闭卡片增强后这些装饰不出现。只有明确读到 false 才按关闭处理,
    * 读不到宿主配置时会退回 schema 默认值(true), 否则一次读取失败就会把装饰全部关掉。
@@ -1929,6 +1942,25 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
   }
 
   /*
+   * 已超时卡片的每轮收尾。
+   * block: 锁定并收起, 界面不再接受作答;
+   * allow: 只把自己那次撤座做完(节点还带着本轮的收起标记, 说明宿主没有卸载它),
+   * 其余卡片(尤其是用户点「回答」重开的那张)一律还原成宿主原样, 保持可作答。
+   */
+  const settleTimedOutCard = (card: HTMLElement, key: string): void => {
+    if (!keepsLateAnswer()) {
+      lockCard(card)
+      hideCard(card)
+      return
+    }
+    if (card.getAttribute(CARD_DISMISSED_ATTRIBUTE) === key) {
+      hideCard(card)
+      return
+    }
+    restoreCardOnce(card, key, 'late')
+  }
+
+  /*
  * 按文案隐藏宿主的等待状态提示: 宿主可能把「会一直等你回答」「已继续工作, 仍可回答」
  * 渲染在类名不匹配的容器里, 只靠类名后缀会漏掉, 插件接管后必须一并藏起来。
  */
@@ -1960,6 +1992,12 @@ function hideHostWaitText(root: HTMLElement): void {
     if (!isRecognisedLocale()) return
     /* 已交还宿主的调用不挂装饰, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
+    /*
+     * allow 模式下已超时的卡片不再挂任何装饰: 倒计时与「无限等待」都已失效,
+     * 继续走下面的装饰分支会把宿主的「已继续工作, 仍可回答」与收起控件一并藏掉,
+     * 用户重开的卡片也就不能作答了。收尾统一交给 enforceTimeoutOutcome。
+     */
+    if (timedOut.has(identity.callId) && keepsLateAnswer()) return
     /* 首次读到的剩余时长记为插件自己的截止时间 */
     if (!deadlines.has(identity.callId) && !paused.has(identity.callId)) {
       for (const element of Array.from(card.querySelectorAll(WAIT_STATUS_SELECTOR))) {
@@ -2034,10 +2072,7 @@ function hideHostWaitText(root: HTMLElement): void {
        * hideCard 的幂等标记保证这里每轮收起也不会重复点宿主关闭按钮。
        */
       restoreCardOnce(card, key)
-      if (timedOut.has(identity.callId)) {
-        lockCard(card)
-        hideCard(card)
-      }
+      if (timedOut.has(identity.callId)) settleTimedOutCard(card, key)
       return
     }
     /* 卡片重新进入进行中状态: 清掉还原指纹, 下次退回历史态时才会重新还原 */
@@ -2115,11 +2150,8 @@ function hideHostWaitText(root: HTMLElement): void {
       if (button.textContent !== label) button.textContent = label
     }
 
-    /* 超时后锁定并收起卡片 */
-    if (timedOut.has(identity.callId)) {
-      lockCard(card)
-      hideCard(card)
-    }
+    /* 超时后的收尾: block 模式锁定并收起, allow 模式保持可作答 */
+    if (timedOut.has(identity.callId)) settleTimedOutCard(card, key)
   }
 
   /*
@@ -2442,14 +2474,21 @@ function hideHostWaitText(root: HTMLElement): void {
 
   /*
    * 装饰一行提问工具调用: 只有记录了超时草稿才出现插件气泡。
-   * 宿主自己那枚「回答」气泡与插件气泡功能冲突, 取缔掉它 —— 需要看回答草稿时用插件气泡,
-   * 未超时且正常作答的行则由宿主的问答卡片本身承接, 不再额外提供重新打开的入口。
+   * block 模式下宿主那枚「回答」气泡与插件气泡功能冲突, 取缔掉它 —— 需要看回答草稿时用插件气泡;
+   * allow 模式下宿主入口保留, 插件气泡退化成「宿主入口不可用时的兜底」。
+   * 未超时且正常作答的行则由宿主的问答卡片本身承接, 不额外提供重新打开的入口。
    */
   const decorateRow = (row: HTMLElement): void => {
     const callId = resolveCallId(row)
     if (callId === undefined) return
     /* 提问已被中断(工具行停在失败态)时, 先把实时草稿搬成只读气泡快照 */
     if (failedRowState(row)) promoteInterruptedDraft(row, callId)
+    /*
+     * allow 模式: 超时行的宿主入口与等待文案必须保持可见, 用户才有地方补交答复。
+     * 被中断(PTC 外层预算)的行不属于宿主的 continued 行, 仍按原样收起入口。
+     */
+    const allowLate = keepsLateAnswer()
+    const keepHostEntry = !interrupted.has(callId) && (!timedOut.has(callId) || allowLate)
     /*
      * 普通历史行(没有草稿, 未超时, 未交还)装饰一次后每轮跳过:
      * 它们只需要一个隐藏的气泡按钮, 长会话里这类行占绝大多数。
@@ -2469,9 +2508,10 @@ function hideHostWaitText(root: HTMLElement): void {
       + (timedOut.has(callId) ? 'T' : '-')
       + (passive.has(callId) ? 'P' : '-')
       + (interrupted.has(callId) ? 'I' : '-')
+      + (allowLate ? 'A' : 'B')
     if (plain && decoratedRows.get(row) === signature) return
-    /* 该调用不在超时接管或中断状态时, 宿主入口与等待文案都必须恢复可见 */
-    if (!timedOut.has(callId) && !interrupted.has(callId)) {
+    /* 该调用不在超时接管或中断状态时(或 allow 模式下的超时行), 宿主入口与等待文案必须可见 */
+    if (keepHostEntry) {
       showHostReopen(row)
       showHostWaitText(row)
     }
@@ -2484,11 +2524,16 @@ function hideHostWaitText(root: HTMLElement): void {
       return
     }
     const draft = drafts.get(callId)
-    const hidden = draft === undefined
+    /*
+     * allow 模式下超时行由宿主的「回答」入口承接: 插件只读气泡只在宿主入口不可用时
+     * (非中英界面、卡片结构改版)才出现, 两个入口同时挂在一行上会让人不知道点哪个。
+     */
+    const hostEntry = allowLate && timedOut.has(callId) && findHostReopen(row) !== undefined
+    const hidden = draft === undefined || hostEntry
     button.classList.toggle(HIDDEN_CONTROL_CLASS, hidden)
     if (draft === undefined) {
-      /* 没有草稿但已被接管(空草稿超时): 宿主那句「已继续工作, 仍可回答」同样要收起 */
-      if (timedOut.has(callId)) {
+      /* block 模式下没有草稿也被接管(空草稿超时): 宿主那句「已继续工作, 仍可回答」同样要收起 */
+      if (timedOut.has(callId) && !allowLate) {
         hideHostReopen(row)
         hideHostWaitText(row)
       }
@@ -2499,11 +2544,11 @@ function hideHostWaitText(root: HTMLElement): void {
     if (button.textContent !== label) button.textContent = label
     if (button.getAttribute(BUBBLE_STATE_ATTRIBUTE) !== BUBBLE_STATE_DRAFT)
       button.setAttribute(BUBBLE_STATE_ATTRIBUTE, BUBBLE_STATE_DRAFT)
-    if (timedOut.has(callId) || interrupted.has(callId)) {
+    if (interrupted.has(callId) || (timedOut.has(callId) && !allowLate)) {
       hideHostReopen(row)
       /*
        * 宿主把等待结果写在这条工具行的摘要里(「已继续工作, 仍可回答」),
-       * 而插件已经把这一轮收尾成超时或中断并交出草稿, 留着这句话等于告诉用户"还能继续答",
+       * 而 block 模式或中断已经把这一轮收尾并交出草稿, 留着这句话等于告诉用户"还能继续答",
        * 与卡片已关闭的事实冲突, 因此接管后同样要按文案把它藏掉。
        */
       hideHostWaitText(row)
@@ -2511,11 +2556,15 @@ function hideHostWaitText(root: HTMLElement): void {
     decoratedRows.set(row, signature)
   }
 
-  /* 超时后的统一收尾: 锁定并收起卡片, 不产生任何提交 */
+  /*
+   * 超时后的统一收尾: 收起卡片, 不产生任何提交。
+   * 撤座是必须的 —— 座位仍被占着时宿主会把消息输入栏整块藏起来;
+   * 锁定只在 block 模式做, allow 模式下锁卡会让用户重开的卡片点不动。
+   */
   const closeCardAfterTimeout = (identity: CardIdentity): void => {
     const card = findCard(identity)
     if (card === undefined) return
-    lockCard(card)
+    if (!keepsLateAnswer()) lockCard(card)
     hideCard(card)
   }
 
@@ -2526,13 +2575,13 @@ function hideHostWaitText(root: HTMLElement): void {
    * 不挂倒计时与其它装饰。
    */
   const enforceTimeoutOutcome = (card: HTMLElement, identity: CardIdentity): void => {
+    const key = QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId
     if (timedOut.has(identity.callId)) {
-      lockCard(card)
-      hideCard(card)
+      settleTimedOutCard(card, key)
       return
     }
     if (!passive.has(identity.callId)) return
-    restoreCardOnce(card, QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId)
+    restoreCardOnce(card, key)
   }
 
   /*
@@ -2758,7 +2807,9 @@ function hideHostWaitText(root: HTMLElement): void {
       /*
        * 兜底关闭或「无限等待」通道不可用时交还宿主原版路径, 卡片保持可继续作答。
        * 草稿为空时不同: 这轮提问已经超时结束, 宿主不会自己收起卡片, 插件必须把卡片关掉,
-       * 否则会留下一张点不动也答不了的对话框; 同时隐藏宿主「回答」入口, 不给重新打开的余地。
+       * 否则会留下一张点不动也答不了的对话框。
+       * 是否同时藏掉宿主「回答」入口由 lateAnswer 决定: block 不给重新打开的余地,
+       * allow 保留入口, 用户超时后仍能回来作答(草稿为空不影响入口本身)。
        */
       const emptyDraftTimeout =
         current.draftFallback
@@ -2769,7 +2820,7 @@ function hideHostWaitText(root: HTMLElement): void {
         timedOut.add(row.callId)
         drafts.delete(row.callId)
         if (card !== undefined) {
-          lockCard(card)
+          if (!keepsLateAnswer()) lockCard(card)
           hideCard(card)
         }
         return
@@ -2781,7 +2832,7 @@ function hideHostWaitText(root: HTMLElement): void {
       return
     }
     timedOut.add(row.callId)
-    if (card !== undefined) lockCard(card)
+    if (card !== undefined && !keepsLateAnswer()) lockCard(card)
     /* 走到这里说明已接管, 草稿兜底开关必然为真, 直接记快照即可 */
     drafts.set(row.callId, { sessionId: identity.sessionId, callId: row.callId, questions: row.questions, items })
     pruneDrafts()

@@ -20,7 +20,7 @@ export const inject = ['tools', 'userQuestions', 'agents']
 export { Config }
 export { QuestionTimeoutService } from './question/service'
 export { TranslationManager, translation } from './translation'
-export type { FallbackMode } from './constants'
+export type { FallbackMode, LateAnswerMode } from './constants'
 
 /** 插件装配入口 */
 export function apply(ctx: Context, config: Config): void {

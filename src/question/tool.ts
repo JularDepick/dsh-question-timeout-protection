@@ -26,9 +26,11 @@ import {
   registerCallQuestions,
 } from '../sync/server'
 import {
+  allowsLateAnswer,
   ASK_USER_TOOL_NAME,
   DEFAULT_DRAFT_FALLBACK,
   DEFAULT_FALLBACK_MODE,
+  DEFAULT_LATE_ANSWER,
   DEFAULT_TIMEOUT_SECONDS,
   DRAFT_GRACE_MS,
   injectsContext,
@@ -39,11 +41,14 @@ import {
   PTC_BUDGET_MARGIN_MS,
   PTC_MIN_WAIT_MS,
   TIMED_TIMEOUT_PARAMETER,
+  TIMEOUT_PENDING_ANSWERABLE_NOTICE,
   TIMEOUT_PENDING_BUDGET_NOTICE,
+  TIMEOUT_PENDING_CLOSING,
   TIMEOUT_PENDING_DRAFT_NOTICE,
   TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE,
   TIMEOUT_PENDING_MISSING_NOTICE,
   TIMEOUT_PENDING_NOTICE,
+  TIMEOUT_PENDING_SEALED_NOTICE,
 } from '../constants'
 
 /* 模型侧工具说明 */
@@ -352,6 +357,17 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 不随工具返回值交给模型, 免得绕过用户在配置页关掉的「注入到上下文」。
        */
       const injectsDraft = injectsContext(configValue(config.fallback) ?? DEFAULT_FALLBACK_MODE)
+      /*
+       * 超时后是否保留宿主的再次回答入口。客户端的收尾、入口显隐与这里的说明必须同源:
+       * 说明里让用户"回去补答"而客户端已经把入口藏掉, 或反过来催用户另发消息却其实还能答,
+       * 都会把模型引到与界面不一致的结论上。
+       */
+      const keepsLateAnswer = allowsLateAnswer(configValue(config.lateAnswer) ?? DEFAULT_LATE_ANSWER)
+      /* 超时说明 = 事实 + 作答状态 + 收尾要求, 三段中只有中间那段随配置变化 */
+      const timeoutNotice = (base: string): string =>
+        base
+        + (keepsLateAnswer ? TIMEOUT_PENDING_ANSWERABLE_NOTICE : TIMEOUT_PENDING_SEALED_NOTICE)
+        + TIMEOUT_PENDING_CLOSING
       assertQuestionsPresent(args.questions)
       assertUniqueQuestionIds(args.questions)
       /*
@@ -532,14 +548,14 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          * hasSyncChannel() 为 false 是部署里根本没有网页客户端可上报。
          */
         if (!draftFallbackEnabled) {
-          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+          return { pending: true, callId, message: timeoutNotice(TIMEOUT_PENDING_NOTICE) }
         }
         /*
          * 兜底范围为 ui 时草稿不进模型上下文: 客户端仍照常上报快照,
          * 但服务端不取也不带 draft, 因此直接结算, 不必白等一段宽限期。
          */
         if (!injectsDraft) {
-          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+          return { pending: true, callId, message: timeoutNotice(TIMEOUT_PENDING_NOTICE) }
         }
         /*
          * 没有网页客户端的部署(纯命令行 profile)根本没有页面上报草稿,
@@ -547,7 +563,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
          */
         if (!hasSyncChannel()) {
           /* 没有网页客户端就没有草稿上报, 这个"没有草稿"不是用户没写 */
-          return { pending: true, callId, message: TIMEOUT_PENDING_MISSING_NOTICE, draftMissing: true }
+          return { pending: true, callId, message: timeoutNotice(TIMEOUT_PENDING_MISSING_NOTICE), draftMissing: true }
         }
         /*
          * draft 为 undefined 表示宽限期内没有等到任何上报, 按无草稿结算;
@@ -570,10 +586,10 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
            * 宽限期内一次快照都没收到: 通道不可达或页面没打开。
            * 这与"收到空草稿"是两件事, 后者说明用户确实没写, 前者什么都不能说明。
            */
-          return { pending: true, callId, message: TIMEOUT_PENDING_MISSING_NOTICE, draftMissing: true }
+          return { pending: true, callId, message: timeoutNotice(TIMEOUT_PENDING_MISSING_NOTICE), draftMissing: true }
         }
         if (draft.length === 0) {
-          return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+          return { pending: true, callId, message: timeoutNotice(TIMEOUT_PENDING_NOTICE) }
         }
         /*
          * 客户端只按题序上报草稿(它不知道题目的 id), 这里按权威题目顺序映射回 id;
@@ -640,13 +656,17 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
             '[question-timeout-protection] 有 ' + String(dropped) + ' 条草稿对不上本次提问的题目, 已丢弃',
           )
         }
-        if (mapped.length === 0) return { pending: true, callId, message: TIMEOUT_PENDING_NOTICE }
+        if (mapped.length === 0) return { pending: true, callId, message: timeoutNotice(TIMEOUT_PENDING_NOTICE) }
+        /*
+         * 草稿说明同样要带上作答状态: 模型据此才知道能不能让用户回去补答,
+         * 截断提示插在两者之间, 它属于草稿本身的信息。
+         */
         return {
           pending: true,
           callId,
-          message: truncated
-            ? TIMEOUT_PENDING_DRAFT_NOTICE + TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE
-            : TIMEOUT_PENDING_DRAFT_NOTICE,
+          message: TIMEOUT_PENDING_DRAFT_NOTICE
+            + (truncated ? TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE : '')
+            + (keepsLateAnswer ? TIMEOUT_PENDING_ANSWERABLE_NOTICE : TIMEOUT_PENDING_SEALED_NOTICE),
           draft: mapped,
         }
       }

@@ -532,7 +532,7 @@ const HOST_PATTERN_ARRAYS = new Set(Object.keys(HOST_PATTERN_BASELINE))
  * 不是文案的数组常量: 取值是配置枚举或宿主 DOM 状态白名单, 不参与镜像比对, 也不需要登记。
  * 正则数组已改由 HOST_PATTERN_BASELINE 对账, 不能再从这里放行。
  */
-const IGNORED_ARRAYS = new Set(['FALLBACK_MODES', 'TOOL_ROW_FAILED_STATES'])
+const IGNORED_ARRAYS = new Set(['FALLBACK_MODES', 'LATE_ANSWER_MODES', 'TOOL_ROW_FAILED_STATES'])
 
 /*
  * 每个镜像键期望的占位符集合。

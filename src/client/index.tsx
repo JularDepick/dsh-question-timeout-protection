@@ -14,9 +14,12 @@ import {
   DEFAULT_CARD_ENHANCEMENTS,
   DEFAULT_DRAFT_FALLBACK,
   DEFAULT_INFINITE_WAIT,
+  DEFAULT_LATE_ANSWER,
   DEFAULT_WARNING_SECONDS,
+  LATE_ANSWER_MODES,
   SETTINGS_NAMESPACE,
 } from '../constants'
+import type { LateAnswerMode } from '../constants'
 import { installQuestionTimeoutAdapter } from './adapter'
 import type { AdapterContext, AdapterOptions, AdapterOptionsSource } from './adapter'
 import { readClientService, registerSettingsPage } from './settings'
@@ -43,7 +46,13 @@ function resolveOptions(config: Partial<ConfigModel> | undefined): AdapterOption
     cardEnhancements: configValue(config?.cardEnhancements) ?? DEFAULT_CARD_ENHANCEMENTS,
     infiniteWait: configValue(config?.infiniteWait) ?? DEFAULT_INFINITE_WAIT,
     draftFallback: configValue(config?.draftFallback) ?? DEFAULT_DRAFT_FALLBACK,
+    lateAnswer: configValue(config?.lateAnswer) ?? DEFAULT_LATE_ANSWER,
   }
+}
+
+/* 只接受登记过的取值: 快照里的脏值按默认值处理 */
+function readLateAnswer(value: unknown): LateAnswerMode | undefined {
+  return LATE_ANSWER_MODES.find((mode) => mode === value)
 }
 
 /**
@@ -89,6 +98,7 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
             typeof value.cardEnhancements === 'boolean' ? value.cardEnhancements : base.cardEnhancements,
           infiniteWait: typeof value.infiniteWait === 'boolean' ? value.infiniteWait : base.infiniteWait,
           draftFallback: typeof value.draftFallback === 'boolean' ? value.draftFallback : base.draftFallback,
+          lateAnswer: readLateAnswer(value.lateAnswer) ?? base.lateAnswer,
         }
       } catch {
         return degraded
