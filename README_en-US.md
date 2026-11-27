@@ -48,7 +48,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-Installing by package name takes whatever the npm latest tag points at (0.1.4 at the time of writing). Versions 0.1.2 and earlier declare a dsh ceiling no higher than `0.2.2-rc.2`, so installation and startup reject them on dsh `0.2.2-rc.3` and later; pin a version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.3 on support up to `<0.2.3-rc.1`, and Options B to D below install them from source or a tarball.
+Installing by package name takes whatever the npm latest tag points at (0.2.0 at the time of writing). Versions 0.1.2 and earlier declare a dsh ceiling no higher than `0.2.2-rc.2`, so installation and startup reject them on dsh `0.2.2-rc.3` and later; pin such an older version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.3 on support up to `<0.2.3-rc.1`; from 0.2.0 on they declare the same two-segment range as the compatibility section below, covering `0.2.2-rc.x` and the `0.2.2` release. Once 0.2.1 is published it can likewise be pinned as `@0.2.1`, or installed from source or a tarball through Options B to D.
 
 ### Option B: build from source
 
@@ -99,7 +99,7 @@ No build is needed and the pnpm build-script policy does not apply.
 
 ### Countdown and warning
 
-The countdown appears only on a **live question**, and it follows the plugin's own deadline: focusing the input or starting to type does not pause it. The deadline comes from the top-level `timeout` (seconds) the model passes to the question tool; without one the plugin uses its `timeoutSeconds` setting (120 by default). A `timeout` placed inside a question item is a misuse; the plugin only falls back to the first valid value found there when the top-level one is absent (`-1`, `0` and fractions are skipped). During the last seconds the number turns red and blinks. Once the deadline passes, the plugin withdraws its countdown and failure hints and restores the card to the host's own wait state; when the settlement arrives it decides whether to lock and withdraw the card or hand it back.
+The countdown appears only on a **live question**, and it follows the plugin's own deadline: focusing the input or starting to type does not pause it. The deadline comes from the top-level `timeout` (seconds) the model passes to the question tool; without one the plugin uses its `timeoutSeconds` setting (120 by default). A `timeout` placed inside a question item is a misuse; the plugin only falls back to the first valid value found there when the top-level one is absent (`-1`, `0` and fractions are skipped). During the last seconds the number turns red and blinks. Once the deadline passes, the plugin withdraws its countdown and failure hints and restores the card to the host's own wait state; once the settlement arrives the card is always withdrawn: `allow` mode (the default) keeps the host's Answer entry and its wait note so you can still answer, while `block` mode also locks the card and hides that entry.
 
 Historical questions and settled answers never show a countdown.
 
@@ -122,6 +122,8 @@ The switch appears only while card enhancements and indefinite wait are both on.
 A timeout ends that round of waiting; it does not seal the question. By default the plugin keeps the host's own "Answer" entry and its "continued; answer still available" note: the card is still withdrawn (otherwise it holds the message composer), but you can reopen it from that entry at any time and submit, and the reply reaches the model as a user message.
 
 With "Answer after timeout" cleared, the plugin locks and withdraws the card, hides the host entry and its wait text, so that round can no longer be answered; the model's timeout notice is worded accordingly and no longer tells you to answer later.
+
+The value is captured when each question settles on timeout: changing the setting afterwards affects only later questions, and a round already settled one way is not re-locked, so a reply you are in the middle of typing is not taken away.
 
 ### Timeout draft and read-only review
 
@@ -156,7 +158,7 @@ The config page sits at the **top of the plugin detail view**, not inside "Compo
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---:|
 | `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback. The page only offers "Inject into context": checked writes `both`, unchecked writes `ui`. Keeping the draft in the UI is always on, so `context` never appears |
-| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the custom-answer radio and its kept-content hint, the question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn (locked as well in `block` mode), and the draft is still reported per the configuration above |
+| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the custom-answer radio and its kept-content hint, the question bubble, and hiding the host card's own wait status text and collapse controls (the tool row's "continued; answer still available" note is not included; see "Answering after a timeout"). When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn (locked as well in `block` mode), and the draft is still reported per the configuration above |
 | `infiniteWait` | boolean | `true` | Fixed | Provides the "Wait indefinitely" button and the toolbar switch; turning it off removes both |
 | `draftFallback` | boolean | `true` | Fixed | Timeout wrap-up switch. When off the client neither withdraws the card nor reports the draft and hands that question back to the host; the plugin still settles the wait on time |
 | `lateAnswer` | `allow` / `block` | `allow` | One switch | Whether the answer entry survives a timeout. The page offers "Answer after timeout": checked writes `allow`, unchecked writes `block`. `allow` keeps the host entry and its wait note, and a later reply arrives as a user message; `block` locks and withdraws the card, hides the host entry, and the round can no longer be answered |
