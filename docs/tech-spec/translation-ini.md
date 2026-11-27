@@ -53,17 +53,17 @@
 
 | 键名 | 对应位置 | 说明 |
 |:---:|:---:|:---:|
-| `settings.*` | `src/client/i18n.ts` | 配置页文案, 共 18 个键 |
+| `settings.*` | `src/client/i18n.ts` | 配置页文案, 共 20 个键(含「注入到上下文」与「超时后仍可回答」两个勾选的标签与说明) |
 | `countdown.remaining` / `countdown.paused` / `countdown.unavailable` | `src/constants.ts` 的 `COUNTDOWN_TEXT_ZH`/`COUNTDOWN_TEXT_EN`, `COUNTDOWN_PAUSED_TEXT_*`, `SYNC_UNAVAILABLE_TEXT_*` | 插件自绘倒计时的运行态, 暂停态与通道不可用替代文案 |
 | `control.takeTime` | `src/constants.ts` 的 `TAKE_TIME_TEXTS` | 宿主「慢慢回答」控件的原文, 用于定位并隐藏该控件 |
 | `control.infiniteWait` | `src/constants.ts` 的 `INFINITE_WAIT_LABEL_ZH`/`INFINITE_WAIT_LABEL_EN` | 插件自绘「无限等待」按钮的文案 |
 | `control.autoInfiniteLabel` / `control.autoInfiniteOn` / `control.autoInfiniteOff` / `control.autoInfiniteTitle` | `src/constants.ts` 的 `AUTO_INFINITE_LABEL_*`, `AUTO_INFINITE_ON_TEXT_*`, `AUTO_INFINITE_OFF_TEXT_*`, `AUTO_INFINITE_TITLE_*` | 对话框工具栏「问答自动无限等待」常开开关的文案: 标签与开启, 关闭两个状态词渲染成「标签(中点)状态」, 悬停提示说明开启与关闭各自的行为 |
 | `control.customRadio` / `control.customHint` | `src/constants.ts` 的 `CUSTOM_RADIO_LABEL_*` / `CUSTOM_HINT_*` | 单选题自定义回答行左侧单选按钮的文案, 以及自定义内容被保留但未选中时的提示模板(带 `{text}` 占位符) |
-| `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿时出现 |
+| `bubble.draftLabel` | `src/constants.ts` 的 `BUBBLE_DRAFT_LABEL_*` | 提问工具行气泡按钮的文案, 只在记录了超时草稿、且宿主的「回答」入口不可用时出现(入口可用时由宿主承接, 气泡让位) |
 | `draft.selected` / `draft.custom` | `src/constants.ts` 的 `DRAFT_SELECTED_LABEL_*` / `DRAFT_CUSTOM_LABEL_*` | 只读草稿悬浮卡片里的已选项与补充输入, 都是带 `{items}` / `{text}` 占位符的标签模板, 多项已选以 ` / ` 连接, 由调用方替换占位符; 注入通道按结构化字段提交, 不携带这些标签 |
 | `draft.deliveryFailed` | `src/constants.ts` 的 `DRAFT_SYNC_FAILED_TEXT_ZH`/`DRAFT_SYNC_FAILED_TEXT_EN` | 草稿快照连续上报失败时显示在提问卡片倒计时位置的提示, 不属于草稿悬浮卡片里的标签 |
 | `draft.tooLarge` | `src/constants.ts` 的 `DRAFT_TOO_LARGE_TEXT_ZH`/`DRAFT_TOO_LARGE_TEXT_EN` | 草稿快照超过通道上限时显示在卡片倒计时位置的提示, 与 `draft.deliveryFailed` 分属内容问题与通道问题 |
-| `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.unanswered` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态与未作答提示 |
+| `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.unanswered` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态与未作答提示; 说明只描述这一轮已结束与草稿内容, 不断言「不能再回答」(是否还能作答由配置项 `lateAnswer` 决定) |
 
 > 发布门禁: `node scripts/check-translation.mjs --strict`。不带 `--strict` 时, git 不可用会让 `meta.endtime` 的时效校验只告警并退出 0; 发布链路(`pack:release` 与 `prepack`)已固定带该开关。
 

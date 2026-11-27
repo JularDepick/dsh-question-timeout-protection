@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.2.1-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -29,7 +29,8 @@ This plugin adds three things: you can see how long is left, you can pause the w
 | Auto wait indefinitely | A toolbar switch that puts every new question into indefinite wait |
 | Selection fill | A chosen single-choice option fills the square marker in front of it |
 | Timeout draft | The options you selected and the text you typed are kept at the moment of the timeout |
-| Draft review | After a timeout the question row shows a bubble button; click it to read what you had entered |
+| Answer after timeout | The host's own "Answer" entry stays available by default, so a reply you send later reaches the model as a user message |
+| Draft review | After a timeout the question row shows a bubble button; click it to read what you had entered (shown only when the host entry is unavailable) |
 | Context injection | When on, the draft returns to the model context with the tool result |
 
 ## Install
@@ -60,7 +61,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <absolute path>
 ```
 
-`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.2.0.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
+`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.2.1.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
 
 ### Option C: install from the GitHub source
 
@@ -116,11 +117,17 @@ The switch state lives in browser storage and survives a refresh. Turning it off
 
 The switch appears only while card enhancements and indefinite wait are both on.
 
+### Answering after a timeout
+
+A timeout ends that round of waiting; it does not seal the question. By default the plugin keeps the host's own "Answer" entry and its "continued; answer still available" note: the card is still withdrawn (otherwise it holds the message composer), but you can reopen it from that entry at any time and submit, and the reply reaches the model as a user message.
+
+With "Answer after timeout" cleared, the plugin locks and withdraws the card, hides the host entry and its wait text, so that round can no longer be answered; the model's timeout notice is worded accordingly and no longer tells you to answer later.
+
 ### Timeout draft and read-only review
 
-At the moment of a timeout the plugin keeps the options you selected and the text you typed in memory. That question's tool call row then shows a bubble button; clicking it pops a read-only floating card beside it with your selections and notes per question, offering no way to answer.
+At the moment of a timeout the plugin keeps the options you selected and the text you typed in memory. When the host's own Answer entry is unavailable, that question's tool call row shows a bubble button; clicking it pops a read-only floating card beside it with your selections and notes per question. The panel itself offers no way to answer: replying goes through the host's card.
 
-When the draft is empty, meaning you neither selected nor typed anything, the plugin closes the card on that timeout and no bubble appears.
+The bubble is a fallback entry: while the host's "Answer" entry is available it takes over and no bubble appears; when that entry is hidden ("Answer after timeout" cleared) or the plugin cannot recognise it (a UI language other than Chinese or English), the bubble carries the read-only review. When the draft is empty, meaning you neither selected nor typed anything, no bubble appears.
 
 The draft lives only in memory, so a page refresh loses the bubbles and their records.
 
@@ -144,14 +151,15 @@ With this off, the plugin only withdraws the card and hands the model no draft.
 
 ### Configuration
 
-The config page sits at the **top of the plugin detail view**, not inside "Components". Only "Inject into context" can be changed, and a toggle writes immediately without any save or refresh. The page lists "keep the draft in the UI" and the three fixed features below as fixed rows for reference; none of them has a switch.
+The config page sits at the **top of the plugin detail view**, not inside "Components". "Inject into context" and "Answer after timeout" can both be changed, and a toggle writes immediately without any save or refresh. The page lists "keep the draft in the UI" and the three fixed features below as fixed rows for reference; none of them has a switch.
 
 | Option | Values | Default | UI | Description |
 |:---:|:---:|:---:|:---:|:---:|
 | `fallback` | `ui` / `context` / `both` | `both` | One switch | Timeout fallback. The page only offers "Inject into context": checked writes `both`, unchecked writes `ui`. Keeping the draft in the UI is always on, so `context` never appears |
-| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the custom-answer radio and its kept-content hint, the question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn and locked, and the draft is still reported per the configuration above |
+| `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the custom-answer radio and its kept-content hint, the question bubble, and hiding the host's collapse controls and wait text. When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn (locked as well in `block` mode), and the draft is still reported per the configuration above |
 | `infiniteWait` | boolean | `true` | Fixed | Provides the "Wait indefinitely" button and the toolbar switch; turning it off removes both |
 | `draftFallback` | boolean | `true` | Fixed | Timeout wrap-up switch. When off the client neither withdraws the card nor reports the draft and hands that question back to the host; the plugin still settles the wait on time |
+| `lateAnswer` | `allow` / `block` | `allow` | One switch | Whether the answer entry survives a timeout. The page offers "Answer after timeout": checked writes `allow`, unchecked writes `block`. `allow` keeps the host entry and its wait note, and a later reply arrives as a user message; `block` locks and withdraws the card, hides the host entry, and the round can no longer be answered |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts, from 1 to 60 |
 | `timeoutSeconds` | number | 120 | Not exposed | Wait seconds used when the model does not pass one explicitly, from 1 to 2147483. This is the plugin's own default; the host's built-in timed question tool also defaults to 120, but that is a different source |
 
@@ -172,7 +180,7 @@ The range is split in two to satisfy both checks. The host evaluates it with `in
 
 **Will my input be lost when the question times out**
 
-Not on this page. At the timeout the plugin keeps your selections and typed text in memory and records them in that question's bubble button, which you can open at any time. A page refresh does erase that record.
+Not on this page. At the timeout the plugin keeps your selections and typed text in memory; when the host entry is unavailable it records them in that question row's bubble, which you can open read-only. A page refresh does erase that record.
 
 **Can the model see what I typed**
 
@@ -180,7 +188,7 @@ It depends on the "Inject into context" checkbox. When checked the draft reaches
 
 **Why did the card disappear**
 
-Because that question timed out and the plugin took it over. The plugin withdraws and locks the card so it does not leave a dialog you can no longer answer. To review what you had entered, use the bubble button on the question row; when nothing was selected or typed at the timeout no bubble appears.
+Because that question timed out and the plugin took it over. The card is withdrawn so it neither holds the composer nor leaves a dialog you can no longer answer. "Answer after timeout" is on by default, so the "Answer" entry on the question row reopens the card for you; with it cleared the card stays locked and the entry hidden, and the bubble on the question row offers the read-only review instead (no bubble when nothing was selected or typed at the timeout).
 
 **Why is there no countdown on my screen**
 
@@ -241,6 +249,8 @@ When the model asks from inside `run_code` (PTC mode), that question lives only 
 - Skipping every question without any selection or typed text counts as an empty draft, so that timeout closes the card
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
 - On the macOS desktop app, dsh 0.2.2-rc.2 allows window dragging only inside header rows carrying `data-window-drag`, and the host automatically excludes drag on controls inside a `data-window-drag-controls` container; a custom overlay covering a drag row must declare `data-window-drag-exclude` to stay interactive, and `--dsh-frame-top-clearance` reserves a strip at the top. The plugin's draft panel is attached to the body and declares neither, so near the top of the window it may fall into the reserved strip. The panel holds no clickable controls, so the effect is positional only; the web client is unaffected
+- With "Answer after timeout" on (the default) the card is still withdrawn to free the composer, while the host's "Answer" entry and its wait note stay visible; a later reply arrives through the host's late-reply channel as a user message, and such rows no longer show the plugin's read-only bubble
+- With "Answer after timeout" cleared the plugin locks and withdraws the card and hides the host entry and its wait text; when card enhancements are off the row-level hiding does not run (the decoration chain is skipped entirely), so the host entry stays visible and the question stays answerable
 - The timeout notice injected for the model is Chinese-only, so on an English UI the model still receives Chinese text
 - Closing a card relies on the host's close button: when that button is disabled during submission, or the UI language is not Chinese or English (labels do not match), the plugin cannot click it; after a few retries that round is handed back to the host, the card stays visible and answerable, and the host's own wait status and answer entry take over
 - A draft over the 256 KiB per-report limit makes the UI read "Draft too large; not delivered", which does not count towards consecutive failures and retries at a fixed interval (about five seconds), so trimming the text restores reporting; after three consecutive failures that question is judged channel-unavailable, the plugin stops taking it over and the card returns to the host and stays answerable
