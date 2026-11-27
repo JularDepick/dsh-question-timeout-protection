@@ -16,6 +16,7 @@ import {
   SETTINGS_NAMESPACE,
   SETTINGS_SLOT,
 } from '../constants'
+import type { LateAnswerMode } from '../constants'
 import { clientText, SETTINGS_DICTIONARY } from './i18n'
 import type { ClientTextKey } from './i18n'
 
@@ -26,7 +27,7 @@ export interface SettingsValues {
   cardEnhancements: boolean
   infiniteWait: boolean
   draftFallback: boolean
-  lateAnswer: 'allow' | 'block'
+  lateAnswer: LateAnswerMode
 }
 
 /* 宿主配置表单的快照 */

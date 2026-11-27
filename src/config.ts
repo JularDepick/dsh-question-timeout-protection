@@ -16,6 +16,7 @@ import {
   DEFAULT_INFINITE_WAIT,
   DEFAULT_LATE_ANSWER,
   DEFAULT_TIMEOUT_SECONDS,
+  LATE_ANSWER_MODES,
   DEFAULT_WARNING_SECONDS,
   MAX_TIMEOUT_SECONDS,
   MAX_WARNING_SECONDS,
@@ -50,7 +51,7 @@ export const Config = Schema.object({
   cardEnhancements: Schema.boolean().default(DEFAULT_CARD_ENHANCEMENTS).volatile(),
   infiniteWait: Schema.boolean().default(DEFAULT_INFINITE_WAIT).volatile(),
   draftFallback: Schema.boolean().default(DEFAULT_DRAFT_FALLBACK).volatile(),
-  lateAnswer: Schema.union(['allow', 'block']).default(DEFAULT_LATE_ANSWER).volatile(),
+  lateAnswer: Schema.union([...LATE_ANSWER_MODES]).default(DEFAULT_LATE_ANSWER).volatile(),
 })
 
 

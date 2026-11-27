@@ -60,7 +60,7 @@ export const MAX_WARNING_SECONDS = 60
 /** 提问等待时长默认值(秒);仅在本插件接管提问等待时生效 */
 export const DEFAULT_TIMEOUT_SECONDS = 120
 
-/** 默认启用卡片增强(倒计时、无限等待按钮、单选底色、提问气泡、隐藏宿主控件); 超时后的锁卡与收尾由超时草稿兜底驱动 */
+/** 默认启用卡片增强(倒计时、无限等待按钮、单选底色、提问气泡、隐藏宿主控件); 超时后的撤座收尾由超时草稿兜底驱动, 是否锁卡另由 lateAnswer 决定 */
 export const DEFAULT_CARD_ENHANCEMENTS = true
 
 /** 默认启用「无限等待」按钮与点击后的暂停行为 */
@@ -111,7 +111,7 @@ export const TIMEOUT_PENDING_ANSWERABLE_NOTICE =
 
 /** 不保留再次回答入口时的对应说明 */
 export const TIMEOUT_PENDING_SEALED_NOTICE =
-  '本轮提问的卡片已由插件关闭并锁定, 界面不再提供再次作答的入口, 用户若要补充内容会另行发送消息, 请不要提示用户回去补答; '
+  '插件已按「超时后不再作答」处理: 正常情况下卡片已关闭并锁定, 界面也不再提供再次作答的入口; 若界面上仍能作答(例如读不到配置或界面语言不是中文英文), 用户补交的答复会作为一条用户消息送达模型, 请不要主动提示用户回去补答; '
 
 /** 超时说明的收尾: 两种作答状态共用 */
 export const TIMEOUT_PENDING_CLOSING = '请在回复末尾告知用户这次提问已超时。'

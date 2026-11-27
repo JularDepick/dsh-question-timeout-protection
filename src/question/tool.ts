@@ -363,7 +363,11 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 都会把模型引到与界面不一致的结论上。
        */
       const keepsLateAnswer = allowsLateAnswer(configValue(config.lateAnswer) ?? DEFAULT_LATE_ANSWER)
-      /* 超时说明 = 事实 + 作答状态 + 收尾要求, 三段中只有中间那段随配置变化 */
+      /*
+       * 超时说明 = 事实 + 作答状态 + 收尾要求, 三段中只有中间那段随配置变化。
+       * 草稿分支另行拼装: 事实与收尾要求都写在 TIMEOUT_PENDING_DRAFT_NOTICE 里,
+       * 只额外补作答状态段与截断提示, 因此不经过下面这个函数。
+       */
       const timeoutNotice = (base: string): string =>
         base
         + (keepsLateAnswer ? TIMEOUT_PENDING_ANSWERABLE_NOTICE : TIMEOUT_PENDING_SEALED_NOTICE)
