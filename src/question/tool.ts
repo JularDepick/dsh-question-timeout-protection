@@ -362,16 +362,21 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
        * 说明里让用户"回去补答"而客户端已经把入口藏掉, 或反过来催用户另发消息却其实还能答,
        * 都会把模型引到与界面不一致的结论上。
        */
-      const keepsLateAnswer = allowsLateAnswer(configValue(config.lateAnswer) ?? DEFAULT_LATE_ANSWER)
+      /*
+       * 作答状态在生成说明的那一刻读取, 与客户端「结算时刻定下模式」同源:
+       * 等待期间用户改了配置, 说明必须跟着结算时的实际行为走, 不能沿用发起时的取值,
+       * 否则会出现「说明说界面还能作答, 卡片其实已被锁定」这类打脸。
+       */
+      const answerStateClause = (): string =>
+        allowsLateAnswer(configValue(config.lateAnswer) ?? DEFAULT_LATE_ANSWER)
+          ? TIMEOUT_PENDING_ANSWERABLE_NOTICE
+          : TIMEOUT_PENDING_SEALED_NOTICE
       /*
        * 超时说明 = 事实 + 作答状态 + 收尾要求, 三段中只有中间那段随配置变化。
        * 草稿分支另行拼装: 事实与收尾要求都写在 TIMEOUT_PENDING_DRAFT_NOTICE 里,
        * 只额外补作答状态段与截断提示, 因此不经过下面这个函数。
        */
-      const timeoutNotice = (base: string): string =>
-        base
-        + (keepsLateAnswer ? TIMEOUT_PENDING_ANSWERABLE_NOTICE : TIMEOUT_PENDING_SEALED_NOTICE)
-        + TIMEOUT_PENDING_CLOSING
+      const timeoutNotice = (base: string): string => base + answerStateClause() + TIMEOUT_PENDING_CLOSING
       assertQuestionsPresent(args.questions)
       assertUniqueQuestionIds(args.questions)
       /*
@@ -670,7 +675,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
           callId,
           message: TIMEOUT_PENDING_DRAFT_NOTICE
             + (truncated ? TIMEOUT_PENDING_DRAFT_TRUNCATED_NOTICE : '')
-            + (keepsLateAnswer ? TIMEOUT_PENDING_ANSWERABLE_NOTICE : TIMEOUT_PENDING_SEALED_NOTICE),
+            + answerStateClause(),
           draft: mapped,
         }
       }

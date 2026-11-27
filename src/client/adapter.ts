@@ -1307,6 +1307,12 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       && card.querySelector(CUSTOM_ROW_SELECTOR) instanceof HTMLElement
       /* 已交还宿主的卡片由宿主原版路径接管, 不再挂插件控件 */
       && !passive.has(identity.callId)
+      /*
+       * 已超时的卡片一律不挂: allow 模式不锁卡, 用户重开的卡片会照常通过活性判据,
+       * 而扫描与事件两条链路都会走到这里, 只在扫描侧加门会让按钮闪进闪出,
+       * 点中它还会改写宿主输入框。
+       */
+      && !timedOut.has(identity.callId)
       /* 只读/已结算卡片: 宿主把输入框全部禁用, 没有可作答的地方 */
       && !isReadOnlyCard(card)
     if (!usable) {
@@ -1389,6 +1395,8 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
     const ids = new Set<string>()
     for (const id of handled) ids.add(id)
     for (const id of timedOut) ids.add(id)
+    for (const id of settledModes.keys()) ids.add(id)
+    for (const id of seatReleased) ids.add(id)
     for (const id of passive) ids.add(id)
     for (const id of syncUnavailable) ids.add(id)
     for (const id of drafts.keys()) ids.add(id)
@@ -1975,8 +1983,16 @@ export function installQuestionTimeoutAdapter(ctx: AdapterContext, source: Adapt
       hideCard(card)
       return
     }
+    const marked = card.getAttribute(CARD_DISMISSED_ATTRIBUTE) === key
     if (seatReleased.has(callId)) {
-      restoreCardOnce(card, key, 'late')
+      /*
+       * 关闭按钮已经点过一次。节点上还带着本轮的收起标记, 说明宿主没有卸载它:
+       * 不能再点一次, 也不能让隐藏类一直挂着 —— 交给 handBackCard 摘标记、摘隐藏类、
+       * 还原锁定并把这轮交还宿主, 卡片保持可见可作答。
+       * 标记不在(宿主已卸载后用户点「回答」重开的新节点)则只摘插件装饰, 保持可作答。
+       */
+      if (marked) handBackCard(card)
+      else restoreCardOnce(card, key, 'late')
       return
     }
     hideCard(card)
@@ -2012,7 +2028,14 @@ function hideHostWaitText(root: HTMLElement): void {
      * 界面语言热切换后还会留下残留控件。收尾由 enforceTimeoutOutcome 独立处理,
      * 这里提前返回不影响该收的卡片被收起与锁定。
      */
-    if (!isRecognisedLocale()) return
+    if (!isRecognisedLocale()) {
+      /*
+       * 界面语言热切换到插件不认识的语言时, 先把已经插上去的装饰撤掉并还原宿主控件,
+       * 否则冻结的倒计时与隐藏的等待文案会一直留在卡片上。
+       */
+      restoreCardOnce(card, QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId, 'locale')
+      return
+    }
     /* 已交还宿主的调用不挂装饰, 卡片保持宿主原样 */
     if (passive.has(identity.callId)) return
     /*
@@ -2122,21 +2145,21 @@ function hideHostWaitText(root: HTMLElement): void {
         const text = pick(DRAFT_SYNC_FAILED_TEXT_ZH, DRAFT_SYNC_FAILED_TEXT_EN)
         if (countdown.textContent !== text) countdown.textContent = text
         countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
-        /* 到期后故障提示仍要可见, 但不再附加闪烁警示类 */
+        /* 到期但仍未结算(timedOut)时故障提示仍要可见, 只是不再附加闪烁警示类 */
         countdown.classList.toggle(COUNTDOWN_WARNING_CLASS, !expired)
       } else if (draftTooLarge.has(identity.callId)) {
         /* 内容过大与通道故障是两件事, 提示也不同, 用户才知道该删减 */
         const text = pick(DRAFT_TOO_LARGE_TEXT_ZH, DRAFT_TOO_LARGE_TEXT_EN)
         if (countdown.textContent !== text) countdown.textContent = text
         countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
-        /* 到期后故障提示仍要可见, 但不再附加闪烁警示类 */
+        /* 到期但仍未结算(timedOut)时故障提示仍要可见, 只是不再附加闪烁警示类 */
         countdown.classList.toggle(COUNTDOWN_WARNING_CLASS, !expired)
       } else if (syncUnavailable.has(identity.callId)) {
         /* 通道不可达时倒计时位置显示不可用提示, 不给人「已经无限等待」的错觉 */
         const text = pick(SYNC_UNAVAILABLE_TEXT_ZH, SYNC_UNAVAILABLE_TEXT_EN)
         if (countdown.textContent !== text) countdown.textContent = text
         countdown.classList.remove(HIDDEN_CONTROL_CLASS, COUNTDOWN_PAUSED_CLASS)
-        /* 到期后故障提示仍要可见, 但不再附加闪烁警示类 */
+        /* 到期但仍未结算(timedOut)时故障提示仍要可见, 只是不再附加闪烁警示类 */
         countdown.classList.toggle(COUNTDOWN_WARNING_CLASS, !expired)
       } else if (remainingMs === undefined || timedOut.has(identity.callId) || expired) {
         countdown.textContent = ''
@@ -3266,6 +3289,17 @@ function hideHostWaitText(root: HTMLElement): void {
     for (const element of cards) {
       const identity = parseCardKey(element.getAttribute('data-question-key'))
       if (identity === undefined) continue
+      const cardKey = QUESTION_CARD_KEY_PREFIX + identity.sessionId + ':' + identity.callId
+      /*
+       * 宿主复用同一个卡片节点换下一道题时, 上一轮留下的收起标记与锁定类不会自己消失:
+       * 新卡片会一直隐藏、输入框一直被禁用, 还把座位占着。标记归属与当前 key 不符就还原一次。
+       */
+      const staleMark = element.getAttribute(CARD_DISMISSED_ATTRIBUTE)
+      if (staleMark !== null && staleMark !== cardKey) restoreCardOnce(element, cardKey, 'stale-dismiss')
+      /* 锁定类同理: 该调用已经不在超时接管里, 却还带着锁定类, 说明是上一道题残留的 */
+      if (element.classList.contains(CARD_LOCKED_CLASS) && !timedOut.has(identity.callId)) {
+        restoreCardOnce(element, cardKey, 'stale-lock')
+      }
       /* 超时兜底不依赖界面开关, 因此延迟评估必须在开关之外执行 */
       const pending = deferred.get(identity.callId)
       if (pending !== undefined) {

@@ -4,7 +4,8 @@
  * 客户端半身只做宿主提问卡片之外的一层适配: 倒计时、无限等待、超时草稿与气泡,
  * 提问卡片本身仍由宿主 dsh-client-ui-user-questions 渲染。
  * 配置不随客户端模块下发, 因此这里从宿主的 configForms 服务读取实时值,
- * 让配置页的改动立即影响超时行为; 服务缺失时回退到 schema 默认值。
+ * 让配置页的改动立即影响超时行为; 服务缺失或快照瞬时为空时沿用最近一次成功读到的取值,
+ * 一次都读不到才回退 schema 默认值。
  * 作者: JularDepick
  */
 
@@ -58,7 +59,7 @@ function readLateAnswer(value: unknown): LateAnswerMode | undefined {
 /**
  * 构造实时配置来源。
  * 客户端模块不会收到插件配置, 因此以宿主 configForms 的快照为准;
- * 服务缺失或尚未就绪时回退到启动时的默认值。
+ * 服务缺失或尚未就绪时沿用最近一次成功读到的取值, 一次都读不到才用启动时的默认值。
  */
 function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterOptionsSource {
   let form: ConfigFormLike | undefined
@@ -93,13 +94,17 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
          * 只有真的读到布尔值才采用: 快照里的字段可能是半截值或脏值,
          * 退回默认值才不会把卡片增强或无限等待误判成关闭。
          */
+        /*
+         * 逐字段兜底同样用上一次成功读到的值, 不用 schema 默认值:
+         * 半截或脏快照(某个字段缺失/类型变了)若退回默认, 用户选的 block 会瞬间变回 allow。
+         */
         last = {
-          warningSeconds: typeof value.warningSeconds === 'number' ? value.warningSeconds : base.warningSeconds,
+          warningSeconds: typeof value.warningSeconds === 'number' ? value.warningSeconds : last.warningSeconds,
           cardEnhancements:
-            typeof value.cardEnhancements === 'boolean' ? value.cardEnhancements : base.cardEnhancements,
-          infiniteWait: typeof value.infiniteWait === 'boolean' ? value.infiniteWait : base.infiniteWait,
-          draftFallback: typeof value.draftFallback === 'boolean' ? value.draftFallback : base.draftFallback,
-          lateAnswer: readLateAnswer(value.lateAnswer) ?? base.lateAnswer,
+            typeof value.cardEnhancements === 'boolean' ? value.cardEnhancements : last.cardEnhancements,
+          infiniteWait: typeof value.infiniteWait === 'boolean' ? value.infiniteWait : last.infiniteWait,
+          draftFallback: typeof value.draftFallback === 'boolean' ? value.draftFallback : last.draftFallback,
+          lateAnswer: readLateAnswer(value.lateAnswer) ?? last.lateAnswer,
         }
         return last
       } catch {
