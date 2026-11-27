@@ -44,7 +44,7 @@
 
 ## 收录边界
 
-- 只收录插件自绘的可见文案; 宿主控件原文标签(如收起, 展开, 关闭, 回答 等用于定位宿主控件的识别文案)不在镜像范围, 它们随宿主版本变化, 改动只需同步 `src/constants.ts` 的识别标签常量; 其中数组型标签由 `scripts/check-translation.mjs` 的宿主基线表守住与源码一致, 选择器字符串(如模型选择按钮)与宿主实际文案的对账仍需人工.
+- 只收录插件自绘的可见文案; 宿主控件原文标签(如收起, 展开, 关闭, 回答 等用于定位宿主控件的识别文案)不在镜像范围, 它们随宿主版本变化, 改动只需同步 `src/constants.ts` 的识别标签常量; 其中数组型标签由 `scripts/check-translation.mjs` 的宿主基线表守住与源码一致, 选择器字符串(如模型选择按钮)与登记前缀之间的对账已由脚本显式断言, 与宿主实际包的对账仍需人工.
 - 唯一例外是 `control.takeTime`: 隐藏宿主控件靠的是中英文标签整组匹配(`TAKE_TIME_TEXTS`), 与界面语言无关; 它被镜像属历史遗留, 不是一条可推广的收录规则, 其余宿主识别文案仍只留在 `src/constants.ts` 与基线表.
 - 模型可见文案(工具描述与工具 pending 结果里的中文说明)不在镜像范围, 它们面向模型而不是界面.
 - 只读草稿卡片在没有任何题目信息时使用 `draftPanel.empty`, 单题无内容用 `draftPanel.unanswered`, 两者都是兜底文案.
@@ -65,7 +65,7 @@
 | `draft.tooLarge` | `src/constants.ts` 的 `DRAFT_TOO_LARGE_TEXT_ZH`/`DRAFT_TOO_LARGE_TEXT_EN` | 草稿快照超过通道上限时显示在卡片倒计时位置的提示, 与 `draft.deliveryFailed` 分属内容问题与通道问题 |
 | `draftPanel.title` / `draftPanel.note` / `draftPanel.empty` / `draftPanel.unanswered` | `src/constants.ts` 的 `DRAFT_PANEL_*` | 只读草稿面板的标题, 说明, 空态与未作答提示; 说明只描述这一轮已结束与草稿内容, 不断言「不能再回答」(是否还能作答由配置项 `lateAnswer` 决定) |
 
-> 发布门禁: `node scripts/check-translation.mjs --strict`. 不带 `--strict` 时, git 不可用会让 `meta.endtime` 的时效校验只告警并退出 0; 发布链路(`pack:release` 与 `prepack`)已固定带该开关。
+> 发布门禁: `node scripts/check-translation.mjs --strict`. 不带 `--strict` 时, git 不可用会让 `meta.endtime` 的时效校验只告警并退出 0; 发布链路(`pack:release` 与 `prepack`)已固定带该开关.
 
 ## 语言选择机制
 
