@@ -282,10 +282,40 @@ export function createPanelState(ctx: PanelContext): PanelState {
   const selfDismissedAt = new Map<string, number>()
   const warned = new Set<string>()
 
-  const uiSession = readService<{ sessionStatus?: SessionStatusLike }>(ctx, 'uiSession')
-  const status = uiSession?.sessionStatus
-  const canWatch = typeof status?.getSnapshot === 'function' && typeof status.subscribe === 'function'
-  const panels = readService<{ reveal?: (sessionId: string, callId: string) => unknown }>(ctx, 'userQuestionPanels')
+  /*
+   * 宿主服务必须按需解析, 不能在这里取一次就存下来:
+   * 客户端模块可能早于 dsh-client-ui-session 就绪, 那时 uiSession 还不存在,
+   * 取一次的结果会一直是 undefined, 整条对账链路就再也不会启动。
+   */
+  const statusOf = (): SessionStatusLike | undefined => {
+    const ui = readService<{ sessionStatus?: SessionStatusLike }>(ctx, 'uiSession')
+    const candidate = ui?.sessionStatus
+    return typeof candidate?.getSnapshot === 'function' && typeof candidate.subscribe === 'function'
+      ? candidate
+      : undefined
+  }
+  const panelsOf = (): { reveal?: (sessionId: string, callId: string) => unknown } | undefined =>
+    readService<{ reveal?: (sessionId: string, callId: string) => unknown }>(ctx, 'userQuestionPanels')
+
+  let status: SessionStatusLike | undefined
+  let off: (() => void) | undefined
+  let watchStartedAt = 0
+  /* 拿到会话状态就订阅并立即对一次账; 服务晚到时也能接上 */
+  const ensureWatch = (): SessionStatusLike | undefined => {
+    if (status !== undefined) return status
+    const resolved = statusOf()
+    if (resolved === undefined) {
+      if (watchStartedAt === 0) watchStartedAt = now()
+      else if (now() - watchStartedAt > 5000) {
+        warnOnce('no-session-status', '读不到宿主会话状态, 问答卡片的收起状态不会被保持')
+      }
+      return undefined
+    }
+    status = resolved
+    off = resolved.subscribe?.(scheduleReconcile)
+    scheduleReconcile()
+    return status
+  }
 
   let disposed = false
   let reconciling = false
@@ -347,10 +377,11 @@ export function createPanelState(ctx: PanelContext): PanelState {
 
   /* 在会话状态里找某调用的卡片对象 */
   const findCard = (sessionId: string, callId: string): HostQuestionCard | undefined => {
-    if (!canWatch) return undefined
+    const watch = ensureWatch()
+    if (watch === undefined) return undefined
     let snapshot: unknown
     try {
-      snapshot = status.getSnapshot?.()
+      snapshot = watch.getSnapshot?.()
     } catch {
       return undefined
     }
@@ -374,7 +405,7 @@ export function createPanelState(ctx: PanelContext): PanelState {
   const handBack = (sessionId: string, callId: string): void => {
     releaseRecord(recordKey(sessionId, callId))
     try {
-      panels?.reveal?.(sessionId, callId)
+      panelsOf()?.reveal?.(sessionId, callId)
     } catch {
       /* 宿主入口不可用时保持原样 */
     }
@@ -388,17 +419,10 @@ export function createPanelState(ctx: PanelContext): PanelState {
     const key = recordKey(owner, interaction.callId)
     const record = records.get(key)
     const stamp = now()
-    if (record !== undefined && stamp - record.lastSuppressAt >= PANEL_SUPPRESS_DEBOUNCE_MS) {
-      /*
-       * 计数只表示"宿主在短窗口内反复重建同一张卡片"。
-       * 正常使用里切会话的间隔是分钟级, 超过窗口就把计数清零,
-       * 否则来回切几次就会把逃生阀耗光, 修复在这之后就失效了。
-       */
-      if (stamp - record.lastSuppressAt > PANEL_SUPPRESS_WINDOW_MS) record.suppressions = 0
-      record.suppressions += 1
-      record.lastSuppressAt = stamp
-      persist()
-    }
+    /*
+     * 计数只在 decide 里、且只在"换了一张新卡片对象"时增加:
+     * 同一份发布的重复选举(渲染被丢弃后重来、同一帧里被调用两次)不该消耗逃生阀。
+     */
     /*
      * 登记这一张卡片, 让对账能观测到它随后消失:
      * 组件先于对账撤座时, 不登记就收不到消失事件, absentSince 一直为空,
@@ -438,32 +462,50 @@ export function createPanelState(ctx: PanelContext): PanelState {
       releaseRecord(key)
       return 'decline'
     }
-    if (record.suppressions >= PANEL_SUPPRESS_LIMIT) {
+    const objectId = objectIdOf(interaction)
+    /*
+     * 只有"换了一张新卡片对象"才算一次宿主重建: 同一份发布的重复选举
+     * (并发渲染被丢弃后重来, 同一次渲染里被调用两次)不该消耗逃生阀。
+     * 计数按窗口清零, 正常切会话的间隔是分钟级, 不会把配额耗光。
+     */
+    const noteRebuild = (): void => {
+      const stamp = now()
+      if (stamp - record.lastSuppressAt > PANEL_SUPPRESS_WINDOW_MS) record.suppressions = 0
+      record.suppressions += 1
+      record.lastSuppressAt = stamp
+      persist()
+    }
+    const giveUp = (): SeatDecision => {
       releaseRecord(key)
       warnOnce('suppress-limit:' + key, '问答卡片重建次数过多, 已交还宿主, 用户可点「回答」重新打开')
       return 'decline'
     }
-    const objectId = objectIdOf(interaction)
-    if (record.mode === 'block') return 'suppress'
+    const overLimit = (): boolean => record.suppressions > PANEL_SUPPRESS_LIMIT
+    if (record.mode === 'block') {
+      if (record.objectId !== objectId) {
+        record.objectId = objectId
+        noteRebuild()
+      }
+      return overLimit() ? giveUp() : 'suppress'
+    }
     if (record.objectId === undefined) {
       record.objectId = objectId
-      persist()
-      return 'suppress'
+      noteRebuild()
+      return overLimit() ? giveUp() : 'suppress'
     }
     if (record.objectId === objectId) {
       /*
        * 同一个对象再次出现: 只有"先观测到它从座位上消失, 之后又被发布"才是宿主 reveal,
-       * 也就是用户点了「回答」。没有消失过就是同一份发布的重复选举
-       * (并发渲染被丢弃后重来, 或同一次渲染里被调用两次), 必须继续压制而不是放行,
-       * 否则一次重复选举就会把已经收起的卡片放出来。
+       * 也就是用户点了「回答」。没有消失过就是同一份发布的重复选举,
+       * 必须继续压制而不是放行, 否则一次重复选举就会把已经收起的卡片放出来。
        */
       if (record.absentSince === undefined) return 'suppress'
       releaseRecord(key)
       return 'decline'
     }
     record.objectId = objectId
-    persist()
-    return 'suppress'
+    noteRebuild()
+    return overLimit() ? giveUp() : 'suppress'
   }
 
   const handleDisappeared = (seen: { sessionId: string; callId: string; card: HostQuestionCard }): void => {
@@ -503,12 +545,14 @@ export function createPanelState(ctx: PanelContext): PanelState {
   }
 
   const reconcile = (): void => {
-    if (disposed || reconciling || !canWatch) return
+    if (disposed || reconciling) return
+    const watch = ensureWatch()
+    if (watch === undefined) return
     reconciling = true
     try {
       let snapshot: unknown
       try {
-        snapshot = status.getSnapshot?.()
+        snapshot = watch.getSnapshot?.()
       } catch {
         return
       }
@@ -548,7 +592,6 @@ export function createPanelState(ctx: PanelContext): PanelState {
 
   /* 冷启动先按 TTL 与容量裁一次: 持久化里的记录可能比当前上限还多 */
   prune()
-  const off = canWatch ? status.subscribe?.(scheduleReconcile) : undefined
   /*
    * 另一个标签页改了收起状态时同步内存并重新对账:
    * 记录是跨页共享的, 只读一次会让两个页面各按自己的旧记录压制。
@@ -561,11 +604,12 @@ export function createPanelState(ctx: PanelContext): PanelState {
     scheduleReconcile()
   }
   if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
-  /* 装载时先对一次账: 刷新后宿主可能已经把 continued 行的卡片重新发布出来了 */
+  /*
+   * 装载时先尝试接上会话状态: 拿到就订阅并立刻对一次账(刷新后宿主可能已经把
+   * continued 行的卡片重新发布出来了); 还没就绪就交给下一次调用重试。
+   */
+  ensureWatch()
   scheduleReconcile()
-  if (!canWatch) {
-    warnOnce('no-session-status', '读不到宿主会话状态, 问答卡片的收起状态不会被保持')
-  }
 
   const state: PanelState = {
     decide,
