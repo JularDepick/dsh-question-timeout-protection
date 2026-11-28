@@ -1775,8 +1775,7 @@ export function installQuestionTimeoutAdapter(
   /*
    * 把卡片还原成宿主原样: 撤销插件加的隐藏类, 移除自绘倒计时与「无限等待」按钮。
    * 交还宿主时(兜底关闭或通道不可用)用得上, 那时卡片保持可继续作答。
-   * 这里只撤插件加过的类与节点; 收起记录由 panel-state 自己回收,
-   * 这样结算前的每轮收起仍不会重复触发宿主 dismiss。
+   * 这里只撤插件加过的类与节点; 收起记录由 panel-state 自己回收。
    */
   const restoreCard = (card: HTMLElement): void => {
     /* 收起时隐藏类加在卡片根节点自身, querySelectorAll 不含自身, 必须单独清一次 */

@@ -33,7 +33,7 @@ export const DEFAULT_FALLBACK_MODE: FallbackMode = 'both'
 /**
  * 超时后是否保留再次回答的入口:
  * allow 保留宿主原生的「回答」入口与等待提示, 用户可以在超时后补交答复;
- * block 锁定并收起卡片, 同时隐藏宿主入口与等待文案, 这一轮不再接受作答。
+ * block 收起卡片并隐藏宿主入口与等待文案, 这一轮不再接受作答。
  */
 export const LATE_ANSWER_MODES = ['allow', 'block'] as const
 
@@ -104,14 +104,14 @@ export const TIMEOUT_PENDING_NOTICE = '该轮提问已超时,用户没有正式�
 /*
  * 超时后的作答状态说明, 由工具按配置里的 lateAnswer 择一拼接:
  * allow 时宿主仍保留「回答」入口, 答复会作为一条用户消息送达;
- * block 时卡片已被插件关掉并锁定, 不能再引导用户回去作答。
+ * block 时卡片已被插件收起且入口被隐藏, 不能再引导用户回去作答。
  */
 export const TIMEOUT_PENDING_ANSWERABLE_NOTICE =
   '界面可能已经收起这张卡片, 也可能仍可作答 —— 用户之后补交的答复会作为一条用户消息送达, 请勿把超时本身或草稿当成用户的确认; '
 
 /** 不保留再次回答入口时的对应说明 */
 export const TIMEOUT_PENDING_SEALED_NOTICE =
-  '插件已按「超时后不再作答」处理: 正常情况下卡片已关闭并锁定, 界面也不再提供再次作答的入口; 若界面上仍能作答(例如读不到配置, 卡片增强被关掉, 或界面语言不是中文英文), 用户补交的答复会作为一条用户消息送达模型, 请不要主动提示用户回去补答; '
+  '插件已按「超时后不再作答」处理: 正常情况下卡片已收起, 界面也不再提供再次作答的入口; 若界面上仍能作答(例如读不到配置, 卡片增强被关掉, 或界面语言不是中文英文), 用户补交的答复会作为一条用户消息送达模型, 请不要主动提示用户回去补答; '
 
 /** 超时说明的收尾: 两种作答状态共用 */
 export const TIMEOUT_PENDING_CLOSING = '请在回复末尾告知用户这次提问已超时。'
@@ -338,7 +338,14 @@ export const PANEL_STATE_STORAGE_KEY = 'dqtp-panel-state.v1'
 export const PANEL_RECORD_TTL_MS = 30 * 60 * 1000
 
 /** 同一调用被压制的次数上限, 用尽即交还宿主, 保证用户总能点开卡片 */
-export const PANEL_SUPPRESS_LIMIT = 3
+export const PANEL_SUPPRESS_LIMIT = 5
+
+/**
+ * 压制计数的重置窗口(毫秒)。
+ * 正常使用里「切到别的会话再切回来」是分钟级的, 不该被当成异常;
+ * 只有宿主在短窗口内反复重建同一张卡片才累计次数, 用尽后交还宿主。
+ */
+export const PANEL_SUPPRESS_WINDOW_MS = 60 * 1000
 
 /** 两次压制之间的去抖窗口(毫秒), 防止一次会话切换里多次重建把配额耗光 */
 export const PANEL_SUPPRESS_DEBOUNCE_MS = 2000

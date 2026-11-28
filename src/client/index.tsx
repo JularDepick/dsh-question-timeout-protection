@@ -73,7 +73,7 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
   /*
    * 读不到宿主配置时沿用最近一次成功读到的值, 一次都读不到才是 schema 默认值。
    * 直接回退默认值会在快照瞬时为空(配置写入那一轮)或服务短暂不可用时,
-   * 悄悄把用户选的 block 换成默认的 allow, 表现为已锁定的卡片被临时还原。
+   * 悄悄把用户选的 block 换成默认的 allow, 表现为已收起的卡片被临时放出来。
    * 草稿是否进上下文由服务端按它自己的配置决定, 客户端不再据此推算。
    */
   let last: AdapterOptions = { ...base }

@@ -365,7 +365,7 @@ export function createAskUserQuestionTool(ctx: Context, config: Config) {
       /*
        * 作答状态在生成说明的那一刻读取, 与客户端「结算时刻定下模式」同源:
        * 等待期间用户改了配置, 说明必须跟着结算时的实际行为走, 不能沿用发起时的取值,
-       * 否则会出现「说明说界面还能作答, 卡片其实已被锁定」这类打脸。
+       * 否则会出现「说明说界面还能作答, 卡片其实已被收起」这类打脸。
        */
       const answerStateClause = (): string =>
         allowsLateAnswer(configValue(config.lateAnswer) ?? DEFAULT_LATE_ANSWER)

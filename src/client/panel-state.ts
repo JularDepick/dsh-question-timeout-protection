@@ -10,7 +10,8 @@
  *
  * 两条判据:
  * - 对象身份: 宿主只有 reveal() 会复用同一个卡片对象重新发布, 会话切换与刷新都是新建对象,
- *   因此「同对象再次发布」是用户重开, 「新对象发布」是宿主重建。
+ *   因此「先观测到消失、之后同对象再次发布」是用户重开, 「新对象发布」是宿主重建;
+ *   没有消失过的同对象再选举只是同一份发布的重复渲染, 仍按重建处理。
  * - closed 字段: 宿主只在 remove() 时置 closed, dismiss() 不置, 因此卡片消失且 closed 为真
  *   说明是宿主移除(结算或解绑), 为假才是用户自己收起。
  *
@@ -25,6 +26,7 @@ import {
   PANEL_STATE_STORAGE_KEY,
   PANEL_SUPPRESS_DEBOUNCE_MS,
   PANEL_SUPPRESS_LIMIT,
+  PANEL_SUPPRESS_WINDOW_MS,
   QUESTION_CARD_KEY_PREFIX,
 } from '../constants'
 
@@ -96,7 +98,7 @@ export interface PanelState {
 }
 
 /** 宿主卡片身份判据: key 前缀 + 调用标识 + 题面 + dismiss 方法 */
-export function isHostQuestionCard(value: unknown): value is HostQuestionCard {
+function isHostQuestionCard(value: unknown): value is HostQuestionCard {
   if (typeof value !== 'object' || value === null) return false
   const card = value as Record<string, unknown>
   if (typeof card.key !== 'string' || !card.key.startsWith(QUESTION_CARD_KEY_PREFIX)) return false
@@ -170,8 +172,9 @@ function projectionFace(ctx: PanelContext, sessionId: string): ProjectionFace | 
 
 /*
  * 该调用在投影里是否仍是 continued。
- * 三态: yes 仍在等待作答, no 已结算或从未出现, unknown 投影读不到。
- * 回收记录只在 no 时做, 用户收起的判定只在 yes 时做, 读不到时一律不动。
+ * 三态: yes 仍在等待作答, no 行在但状态已不是 continued, unknown 行缺席或投影读不到。
+ * 用户收起的判定只在 yes 时做, 读不到或行缺席时一律不动:
+ * 会话重绑与刷新会让 active 瞬时为空, 按已结算处理会把记录删掉, 卡片随即被宿主重建并弹开。
  */
 function rowContinued(ctx: PanelContext, sessionId: string, callId: string): 'yes' | 'no' | 'unknown' {
   const face = projectionFace(ctx, sessionId)
@@ -197,6 +200,30 @@ function rowContinued(ctx: PanelContext, sessionId: string, callId: string): 'ye
    * 因此只有"行在但状态不是 continued"才算 no, 行缺席一律按未知处理。
    */
   return 'unknown'
+}
+
+/*
+ * 该调用是否已经结算。
+ * 投影的 settled 是权威信号(结算后仍留在列表里), 与 active 是否瞬时为空无关,
+ * 收起记录据此回收, 不必等 TTL。
+ */
+function rowSettled(ctx: PanelContext, sessionId: string, callId: string): boolean {
+  const face = projectionFace(ctx, sessionId)
+  if (face === undefined) return false
+  let snapshot: unknown
+  try {
+    snapshot = face.getSnapshot?.()
+  } catch {
+    return false
+  }
+  if (typeof snapshot !== 'object' || snapshot === null) return false
+  const settled = (snapshot as { settled?: unknown }).settled
+  if (!Array.isArray(settled)) return false
+  for (const row of settled) {
+    if (typeof row !== 'object' || row === null) continue
+    if ((row as { callId?: unknown }).callId === callId) return true
+  }
+  return false
 }
 
 /** 读取已持久化的记录 */
@@ -362,10 +389,22 @@ export function createPanelState(ctx: PanelContext): PanelState {
     const record = records.get(key)
     const stamp = now()
     if (record !== undefined && stamp - record.lastSuppressAt >= PANEL_SUPPRESS_DEBOUNCE_MS) {
+      /*
+       * 计数只表示"宿主在短窗口内反复重建同一张卡片"。
+       * 正常使用里切会话的间隔是分钟级, 超过窗口就把计数清零,
+       * 否则来回切几次就会把逃生阀耗光, 修复在这之后就失效了。
+       */
+      if (stamp - record.lastSuppressAt > PANEL_SUPPRESS_WINDOW_MS) record.suppressions = 0
       record.suppressions += 1
       record.lastSuppressAt = stamp
       persist()
     }
+    /*
+     * 登记这一张卡片, 让对账能观测到它随后消失:
+     * 组件先于对账撤座时, 不登记就收不到消失事件, absentSince 一直为空,
+     * 用户点「回答」的第一次会被当成重复选举而吞掉。
+     */
+    lastSeen.set(key, { sessionId: owner, callId: interaction.callId, card: interaction })
     selfDismissedAt.set(key, stamp)
     if (record !== undefined) {
       record.dismissed = true
@@ -428,14 +467,19 @@ export function createPanelState(ctx: PanelContext): PanelState {
   }
 
   const handleDisappeared = (seen: { sessionId: string; callId: string; card: HostQuestionCard }): void => {
+    /* 只读回看卡片不参与接管, 它的出现与消失都不该影响收起记录 */
+    if (seen.card.review !== undefined) return
     const key = recordKey(seen.sessionId, seen.callId)
     const continued = rowContinued(ctx, seen.sessionId, seen.callId)
     /* 记下消失时刻: 之后同一个对象再被发布才是用户点了「回答」 */
     const tracked = records.get(key)
     if (tracked !== undefined) tracked.absentSince = now()
     if (cardClosed(seen.card)) {
-      /* 宿主移除卡片: 已结算就回收记录, 解绑或刷新则保留, 重建时继续压制 */
-      if (continued === 'no') releaseRecord(key)
+      /*
+       * 宿主移除卡片: 已结算就回收记录, 解绑或刷新则保留, 重建时继续压制。
+       * 结算与否以投影的 settled 为准, 不看 active: 后者在重绑瞬间会瞬时为空。
+       */
+      if (rowSettled(ctx, seen.sessionId, seen.callId) || continued === 'no') releaseRecord(key)
       return
     }
     const stamp = selfDismissedAt.get(key)
@@ -513,6 +557,7 @@ export function createPanelState(ctx: PanelContext): PanelState {
     if ((event as StorageEvent).key !== PANEL_STATE_STORAGE_KEY) return
     records.clear()
     for (const record of loadRecords(storage)) records.set(recordKey(record.sessionId, record.callId), record)
+    prune()
     scheduleReconcile()
   }
   if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
@@ -541,7 +586,8 @@ export function createPanelState(ctx: PanelContext): PanelState {
       if (card !== undefined) record.objectId = objectIdOf(card)
       records.set(key, record)
       prune()
-      persist()
+      /* 收起是低频动作, 直接落盘: 防抖期间刷新页面会把刚建立的记录丢掉 */
+      writeStorage()
       if (card !== undefined) suppressNow(sessionId, card)
     },
     release(sessionId, callId) {
