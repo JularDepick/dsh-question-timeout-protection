@@ -347,7 +347,10 @@ export const PANEL_SUPPRESS_LIMIT = 5
  */
 export const PANEL_SUPPRESS_WINDOW_MS = 60 * 1000
 
-/** 两次压制之间的去抖窗口(毫秒), 防止一次会话切换里多次重建把配额耗光 */
+/**
+ * 自撤观测窗口(毫秒)。
+ * 插件自己撤座后在这段时间内看到卡片消失, 就认定是本次撤座造成的, 不再记成用户收起。
+ */
 export const PANEL_SUPPRESS_DEBOUNCE_MS = 2000
 
 /** 收起记录的容量上限, 超出后按最旧淘汰 */

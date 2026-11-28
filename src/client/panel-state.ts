@@ -300,6 +300,20 @@ export function createPanelState(ctx: PanelContext): PanelState {
   let status: SessionStatusLike | undefined
   let off: (() => void) | undefined
   let watchStartedAt = 0
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  /*
+   * 服务可能只是还没就绪: 未解析时挂一次性的短重试。
+   * 没有这条重试, 客户端模块加载顺序不利时整条对账链路在本次页面生命周期里都不会启动,
+   * 「用户自己收起卡片」这条路径就永远不生效。
+   */
+  function scheduleRetry(): void {
+    if (retryTimer !== undefined || disposed) return
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined
+      if (disposed) return
+      if (ensureWatch() === undefined) scheduleRetry()
+    }, 2000)
+  }
   /* 拿到会话状态就订阅并立即对一次账; 服务晚到时也能接上 */
   const ensureWatch = (): SessionStatusLike | undefined => {
     if (status !== undefined) return status
@@ -309,6 +323,7 @@ export function createPanelState(ctx: PanelContext): PanelState {
       else if (now() - watchStartedAt > 5000) {
         warnOnce('no-session-status', '读不到宿主会话状态, 问答卡片的收起状态不会被保持')
       }
+      scheduleRetry()
       return undefined
     }
     status = resolved
@@ -450,6 +465,11 @@ export function createPanelState(ctx: PanelContext): PanelState {
   }
 
   const decide = (sessionId: string | undefined, interaction: unknown): SeatDecision => {
+    /*
+     * 座位条目每次渲染都会经过这里, 顺手把会话状态接上:
+     * 安装期服务还没就绪时, 这是除重试之外最可靠的一次补挂机会。
+     */
+    ensureWatch()
     if (!isHostQuestionCard(interaction)) return 'decline'
     /* 只读回看卡片不参与接管: 它没有作答通道, 撤掉只会让用户失去回看入口 */
     if (interaction.review !== undefined) return 'decline'
@@ -598,8 +618,22 @@ export function createPanelState(ctx: PanelContext): PanelState {
    */
   const onStorage = (event: Event): void => {
     if ((event as StorageEvent).key !== PANEL_STATE_STORAGE_KEY) return
+    const previous = new Map(records)
     records.clear()
-    for (const record of loadRecords(storage)) records.set(recordKey(record.sessionId, record.callId), record)
+    for (const record of loadRecords(storage)) {
+      const key = recordKey(record.sessionId, record.callId)
+      const local = previous.get(key)
+      /*
+       * 卡片对象身份与"消失时刻"只在本地有意义(不落盘): 别的标签页同步过来时,
+       * 保留本页已经观测到的部分, 否则用户点「回答」会被当成重复选举再压一次。
+       */
+      if (local !== undefined) {
+        record.objectId = local.objectId
+        record.absentSince = local.absentSince
+        record.dismissed = local.dismissed
+      }
+      records.set(key, record)
+    }
     prune()
     scheduleReconcile()
   }
@@ -649,6 +683,8 @@ export function createPanelState(ctx: PanelContext): PanelState {
       disposed = true
       off?.()
       if (typeof window !== 'undefined') window.removeEventListener('storage', onStorage)
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+      retryTimer = undefined
       if (persistTimer !== undefined) clearTimeout(persistTimer)
       persistTimer = undefined
       /* 卸载前把内存态落盘: 收起状态要跨刷新保留 */
