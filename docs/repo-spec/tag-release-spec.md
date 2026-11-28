@@ -26,5 +26,5 @@
 6. 核对 tarball: 文件清单为构建产物三件, 两份 README, 三份 ini, `cordis.patch.yml`, `COPYRIGHT`, `LICENSE` 与 `package.json`; 包内 `engines.dsh`, peer 范围与构建产物里的新文案与工作区一致. `pnpm run pack:release` 已串上 `node scripts/verify-tarball.mjs`, 自动核对条目清单, 包内 `version`/`engines.dsh`/peer, 包内三件 `dist` 与工作区产物逐字节一致, 以及 `<包名>-latest.tgz` 别名与版本化 tarball 同内容. 该脚本只能证明 tarball 与当前 `dist/` 一致, 因此第 1 步"先重建再打包"仍必须人工确认. 这里的比对基准是第 1 步新重建的产物, 不是工作区里既有的 `dist/`
 7. 在不带兼容性豁免的 profile 上验证 `engines.dsh` 放行, 避免豁免记录掩盖范围声明错误
 8. 在目标 dsh 版本上装入 profile 实测, 覆盖倒计时, 无限等待, 自动无限等待, 超时收尾与草稿注入, 并覆盖四种交还宿主的路径(含撤座失败), 空草稿, 草稿过长与非中英界面降级; 超时后的作答入口按 `lateAnswer` 两条分支各走一遍: `allow`(默认)验证宿主「回答」入口与晚回复通道可用, 重开的卡片可作答并提交, 并验证收起后切换会话与刷新都不会让卡片自己弹开; `block` 验证收起与入口隐藏
-9. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本(0.2.1 的设计验证基准是 `0.2.2-rc.3`, 实机手测在 `0.2.2-rc.5`, 因此本版 Release 名为 `v0.2.1-dsh-0.2.2-rc.5`)
+9. 实测通过后再打 Tag 与建 Release, 发行版名取实测验证过的最高 dsh 版本(0.2.1 的设计验证基准是 `0.2.2-rc.3`, 实机手测在 `0.2.2-rc.5`, 该版 Release 名为 `v0.2.1-dsh-0.2.2-rc.5`; 0.2.2 的实机实测版本尚未确定, 定下后按同一规则取名)
 10. 若本次同时发布到 npm: 先 `npm publish` 发布正式版本, 再用 `npm view <包名> dist-tags` 确认 latest 已指向该版本. 仓库曾有过同名占位版本, 这类情况下尤其要核对 latest, 否则按包名安装会拿到占位包, dsh 只打一条警告并跳过该插件, 功能完全不出现

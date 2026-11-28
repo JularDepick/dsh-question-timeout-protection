@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.2.1-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.2.2-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -48,7 +48,7 @@ dsh 原生支持从 npm 安装插件:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-按包名安装取 npm 上 latest 标签指向的版本(当前是 0.2.1). 0.1.2 及更早版本声明的 dsh 上限不高于 `0.2.2-rc.2`, 在 dsh `0.2.2-rc.3` 起的宿主上会被安装与启动阶段拒绝, 需要这类旧版本时用 `dsh plugin --profile <profile> add dsh-question-timeout-protection@<版本>` 固定. 0.1.3 起支持到 `<0.2.3-rc.1`; 0.2.0 起改用与下面兼容性小节相同的两段范围, 覆盖 `0.2.2-rc.x` 与 `0.2.2` 正式版. 0.2.1 同样可以按 `@0.2.1` 固定, 或按下面的方式二至方式四从源码或 tarball 安装.
+按包名安装取 npm 上 latest 标签指向的版本(当前是 0.2.2). 0.1.2 及更早版本声明的 dsh 上限不高于 `0.2.2-rc.2`, 在 dsh `0.2.2-rc.3` 起的宿主上会被安装与启动阶段拒绝, 需要这类旧版本时用 `dsh plugin --profile <profile> add dsh-question-timeout-protection@<版本>` 固定. 0.1.3 起支持到 `<0.2.3-rc.1`; 0.2.0 起改用与下面兼容性小节相同的两段范围, 覆盖 `0.2.2-rc.x` 与 `0.2.2` 正式版. 0.2.1 与 0.2.2 同样可以按 `@版本号` 固定, 或按下面的方式二至方式四从源码或 tarball 安装.
 
 ### 方式二: 从源码构建后安装
 
@@ -62,7 +62,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <绝对路径>
 ```
 
-`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.2.1.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
+`pnpm pack` 会先构建, 完成后把 tarball 移入仓库根目录的 `release/`, 文件名形如 `dsh-question-timeout-protection-0.2.2.tgz`. 沙箱内生命周期脚本被拦截时改用 `pnpm run pack:release`, 产物相同. `add` 的路径要以 `./` 或 `../` 开头才会按你执行命令的目录解析, 不带前缀会被当成包名去查注册表.
 
 ### 方式三: 直接从 GitHub 源码安装
 

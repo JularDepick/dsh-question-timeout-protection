@@ -2008,7 +2008,6 @@ function hideHostWaitText(root: HTMLElement): void {
       const label = pick(INFINITE_WAIT_LABEL_ZH, INFINITE_WAIT_LABEL_EN)
       if (button.textContent !== label) button.textContent = label
     }
-
   }
 
   /*

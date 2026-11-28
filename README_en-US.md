@@ -2,7 +2,7 @@
 
 # dsh-question-timeout-protection
 
-[![Version](https://img.shields.io/badge/Version-0.2.1-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
+[![Version](https://img.shields.io/badge/Version-0.2.2-green)](https://github.com/JularDepick/dsh-question-timeout-protection/releases)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 
@@ -48,7 +48,7 @@ dsh installs plugins from npm natively:
 dsh plugin --profile <profile> add dsh-question-timeout-protection
 ```
 
-Installing by package name takes whatever the npm latest tag points at (0.2.1 at the time of writing). Versions 0.1.2 and earlier declare a dsh ceiling no higher than `0.2.2-rc.2`, so installation and startup reject them on dsh `0.2.2-rc.3` and later; pin such an older version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.3 on support up to `<0.2.3-rc.1`; from 0.2.0 on they declare the same two-segment range as the compatibility section below, covering `0.2.2-rc.x` and the `0.2.2` release. Version 0.2.1 can likewise be pinned as `@0.2.1`, or installed from source or a tarball through Options B to D.
+Installing by package name takes whatever the npm latest tag points at (0.2.2 at the time of writing). Versions 0.1.2 and earlier declare a dsh ceiling no higher than `0.2.2-rc.2`, so installation and startup reject them on dsh `0.2.2-rc.3` and later; pin such an older version with `dsh plugin --profile <profile> add dsh-question-timeout-protection@<version>`. Versions from 0.1.3 on support up to `<0.2.3-rc.1`; from 0.2.0 on they declare the same two-segment range as the compatibility section below, covering `0.2.2-rc.x` and the `0.2.2` release. Versions 0.2.1 and 0.2.2 can likewise be pinned as `@<version>`, or installed from source or a tarball through Options B to D.
 
 ### Option B: build from source
 
@@ -62,7 +62,7 @@ dsh plugin --profile <profile> add ./release/<tarball>
 dsh plugin --profile <profile> add <absolute path>
 ```
 
-`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.2.1.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
+`pnpm pack` builds first, then moves the tarball into `release/` at the repository root under a name like `dsh-question-timeout-protection-0.2.2.tgz`. Where a sandbox blocks lifecycle scripts, use `pnpm run pack:release` for the same artifact. A path passed to `add` is resolved against your current directory only when it starts with `./` or `../`; otherwise it is treated as a package name and looked up in the registry.
 
 ### Option C: install from the GitHub source
 
