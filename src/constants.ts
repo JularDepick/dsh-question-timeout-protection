@@ -326,24 +326,35 @@ export const COLLAPSE_CONTROL_LABELS: readonly string[] = [
   'Expand the question card',
 ]
 
-/** 宿主的「收起问题面板」按钮文案(中文与英文) */
-export const CLOSE_PANEL_LABELS: readonly string[] = [
-  '收起问题面板，可从工具调用重新打开',
-  'Close the panel — reopen it from the tool call',
-]
+/*
+ * 座位收起状态: 插件自己的权威记录。
+ * 宿主的「面板已收起」只存在客户端卡片注册表的内存里, 会话解绑、投影瞬时为空或页面刷新后,
+ * 宿主会为仍然 continued 的提问新建卡片并重新发布到 composer 座位, 卡片就会自己弹开。
+ * 因此收起状态必须由插件记住, 并在座位选举时压制宿主的重建。
+ */
+export const PANEL_STATE_STORAGE_KEY = 'dqtp-panel-state.v1'
+
+/** 一条收起记录的最长存活时间(毫秒), 超过后不再压制并回收 */
+export const PANEL_RECORD_TTL_MS = 30 * 60 * 1000
+
+/** 同一调用被压制的次数上限, 用尽即交还宿主, 保证用户总能点开卡片 */
+export const PANEL_SUPPRESS_LIMIT = 3
+
+/** 两次压制之间的去抖窗口(毫秒), 防止一次会话切换里多次重建把配额耗光 */
+export const PANEL_SUPPRESS_DEBOUNCE_MS = 2000
+
+/** 收起记录的容量上限, 超出后按最旧淘汰 */
+export const MAX_PANEL_RECORDS = 128
 
 /**
- * 收起卡片时点宿主关闭按钮的重试上限。
- * 宿主在提交在途时禁用该按钮, 界面语言文案不符或卡片结构改版时也可能点不到;
- * 重试用尽后把这轮交还宿主, 卡片保持可作答, 不能座位还占着却把卡片藏起来。
+ * 插件座位压制条目的插槽优先级。
+ * chain 插槽按优先级升序选举, 先命中者渲染; 宿主自己的提问卡片是 0, 审批卡片是 1,
+ * 因此取 -1 才能在宿主之前决定这个座位显示什么。
  */
-export const CARD_DISMISS_ATTEMPTS = 5
+export const SEAT_SUPPRESS_PRIORITY = -1
 
-/**
- * 两次撤座尝试之间的最小间隔(毫秒), 同时是一次点击后观察宿主是否卸载卡片的窗口。
- * 扫描会被 DOM 变更按帧触发, 没有这个窗口时重试次数会被一口气用光。
- */
-export const DISMISS_VERIFY_MS = 500
+/** 宿主 composer 座位插槽名 */
+export const COMPOSER_SLOT = 'conversation.composer'
 
 /*
  * 宿主提问工具行「回答」按钮的文案(中文与英文), 超时后隐藏以免重新打开问答框;
@@ -401,9 +412,6 @@ export const COUNTDOWN_WARNING_CLASS = 'dqtp-countdown-warning'
 /** 「无限等待」暂停态给倒计时附加的类名 */
 export const COUNTDOWN_PAUSED_CLASS = 'dqtp-countdown-paused'
 
-/** 超时锁定卡片时附加的类名 */
-export const CARD_LOCKED_CLASS = 'dqtp-card-locked'
-
 /*
  * 卡片增强生效时挂在 documentElement 上的类名。
  * 单选选中底色写在静态样式里, 只有挂上这个类才匹配;
@@ -425,12 +433,6 @@ export const HOST_DRAFT_STORAGE_PREFIX = 'dsh.user-questions.drafts.v1'
 
 /** 卡片底部提交按钮的文案(中文与英文) */
 export const SUBMIT_TEXTS: readonly string[] = ['提交', 'Submit']
-
-/** 卡片底部下一题按钮的文案(中文与英文) */
-export const NEXT_QUESTION_TEXTS: readonly string[] = ['下一题', 'Next']
-
-/** 卡片底部跳过按钮的文案(中文与英文) */
-export const SKIP_QUESTION_TEXTS: readonly string[] = ['跳过', 'Skip']
 
 /** 倒计时文案模板,{seconds} 由剩余秒数替换 */
 export const COUNTDOWN_TEXT_ZH = '{seconds}秒后超时'

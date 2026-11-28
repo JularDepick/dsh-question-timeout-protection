@@ -123,9 +123,11 @@ The switch appears only while card enhancements and indefinite wait are both on.
 
 A timeout ends that round of waiting; it does not seal the question. By default the plugin keeps the host's own "Answer" entry and its "continued; answer still available" note: the card is still withdrawn (otherwise it holds the message composer), but you can reopen it from that entry at any time and submit, and the reply reaches the model as a user message.
 
-With "Answer after timeout" cleared, the plugin locks and withdraws the card, hides the host entry and its wait text, so that round can no longer be answered; the model's timeout notice is worded accordingly and no longer tells you to answer later.
+Withdrawal is stable: the plugin remembers which cards it has already withdrawn, so after you switch sessions (including switching to a subagent session and back) or refresh the page, when the host renders the card again the plugin withdraws it again instead of letting it pop open, and only the "Answer" entry on the question row reopens it. A card you close yourself with the close button stays withdrawn under the same rule.
 
-The value is captured when each question settles on timeout: changing the setting afterwards affects only later questions, and a round already settled one way is not re-locked, so a reply you are in the middle of typing is not taken away.
+With "Answer after timeout" cleared, the plugin withdraws the card and hides the host entry and its wait text, so that round can no longer be answered; the model's timeout notice is worded accordingly and no longer tells you to answer later.
+
+The value is captured when each question settles on timeout: changing the setting afterwards affects only later questions, and a round already settled one way does not change, so a reply you are in the middle of typing is not taken away.
 
 ### Timeout draft and read-only review
 
@@ -163,7 +165,7 @@ The config page sits at the **top of the plugin detail view**, not inside "Compo
 | `cardEnhancements` | boolean | `true` | Fixed | Decoration only: countdown and warning blink, a background fill on the square marker of the selected single-choice option, the custom-answer radio and its kept-content hint, the question bubble, and hiding the host card's own wait status text and collapse controls (the tool row's "continued; answer still available" note is not included; see "Answering after a timeout"). When off no decoration appears, while the timeout wrap-up still runs: the card that should be withdrawn is still withdrawn (locked as well in `block` mode), and the draft is still reported per the configuration above |
 | `infiniteWait` | boolean | `true` | Fixed | Provides the "Wait indefinitely" button and the toolbar switch; turning it off removes both |
 | `draftFallback` | boolean | `true` | Fixed | Timeout wrap-up switch. When off the client neither withdraws the card nor reports the draft and hands that question back to the host; the plugin still settles the wait on time |
-| `lateAnswer` | `allow` / `block` | `allow` | One switch | Whether the answer entry survives a timeout. The page offers "Answer after timeout": checked writes `allow`, unchecked writes `block`. `allow` keeps the host entry and its wait note, and a later reply arrives as a user message; `block` locks and withdraws the card, hides the host entry, and the round can no longer be answered |
+| `lateAnswer` | `allow` / `block` | `allow` | One switch | Whether the answer entry survives a timeout. The page offers "Answer after timeout": checked writes `allow`, unchecked writes `block`. `allow` keeps the host entry and its wait note, and a later reply arrives as a user message; `block` withdraws the card, hides the host entry, and the round can no longer be answered |
 | `warningSeconds` | number | 5 | Not exposed | Seconds remaining when the red warning starts, from 1 to 60 |
 | `timeoutSeconds` | number | 120 | Not exposed | Wait seconds used when the model does not pass one explicitly, from 1 to 2147483. This is the plugin's own default; the host's built-in timed question tool also defaults to 120, but that is a different source |
 
@@ -192,7 +194,7 @@ It depends on the "Inject into context" checkbox. When checked the draft reaches
 
 **Why did the card disappear**
 
-Because that question timed out and the plugin took it over. The card is withdrawn so it neither holds the composer nor leaves a dialog you can no longer answer. "Answer after timeout" is on by default, so the "Answer" entry on the question row reopens the card for you; with it cleared the card stays locked and the entry hidden, and the bubble on the question row offers the read-only review instead (no bubble when nothing was selected or typed at the timeout).
+Because that question timed out and the plugin took it over. The card is withdrawn so it neither holds the composer nor leaves a dialog you can no longer answer. Once withdrawn, switching sessions or refreshing the page does not make it pop open again. "Answer after timeout" is on by default, so the "Answer" entry on the question row reopens the card for you; with it cleared the card does not appear and the entry stays hidden, and the bubble on the question row offers the read-only review instead (no bubble when nothing was selected or typed at the timeout).
 
 **Why is there no countdown on my screen**
 
@@ -230,7 +232,7 @@ At most 8 sessions keep a projection subscription at once. Beyond that the least
 
 **No persistence**
 
-The draft lives in client memory, so a refresh loses the bubbles and their records. A still-waiting question is re-evaluated from the host's persisted draft and taken over when the takeover conditions hold; settled rows are not restored.
+The draft lives in client memory, so a refresh loses the bubbles and their records. A still-waiting question is re-evaluated from the host's persisted draft and taken over when the takeover conditions hold; settled rows are not restored. The withdrawn state is stored separately in browser storage, apart from the draft, so a refresh keeps the card withdrawn.
 
 **Indefinite wait and draft reporting need the web client**
 
@@ -238,7 +240,7 @@ Both share one token-protected channel mounted on the host's own HTTP service, s
 
 **UI languages**
 
-dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English. The Japanese "回答" is identical to Chinese and the plugin hides it for a moment, but it cannot recognise the Japanese close button, so once the dismiss retries are used up that round is handed back and both the entry and the card are restored; only a three-to-five second transition stays inconsistent, depending on how often the scan fires. In the remaining locales the host answer entry and its wait text mostly stay visible. Under Japanese, a timeout with an empty draft produces no plugin bubble (there is nothing to review), the host entry is hidden only briefly, and once the dismiss retries are used up the entry and card are restored together, so the card is still answerable. The plugin cannot find the host close button there, so once the dismiss retries are used up that round is handed back to the host: the card stays visible and answerable (its locked state is restored) and the host's own wait status and answer entry take over, while timeout settlement and draft reporting still happen.
+dsh 0.2.2-rc.1 ships eight UI languages while the plugin recognises Chinese and English labels only. Under other locales the countdown, the wait-indefinitely button and the toolbar switch are not rendered, and the plugin's own bubble and config page fall back to English; the timeout wrap-up still runs and the card is still withdrawn (withdrawal goes through the host card object's own interface, not UI labels), and the host answer entry and its wait text mostly stay visible.
 
 **Bounded by the enclosing program budget in PTC mode**
 
@@ -248,7 +250,7 @@ When the model asks from inside `run_code` (PTC mode), that question lives only 
 
 - The plugin times the wait itself: on expiry it settles the timeout and releases the host-side foreground wait, and an answer you actually submitted before that moment still wins
 - With "Answer after timeout" on (the default) the card is still withdrawn to free the composer, while the host's "Answer" entry and its wait note stay visible; a later reply arrives through the host's late-reply channel as a user message, and such rows no longer show the plugin's read-only bubble
-- With "Answer after timeout" cleared the plugin locks and withdraws the card and hides the host entry and its wait text; when card enhancements are off the row-level hiding does not run (the decoration chain is skipped entirely), so the host entry stays visible, but that round is already locked and the card is withdrawn again on the next scan — keep this option on if you want to answer after a timeout
+- With "Answer after timeout" cleared the plugin withdraws the card and hides the host entry and its wait text; when card enhancements are off the row-level hiding does not run (the decoration chain is skipped entirely), so the host entry stays visible, but that round is already locked and the card is withdrawn again on the next scan — keep this option on if you want to answer after a timeout
 - With several tabs on the same session the server keeps one draft snapshot per call id, so a later tab overwrites the one reported earlier
 - Only the latest 200 draft records in bubbles are kept, so older bubbles can no longer be opened
 - dsh 0.2.2-rc.1 pre-selects recommended options when a card opens, and the plugin recognises those presets by matching the original option labels from the projection, then decides per question as a whole set: it strips them only when the selection equals the presets exactly, so a recommended option you actually picked (the in-memory interaction record is gone after a refresh) is not stripped into an empty draft; in multiple choice, once you click any option the remaining presets are kept under the host's own submit semantics
@@ -256,7 +258,6 @@ When the model asks from inside `run_code` (PTC mode), that question lives only 
 - The draft is merged per question from three sources in this order: the host's persisted record, the live value of the question on screen, then the plugin's own snapshot; when the live value is read, selected labels come from the host's screen-reader text, which may drop suffixes such as "(Recommended)"
 - On the macOS desktop app, dsh 0.2.2-rc.2 allows window dragging only inside header rows carrying `data-window-drag`, and the host automatically excludes drag on controls inside a `data-window-drag-controls` container; a custom overlay covering a drag row must declare `data-window-drag-exclude` to stay interactive, and `--dsh-frame-top-clearance` reserves a strip at the top. The plugin's draft panel is attached to the body and declares neither, so near the top of the window it may fall into the reserved strip. The panel holds no clickable controls, so the effect is positional only; the web client is unaffected
 - The timeout notice injected for the model is Chinese-only, so on an English UI the model still receives Chinese text
-- Closing a card relies on the host's close button: when that button is disabled during submission, or the UI language is not Chinese or English (labels do not match), the plugin cannot click it; after a few retries that round is handed back to the host, the card stays visible and answerable, and the host's own wait status and answer entry take over
 - A draft over the 256 KiB per-report limit makes the UI read "Draft too large; not delivered", which does not count towards consecutive failures and retries at a fixed interval (about five seconds), so trimming the text restores reporting; while over the limit the model receives the last snapshot that got through, which may lag behind what you have typed; after three consecutive failures that question is judged channel-unavailable, the plugin stops taking it over and the card returns to the host and stays answerable
 - With the same session open in several tabs, clicking "Wait indefinitely" in one tab only registers on the server: the other tabs keep counting down, then hand the card back to the host as an expired-but-unsettled round. The model does not settle there, so nothing is lost; only the tabs disagree on screen
 

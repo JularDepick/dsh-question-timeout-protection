@@ -466,7 +466,6 @@ const HOST_LABEL_BASELINE = {
     'Collapse the question card',
     'Expand the question card',
   ],
-  CLOSE_PANEL_LABELS: ['收起问题面板，可从工具调用重新打开', 'Close the panel — reopen it from the tool call'],
   /* 宿主已停表的等待文案: 无限等待据此判断"不用再点暂停控件" */
   HOST_HELD_PATTERNS: ['会一直等你回答', 'Waiting until you answer'],
   /*
@@ -476,8 +475,6 @@ const HOST_LABEL_BASELINE = {
    */
   ASK_REOPEN_LABELS: ['回答', 'Answer', '查看回答', 'View answers', '回答を表示'],
   SUBMIT_TEXTS: ['提交', 'Submit'],
-  NEXT_QUESTION_TEXTS: ['下一题', 'Next'],
-  SKIP_QUESTION_TEXTS: ['跳过', 'Skip'],
 }
 
 /*

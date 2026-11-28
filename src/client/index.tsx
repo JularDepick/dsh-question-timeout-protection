@@ -9,20 +9,25 @@
  * 作者: JularDepick
  */
 
+import { useLayoutEffect } from 'react'
 import type { Config as ConfigModel } from '../config'
 import { configValue } from '../config-value'
 import {
+  COMPOSER_SLOT,
   DEFAULT_CARD_ENHANCEMENTS,
   DEFAULT_DRAFT_FALLBACK,
   DEFAULT_INFINITE_WAIT,
   DEFAULT_LATE_ANSWER,
   DEFAULT_WARNING_SECONDS,
   LATE_ANSWER_MODES,
+  SEAT_SUPPRESS_PRIORITY,
   SETTINGS_NAMESPACE,
 } from '../constants'
 import type { LateAnswerMode } from '../constants'
 import { installQuestionTimeoutAdapter } from './adapter'
 import type { AdapterContext, AdapterOptions, AdapterOptionsSource } from './adapter'
+import { createPanelState } from './panel-state'
+import type { PanelState } from './panel-state'
 import { readClientService, registerSettingsPage } from './settings'
 import type { ConfigFormLike, FormsLike, SettingsContext } from './settings'
 
@@ -114,14 +119,80 @@ function createOptionsSource(ctx: ClientContext, base: AdapterOptions): AdapterO
   }
 }
 
+/** 座位压制条目需要的插槽面 */
+interface SeatSlots {
+  inject(name: string, register: () => (() => void) | undefined): (() => void) | undefined
+  register(
+    options: { name: string; priority?: number; select?: (props: Record<string, unknown>) => unknown; inject?: () => Record<string, unknown> },
+    component: (props: Record<string, unknown>) => unknown,
+  ): () => void
+}
+
+/*
+ * 座位压制组件: 当选说明这张卡片已经被插件收起, 因此不渲染任何内容,
+ * 并在 paint 之前让宿主把座位撤下来, 用户看不到卡片, 也不会被挡住消息输入栏。
+ * 撤座失败时 panel-state 自己丢弃记录, 下一轮选举就把座位还给宿主。
+ */
+function SeatSuppressor(props: { matched?: unknown; sessionId?: string; panel?: PanelState }): null {
+  const { matched, sessionId, panel } = props
+  useLayoutEffect(() => {
+    panel?.suppressNow(sessionId, matched)
+  }, [matched, sessionId, panel])
+  return null
+}
+
+/**
+ * 注册座位压制条目。
+ * 宿主自己的提问卡片在 conversation.composer 上以默认优先级注册, chain 插槽按优先级升序选举,
+ * 因此这里取更低的优先级, 才能在宿主之前决定这个座位显示什么。
+ * 插槽服务缺失或注册失败时只是不接管, 卡片回到宿主原版行为。
+ */
+function registerSeatEntry(ctx: ClientContext, panel: PanelState): () => void {
+  const slots = readClientService<SeatSlots>(ctx, 'slots')
+  if (slots === undefined || typeof slots.inject !== 'function') return () => {}
+  let dispose: (() => void) | undefined
+  try {
+    const off = slots.inject(COMPOSER_SLOT, () =>
+      slots.register(
+        {
+          name: COMPOSER_SLOT,
+          priority: SEAT_SUPPRESS_PRIORITY,
+          select: (props) => {
+            const sessionId = typeof props.sessionId === 'string' ? props.sessionId : undefined
+            const interaction = props.pendingInteraction
+            return panel.decide(sessionId, interaction) === 'suppress' ? interaction : null
+          },
+          inject: () => ({ panel }),
+        },
+        (props) => SeatSuppressor(props as { matched?: unknown; sessionId?: string; panel?: PanelState }),
+      ),
+    )
+    if (typeof off === 'function') dispose = off
+  } catch (error) {
+    console.error('[question-timeout-protection] 座位压制条目注册失败, 卡片交还宿主原版处理', error)
+  }
+  return () => {
+    dispose?.()
+  }
+}
+
 export function apply(rawCtx: unknown, config?: Partial<ConfigModel>): void {
   const ctx = rawCtx as ClientContext
   let disposeAdapter: () => void = () => {}
   let disposeSettings: () => void = () => {}
+  let disposeSeat: () => void = () => {}
+  let disposePanel: () => void = () => {}
+  const panel = createPanelState(ctx)
+  disposePanel = () => panel.dispose()
   try {
-    disposeAdapter = installQuestionTimeoutAdapter(ctx, createOptionsSource(ctx, resolveOptions(config)))
+    disposeAdapter = installQuestionTimeoutAdapter(ctx, createOptionsSource(ctx, resolveOptions(config)), panel)
   } catch (error) {
     console.error('[question-timeout-protection] 卡片适配器安装失败', error)
+  }
+  try {
+    disposeSeat = registerSeatEntry(ctx, panel)
+  } catch (error) {
+    console.error('[question-timeout-protection] 座位压制条目安装失败', error)
   }
   try {
     disposeSettings = registerSettingsPage(ctx)
@@ -131,6 +202,8 @@ export function apply(rawCtx: unknown, config?: Partial<ConfigModel>): void {
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => disposeAdapter)
     ctx.effect(() => disposeSettings)
+    ctx.effect(() => disposeSeat)
+    ctx.effect(() => disposePanel)
   } else {
     /*
      * 拿不到生命周期钩子时保留实例: 立即卸载等于让插件在这个部署里完全失效,
